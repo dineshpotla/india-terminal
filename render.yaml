@@ -1,0 +1,11 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# After pushing to GitHub: Dashboard → New → Blueprint → connect repo → apply.
+
+services:
+  - type: web
+    name: india-market-terminal
+    runtime: python
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health

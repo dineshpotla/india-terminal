@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>India Market Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="terminal">
+        <!-- ── Header ──────────────────────────────────────────── -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-icon">◆</span>
+                    <span class="logo-text">INDIA MARKET TERMINAL</span>
+                </div>
+                <span class="market-badge" id="market-status">CONNECTING</span>
+                <div class="gift-nifty" id="gift-nifty">
+                    <span class="gift-label">GIFT NIFTY</span>
+                    <span class="gift-price" id="gift-price">--</span>
+                    <span class="gift-move" id="gift-move">
+                        <span class="gift-pts" id="gift-pts"></span>
+                        <span class="gift-pct" id="gift-pct"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="header-center">
+                <div class="search-wrapper">
+                    <span class="search-icon">⌕</span>
+                    <input type="text" id="search-input" placeholder="Search stocks… (Ctrl+K)" autocomplete="off">
+                    <div class="search-results" id="search-results"></div>
+                </div>
+            </div>
+            <div class="header-right">
+                <span class="update-label" id="last-update">—</span>
+                <span class="clock" id="clock">--:--:--</span>
+                <span class="clock-label">IST</span>
+            </div>
+        </header>
+
+        <!-- ── Panels ──────────────────────────────────────────── -->
+        <div class="panels">
+
+            <!-- Market Overview -->
+            <section class="panel" id="panel-indices">
+                <div class="panel-head">
+                    <h2>MARKET OVERVIEW</h2>
+                    <span class="panel-dot live-dot"></span>
+                </div>
+                <div class="panel-body" id="indices-body">
+                    <div class="loading-placeholder">Fetching indices…</div>
+                </div>
+                <div class="market-breadth" id="market-breadth"></div>
+            </section>
+
+            <!-- Top Movers -->
+            <section class="panel" id="panel-movers">
+                <div class="panel-head">
+                    <h2>TOP MOVERS</h2>
+                    <div class="tab-group">
+                        <button class="tab active" data-tab="gainers">GAINERS</button>
+                        <button class="tab" data-tab="losers">LOSERS</button>
+                    </div>
+                </div>
+                <div class="panel-body scrollable" id="movers-body">
+                    <div class="loading-placeholder">Loading movers…</div>
+                </div>
+            </section>
+
+            <!-- News Feed -->
+            <section class="panel" id="panel-news">
+                <div class="panel-head">
+                    <h2>LIVE NEWS</h2>
+                    <div class="tab-group">
+                        <button class="news-tab active" data-news="all">ALL</button>
+                        <button class="news-tab" data-news="breaking">BREAKING</button>
+                        <button class="news-tab" data-news="watchlist">WATCHLIST</button>
+                    </div>
+                </div>
+                <div class="panel-body scrollable" id="news-body">
+                    <div class="loading-placeholder">Fetching headlines…</div>
+                </div>
+            </section>
+
+            <!-- Watchlist + Chart -->
+            <section class="panel panel-wide" id="panel-stock">
+                <div class="panel-head">
+                    <h2 id="stock-title">WATCHLIST</h2>
+                    <div class="wl-add-wrap">
+                        <input type="text" id="wl-input" placeholder="+ Add stock…" autocomplete="off">
+                        <div class="wl-suggest" id="wl-suggest"></div>
+                    </div>
+                    <div class="chart-controls" id="chart-controls" style="display:none">
+                        <button class="chart-btn active" data-period="1d" data-interval="5m">1D</button>
+                        <button class="chart-btn" data-period="5d" data-interval="15m">5D</button>
+                        <button class="chart-btn" data-period="1mo" data-interval="1d">1M</button>
+                        <button class="chart-btn" data-period="3mo" data-interval="1d">3M</button>
+                        <button class="chart-btn" data-period="1y" data-interval="1wk">1Y</button>
+                    </div>
+                </div>
+                <div id="wl-table-wrap" class="wl-table-wrap">
+                    <div id="wl-table" class="wl-table"></div>
+                </div>
+                <div class="stock-hero" id="stock-hero" style="display:none"></div>
+                <div id="chart-container"></div>
+            </section>
+
+            <!-- Sectors -->
+            <section class="panel" id="panel-sectors">
+                <div class="panel-head"><h2>SECTOR PERFORMANCE</h2></div>
+                <div class="panel-body" id="sectors-body">
+                    <div class="loading-placeholder">Computing sectors…</div>
+                </div>
+            </section>
+        </div>
+
+        <!-- ── Ticker Bar ──────────────────────────────────────── -->
+        <div class="ticker-bar">
+            <div class="ticker-track" id="ticker-track"></div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+# Dev-only: local Playwright helper for opening Render deploy UI
+-r requirements.txt
+playwright>=1.40,<2
