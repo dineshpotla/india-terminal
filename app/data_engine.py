@@ -267,6 +267,33 @@ _GOLD_SILVER_KW = {
     "yellow metal", "white metal",
 }
 
+_GLOBAL_MARKET_KW = {
+    # markets / assets
+    "market", "markets", "stocks", "shares", "equities", "futures", "options",
+    "bonds", "yield", "yields", "treasury", "gilts", "bund", "credit", "spread",
+    "dow", "nasdaq", "s&p", "ftse", "dax", "nikkei", "hang seng", "sensex", "nifty",
+    # macro
+    "fed", "federal reserve", "ecb", "boe", "boj", "pbo", "central bank",
+    "rate cut", "rate hike", "interest rate", "inflation", "cpi", "ppi", "pce",
+    "gdp", "pmi", "unemployment", "jobs report", "recession", "growth",
+    # fx / commodities
+    "forex", "fx", "currency", "dollar", "usd", "eur", "yen", "rupee", "inr",
+    "oil", "crude", "brent", "wti", "gas", "lng", "gold", "silver", "copper",
+    # risk / geopolitics that moves markets
+    "sanction", "tariff", "embargo", "war", "geopolit", "strait of hormuz",
+    # company/market structure
+    "earnings", "profit", "revenue", "guidance", "ipo", "listing", "buyback",
+    "downgrade", "upgrade", "rating", "bank", "banking",
+}
+
+_GLOBAL_EXCLUDE_KW = {
+    # obvious non-market categories that flood general news feeds
+    "nasa", "space", "rocket", "astronaut", "mars", "moon", "spacex",
+    "sports", "football", "soccer", "nba", "nfl", "mlb", "tennis", "cricket",
+    "celebrity", "movie", "music", "tv", "hollywood", "fashion",
+    "recipe", "cooking", "travel", "weather",
+}
+
 _BREAKING_MARKET_KW = {
     "breaking", "just in", "flash", "alert", "urgent", "exclusive",
     "rbi rate", "rbi policy", "rbi governor", "rate cut", "rate hike",
@@ -722,6 +749,10 @@ class DataEngine:
         if is_stock_event:
             is_breaking = False
         is_gold_silver = any(kw in combined for kw in _GOLD_SILVER_KW)
+        # Generic market relevance: used for GLOBAL tab filtering
+        is_market_rel = any(kw in combined for kw in _GLOBAL_MARKET_KW) and not any(
+            kw in combined for kw in _GLOBAL_EXCLUDE_KW
+        )
         matched = []
         for alias, sym in _LONG_ALIASES.items():
             if alias in combined and sym not in matched:
@@ -735,7 +766,13 @@ class DataEngine:
                 for sym in _SECTOR_NEWS_KEYWORDS.get(sector, []):
                     if sym not in matched:
                         matched.append(sym)
-        return {"breaking": is_breaking, "stock_event": is_stock_event, "gold_silver": is_gold_silver, "watchlist_stocks": matched}
+        return {
+            "breaking": is_breaking,
+            "stock_event": is_stock_event,
+            "gold_silver": is_gold_silver,
+            "market_relevant": is_market_rel,
+            "watchlist_stocks": matched,
+        }
 
     @staticmethod
     def _parse_pub_time(entry) -> Optional[datetime]:
@@ -974,6 +1011,7 @@ class DataEngine:
                         "breaking": tags["breaking"],
                         "stock_event": tags["stock_event"],
                         "gold_silver": tags["gold_silver"],
+                        "market_relevant": tags.get("market_relevant", False),
                         "watchlist_stocks": tags["watchlist_stocks"],
                     })
             except Exception as e:
@@ -1048,6 +1086,7 @@ class DataEngine:
                     "breaking": tags["breaking"],
                     "stock_event": tags["stock_event"],
                     "gold_silver": tags["gold_silver"],
+                    "market_relevant": tags.get("market_relevant", False),
                     "watchlist_stocks": tags["watchlist_stocks"],
                 })
                 tradient_sent = obj.get("overall_sentiment", "").lower()
