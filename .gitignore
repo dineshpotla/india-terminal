@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 .playwright-render-profile/
 .playwright-*-profile/
-.env.render
+.env
+.env.*

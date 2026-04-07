@@ -27,6 +27,10 @@
                         <span class="gift-pct" id="gift-pct"></span>
                     </span>
                 </div>
+                <div class="nav-tabs">
+                    <button class="nav-tab active" data-view="investing">INVESTING</button>
+                    <button class="nav-tab" data-view="options">OPTIONS</button>
+                </div>
             </div>
             <div class="header-center">
                 <div class="search-wrapper">
@@ -61,10 +65,6 @@
             <section class="panel" id="panel-movers">
                 <div class="panel-head">
                     <h2>TOP MOVERS</h2>
-                    <div class="tab-group">
-                        <button class="tab active" data-tab="gainers">GAINERS</button>
-                        <button class="tab" data-tab="losers">LOSERS</button>
-                    </div>
                 </div>
                 <div class="panel-body scrollable" id="movers-body">
                     <div class="loading-placeholder">Loading movers…</div>
@@ -78,6 +78,8 @@
                     <div class="tab-group">
                         <button class="news-tab active" data-news="all">ALL</button>
                         <button class="news-tab" data-news="breaking">BREAKING</button>
+                        <button class="news-tab" data-news="global">GLOBAL</button>
+                        <button class="news-tab" data-news="gold_silver">GOLD &amp; SILVER</button>
                         <button class="news-tab" data-news="watchlist">WATCHLIST</button>
                     </div>
                 </div>
@@ -112,16 +114,80 @@
             <!-- Sectors -->
             <section class="panel" id="panel-sectors">
                 <div class="panel-head"><h2>SECTOR PERFORMANCE</h2></div>
-                <div class="panel-body" id="sectors-body">
+                <div class="panel-body scrollable" id="sectors-body">
                     <div class="loading-placeholder">Computing sectors…</div>
                 </div>
             </section>
+        </div>
+
+        <!-- ── Options View ────────────────────────────────────── -->
+        <div id="options-view" class="options-view">
+            <div class="oc-toolbar">
+                <div class="oc-sym-group">
+                    <button class="oc-sym-btn active" data-oc-sym="NIFTY">NIFTY</button>
+                    <button class="oc-sym-btn" data-oc-sym="BANKNIFTY">BANKNIFTY</button>
+                    <button class="oc-sym-btn" data-oc-sym="FINNIFTY">FINNIFTY</button>
+                    <input type="text" id="oc-stock-input" class="oc-stock-input" placeholder="Stock symbol…" autocomplete="off">
+                </div>
+                <div class="oc-info-group">
+                    <div class="oc-badge" id="oc-spot"><span class="oc-badge-label">SPOT</span><span class="oc-badge-val">--</span></div>
+                    <div class="oc-badge" id="oc-pcr"><span class="oc-badge-label">PCR</span><span class="oc-badge-val">--</span></div>
+                    <div class="oc-badge" id="oc-maxpain"><span class="oc-badge-label">MAX PAIN</span><span class="oc-badge-val">--</span></div>
+                    <div class="oc-badge" id="oc-total-oi"><span class="oc-badge-label">TOTAL OI</span><span class="oc-badge-val">--</span></div>
+                </div>
+                <div class="oc-expiry-group">
+                    <label class="oc-expiry-label">EXPIRY</label>
+                    <select id="oc-expiry" class="oc-expiry-select"></select>
+                </div>
+                <div class="oc-ts" id="oc-timestamp">--</div>
+            </div>
+            <div class="oc-table-wrap" id="oc-table-wrap">
+                <table class="oc-table" id="oc-table">
+                    <thead>
+                        <tr>
+                            <th class="oc-th-ce" colspan="5">CALLS</th>
+                            <th class="oc-th-strike">STRIKE</th>
+                            <th class="oc-th-pe" colspan="5">PUTS</th>
+                        </tr>
+                        <tr>
+                            <th>OI</th><th>Chg OI</th><th>Volume</th><th>IV</th><th>LTP</th>
+                            <th></th>
+                            <th>LTP</th><th>IV</th><th>Volume</th><th>Chg OI</th><th>OI</th>
+                        </tr>
+                    </thead>
+                    <tbody id="oc-tbody"></tbody>
+                </table>
+            </div>
         </div>
 
         <!-- ── Ticker Bar ──────────────────────────────────────── -->
         <div class="ticker-bar">
             <div class="ticker-track" id="ticker-track"></div>
         </div>
+
+        <!-- ── Mobile Bottom Nav ─────────────────────────────── -->
+        <nav class="mobile-nav" id="mobile-nav">
+            <button class="mobile-nav-btn active" data-panel="panel-indices">
+                <span class="mobile-nav-icon">◈</span>
+                <span class="mobile-nav-label">Overview</span>
+            </button>
+            <button class="mobile-nav-btn" data-panel="panel-movers">
+                <span class="mobile-nav-icon">⇅</span>
+                <span class="mobile-nav-label">Movers</span>
+            </button>
+            <button class="mobile-nav-btn" data-panel="panel-news">
+                <span class="mobile-nav-icon">⚡</span>
+                <span class="mobile-nav-label">News</span>
+            </button>
+            <button class="mobile-nav-btn" data-panel="panel-stock">
+                <span class="mobile-nav-icon">★</span>
+                <span class="mobile-nav-label">Watchlist</span>
+            </button>
+            <button class="mobile-nav-btn" data-panel="panel-sectors">
+                <span class="mobile-nav-icon">▦</span>
+                <span class="mobile-nav-label">Sectors</span>
+            </button>
+        </nav>
     </div>
 
     <script src="/static/app.js"></script>

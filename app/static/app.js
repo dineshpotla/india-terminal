@@ -9,7 +9,6 @@
     let chart = null;
     let chartSeries = null;
     let volumeSeries = null;
-    let currentTab = "gainers";
     let currentNewsTab = "all";
     let selectedStock = null;
     let dashboardData = null;
@@ -154,24 +153,35 @@
 
     function renderMovers(movers) {
         if (!movers) return;
-        var list = movers[currentTab] || [];
         clearChildren($movers);
 
-        if (!list.length) {
+        var gainers = movers.gainers || [];
+        var losers = movers.losers || [];
+        if (!gainers.length && !losers.length) {
             $movers.appendChild(el("div", "loading-placeholder", "No data yet"));
             return;
         }
 
-        list.forEach(function (s) {
-            var row = el("div", "mover-row");
-            row.dataset.sym = s.symbol;
-            row.appendChild(el("span", "mover-sym", s.symbol));
-            row.appendChild(el("span", "mover-name", s.name || ""));
-            row.appendChild(el("span", "mover-price", fmtPrice(s.price)));
-            row.appendChild(el("span", "mover-change " + cls(s.change_pct), fmtPct(s.change_pct)));
-            row.addEventListener("click", function () { selectStock(s.symbol); });
-            $movers.appendChild(row);
-        });
+        var wrap = el("div", "movers-split");
+
+        function buildCol(title, list, colCls) {
+            var col = el("div", "movers-col");
+            col.appendChild(el("div", "movers-col-head " + colCls, title));
+            list.forEach(function (s) {
+                var row = el("div", "mover-row");
+                row.dataset.sym = s.symbol;
+                row.appendChild(el("span", "mover-sym", s.symbol));
+                row.appendChild(el("span", "mover-price", fmtPrice(s.price)));
+                row.appendChild(el("span", "mover-change " + cls(s.change_pct), fmtPct(s.change_pct)));
+                row.addEventListener("click", function () { selectStock(s.symbol); });
+                col.appendChild(row);
+            });
+            return col;
+        }
+
+        wrap.appendChild(buildCol("GAINERS", gainers, "up"));
+        wrap.appendChild(buildCol("LOSERS", losers, "down"));
+        $movers.appendChild(wrap);
     }
 
     // ── Render: News (Bloomberg wire style) ─────────────────────────────
@@ -183,7 +193,13 @@
         if (!news) return [];
         if (currentNewsTab === "all") return news;
         if (currentNewsTab === "breaking") {
-            return news.filter(function (n) { return n.breaking; });
+            return news.filter(function (n) { return n.breaking && !n.stock_event; });
+        }
+        if (currentNewsTab === "global") {
+            return news.filter(function (n) { return n.global_news; });
+        }
+        if (currentNewsTab === "gold_silver") {
+            return news.filter(function (n) { return n.gold_silver; });
         }
         if (currentNewsTab === "watchlist") {
             if (!watchlist.length) return [];
@@ -212,10 +228,12 @@
         clearChildren($news);
 
         if (!filtered || !filtered.length) {
-            $news.appendChild(el("div", "news-empty",
-                currentNewsTab === "all" ? "Waiting for headlines\u2026"
-                : currentNewsTab === "breaking" ? "No breaking news right now"
-                : "No watchlist news \u2014 add stocks above"));
+            var emptyMsg = "Waiting for headlines\u2026";
+            if (currentNewsTab === "breaking") emptyMsg = "No breaking news right now";
+            else if (currentNewsTab === "global") emptyMsg = "No global news right now";
+            else if (currentNewsTab === "gold_silver") emptyMsg = "No gold & silver news right now";
+            else if (currentNewsTab === "watchlist") emptyMsg = "No watchlist news \u2014 add stocks above";
+            $news.appendChild(el("div", "news-empty", emptyMsg));
             return;
         }
 
@@ -231,12 +249,12 @@
             }
 
             var tag = el("span", "wire-tag");
-            if (n.is_fresh) {
-                tag.className = "wire-tag wire-tag-just-in";
-                tag.textContent = "JUST IN";
-            } else if (n.breaking) {
+            if (n.breaking) {
                 tag.className = "wire-tag wire-tag-breaking";
                 tag.textContent = "BREAKING";
+            } else if (n.is_fresh) {
+                tag.className = "wire-tag wire-tag-just-in";
+                tag.textContent = "JUST IN";
             }
             row.appendChild(tag);
 
@@ -247,7 +265,11 @@
             var srcShort = (n.source || "").replace(/Markets?[-\s]*/i, "").substring(0, 10);
             row.appendChild(el("span", "wire-src", srcShort));
 
-            var titleEl = el("span", "wire-title", n.title);
+            var titleCls = "wire-title";
+            if (n.sentiment && n.sentiment !== "neutral") {
+                titleCls += " wire-sent-" + n.sentiment;
+            }
+            var titleEl = el("span", titleCls, n.title);
             if (n.watchlist_stocks && n.watchlist_stocks.length) {
                 var chips = el("span", "wire-chips");
                 n.watchlist_stocks.slice(0, 3).forEach(function (sym) {
@@ -261,6 +283,9 @@
                 titleEl.appendChild(chips);
             }
             row.appendChild(titleEl);
+            if (n.impact === "high") {
+                row.appendChild(el("span", "wire-impact-high", "HI"));
+            }
 
             $news.appendChild(row);
         });
@@ -292,19 +317,30 @@
         if (!sectors || !sectors.length) return;
         clearChildren($sectors);
 
-        var maxAbs = Math.max.apply(null, sectors.map(function (s) { return Math.abs(s.change_pct); }).concat([1]));
+        var maxPos = 0.01, maxNeg = 0.01;
+        sectors.forEach(function (s) {
+            if (s.change_pct > maxPos) maxPos = s.change_pct;
+            if (s.change_pct < -maxNeg) maxNeg = -s.change_pct;
+        });
+        var maxAbs = Math.max(maxPos, maxNeg, 0.01);
 
         sectors.forEach(function (s) {
             var row = el("div", "sector-row");
             row.appendChild(el("span", "sector-name", s.name));
 
             var barBg = el("div", "sector-bar-bg");
-            var bar = el("div", "sector-bar");
-            var width = Math.min(Math.abs(s.change_pct) / maxAbs * 100, 100);
-            bar.style.width = width + "%";
-            bar.style.background = s.change_pct >= 0
-                ? "rgba(0,230,118,.5)" : "rgba(255,61,61,.5)";
-            barBg.appendChild(bar);
+            var barLeft = el("div", "sector-bar-half sector-bar-neg");
+            var barRight = el("div", "sector-bar-half sector-bar-pos");
+
+            if (s.change_pct >= 0) {
+                var w = Math.max(Math.abs(s.change_pct) / maxAbs * 100, 2);
+                barRight.style.width = w + "%";
+            } else {
+                var w = Math.max(Math.abs(s.change_pct) / maxAbs * 100, 2);
+                barLeft.style.width = w + "%";
+            }
+            barBg.appendChild(barLeft);
+            barBg.appendChild(barRight);
             row.appendChild(barBg);
 
             row.appendChild(el("span", "sector-pct " + cls(s.change_pct), fmtPct(s.change_pct)));
@@ -472,15 +508,6 @@
     }
 
     // ── Tabs ───────────────────────────────────────────────────────────
-
-    document.querySelectorAll(".tab").forEach(function (tab) {
-        tab.addEventListener("click", function () {
-            document.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("active"); });
-            tab.classList.add("active");
-            currentTab = tab.dataset.tab;
-            if (dashboardData) renderMovers(dashboardData.movers);
-        });
-    });
 
     // ── News Tabs ──────────────────────────────────────────────────────
 
@@ -736,6 +763,194 @@
             renderDashboard(data);
         } catch (err) { console.error("Initial load error:", err); }
     }
+
+    // ── View Switching (INVESTING / OPTIONS) ───────────────────────────
+
+    var currentView = "investing";
+    var $terminal = document.querySelector(".terminal");
+    var navTabs = document.querySelectorAll(".nav-tab");
+
+    navTabs.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var view = btn.dataset.view;
+            if (view === currentView) return;
+            currentView = view;
+            navTabs.forEach(function (b) { b.classList.toggle("active", b.dataset.view === view); });
+            $terminal.setAttribute("data-view", view);
+            if (view === "options") {
+                fetchOptionChain();
+                ocRefreshTimer = setInterval(fetchOptionChain, 30000);
+            } else {
+                if (ocRefreshTimer) { clearInterval(ocRefreshTimer); ocRefreshTimer = null; }
+            }
+        });
+    });
+
+    // ── Option Chain ─────────────────────────────────────────────────────
+
+    var ocSymbol = "NIFTY";
+    var ocExpiry = "";
+    var ocRefreshTimer = null;
+    var $ocTbody = $("oc-tbody");
+    var $ocExpiry = $("oc-expiry");
+    var $ocSpot = document.querySelector("#oc-spot .oc-badge-val");
+    var $ocPCR = document.querySelector("#oc-pcr .oc-badge-val");
+    var $ocMaxPain = document.querySelector("#oc-maxpain .oc-badge-val");
+    var $ocTotalOI = document.querySelector("#oc-total-oi .oc-badge-val");
+    var $ocTimestamp = $("oc-timestamp");
+    var $ocStockInput = $("oc-stock-input");
+
+    document.querySelectorAll(".oc-sym-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            document.querySelectorAll(".oc-sym-btn").forEach(function (b) { b.classList.remove("active"); });
+            btn.classList.add("active");
+            $ocStockInput.value = "";
+            ocSymbol = btn.dataset.ocSym;
+            ocExpiry = "";
+            fetchOptionChain();
+        });
+    });
+
+    $ocStockInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && $ocStockInput.value.trim()) {
+            document.querySelectorAll(".oc-sym-btn").forEach(function (b) { b.classList.remove("active"); });
+            ocSymbol = $ocStockInput.value.trim().toUpperCase();
+            ocExpiry = "";
+            fetchOptionChain();
+        }
+    });
+
+    $ocExpiry.addEventListener("change", function () {
+        ocExpiry = $ocExpiry.value;
+        fetchOptionChain();
+    });
+
+    function fmtOI(n) {
+        if (!n) return "\u2014";
+        if (n >= 10000000) return (n / 10000000).toFixed(1) + "Cr";
+        if (n >= 100000) return (n / 100000).toFixed(1) + "L";
+        if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+        return String(n);
+    }
+
+    async function fetchOptionChain() {
+        try {
+            var url = "/api/options/" + encodeURIComponent(ocSymbol);
+            if (ocExpiry) url += "?expiry=" + encodeURIComponent(ocExpiry);
+            var res = await fetch(url);
+            var data = await res.json();
+            renderOptionChain(data);
+        } catch (err) {
+            console.error("[OC] Fetch error:", err);
+        }
+    }
+
+    function renderOptionChain(data) {
+        if (data.error && !data.strikes.length) {
+            $ocTbody.innerHTML = '<tr><td colspan="11" class="oc-empty">' + (data.error || "No data") + '</td></tr>';
+            return;
+        }
+
+        $ocSpot.textContent = data.spot ? Number(data.spot).toLocaleString("en-IN", { maximumFractionDigits: 2 }) : "--";
+        $ocPCR.textContent = data.pcr || "--";
+        $ocMaxPain.textContent = data.max_pain ? Number(data.max_pain).toLocaleString("en-IN") : "--";
+        $ocTotalOI.textContent = fmtOI((data.total_ce_oi || 0) + (data.total_pe_oi || 0));
+        $ocTimestamp.textContent = data.timestamp || "--";
+
+        var prevExpiry = $ocExpiry.value;
+        if (data.expiries && data.expiries.length) {
+            $ocExpiry.innerHTML = "";
+            data.expiries.forEach(function (exp) {
+                var opt = document.createElement("option");
+                opt.value = exp;
+                opt.textContent = exp;
+                if (exp === data.selected_expiry) opt.selected = true;
+                $ocExpiry.appendChild(opt);
+            });
+            ocExpiry = data.selected_expiry || data.expiries[0];
+        }
+
+        var spot = data.spot || 0;
+        var atm = data.atm_strike || 0;
+        var maxOI = data.max_oi || 1;
+        var html = "";
+
+        data.strikes.forEach(function (row) {
+            var isATM = row.strike === atm;
+            var ceITM = spot > row.strike;
+            var peITM = spot < row.strike;
+            var cls = "oc-row";
+            if (isATM) cls += " oc-atm";
+
+            var ce = row.ce || {};
+            var pe = row.pe || {};
+            var ceOIpct = Math.round(100 * (ce.oi || 0) / maxOI);
+            var peOIpct = Math.round(100 * (pe.oi || 0) / maxOI);
+            var ceChgCls = (ce.chgOI || 0) > 0 ? "up" : (ce.chgOI || 0) < 0 ? "down" : "";
+            var peChgCls = (pe.chgOI || 0) > 0 ? "up" : (pe.chgOI || 0) < 0 ? "down" : "";
+            var ceLtpCls = (ce.chg || 0) >= 0 ? "up" : "down";
+            var peLtpCls = (pe.chg || 0) >= 0 ? "up" : "down";
+
+            html += '<tr class="' + cls + '">';
+            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '"><div class="oc-oi-bar" style="width:' + ceOIpct + '%"></div><span>' + fmtOI(ce.oi) + '</span></td>';
+            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + ' ' + ceChgCls + '">' + fmtOI(ce.chgOI) + '</td>';
+            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '">' + fmtOI(ce.vol) + '</td>';
+            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '">' + (ce.iv ? ce.iv.toFixed(1) : "\u2014") + '</td>';
+            html += '<td class="oc-ce oc-ltp' + (ceITM ? " oc-itm" : "") + ' ' + ceLtpCls + '">' + (ce.ltp ? ce.ltp.toFixed(2) : "\u2014") + '</td>';
+
+            html += '<td class="oc-strike">' + Number(row.strike).toLocaleString("en-IN") + '</td>';
+
+            html += '<td class="oc-pe oc-ltp' + (peITM ? " oc-itm" : "") + ' ' + peLtpCls + '">' + (pe.ltp ? pe.ltp.toFixed(2) : "\u2014") + '</td>';
+            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '">' + (pe.iv ? pe.iv.toFixed(1) : "\u2014") + '</td>';
+            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '">' + fmtOI(pe.vol) + '</td>';
+            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + ' ' + peChgCls + '">' + fmtOI(pe.chgOI) + '</td>';
+            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '"><div class="oc-oi-bar oc-oi-bar-pe" style="width:' + peOIpct + '%"></div><span>' + fmtOI(pe.oi) + '</span></td>';
+            html += '</tr>';
+        });
+
+        $ocTbody.innerHTML = html;
+
+        var atmRow = document.querySelector(".oc-atm");
+        if (atmRow) {
+            atmRow.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+    }
+
+    // ── Mobile Panel Switching ────────────────────────────────────────
+
+    var isMobile = window.matchMedia("(max-width: 700px)");
+    var mobileNavBtns = document.querySelectorAll(".mobile-nav-btn");
+    var allPanels = document.querySelectorAll(".panels .panel");
+
+    function activateMobilePanel(panelId) {
+        allPanels.forEach(function (p) { p.classList.remove("mobile-active"); });
+        var target = document.getElementById(panelId);
+        if (target) target.classList.add("mobile-active");
+        mobileNavBtns.forEach(function (b) {
+            b.classList.toggle("active", b.dataset.panel === panelId);
+        });
+        if (panelId === "panel-stock" && chart) {
+            setTimeout(function () { chart.timeScale().fitContent(); }, 50);
+        }
+    }
+
+    function handleMobileInit() {
+        if (isMobile.matches) {
+            var active = document.querySelector(".mobile-nav-btn.active");
+            activateMobilePanel(active ? active.dataset.panel : "panel-indices");
+        } else {
+            allPanels.forEach(function (p) { p.classList.remove("mobile-active"); });
+        }
+    }
+
+    mobileNavBtns.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            activateMobilePanel(btn.dataset.panel);
+        });
+    });
+
+    isMobile.addEventListener("change", handleMobileInit);
+    handleMobileInit();
 
     // ── Boot ───────────────────────────────────────────────────────────
 

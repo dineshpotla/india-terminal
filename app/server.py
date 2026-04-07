@@ -1,5 +1,6 @@
 """FastAPI server — serves the terminal UI and exposes market data APIs."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -61,6 +62,12 @@ async def chart(symbol: str, period: str = "1d", interval: str = "5m"):
 @app.get("/api/search")
 async def search(q: str = Query("")):
     return JSONResponse(engine.search(q))
+
+
+@app.get("/api/options/{symbol}")
+async def options(symbol: str, expiry: str = Query("")):
+    data = await asyncio.to_thread(engine.get_option_chain, symbol, expiry or None)
+    return JSONResponse(data)
 
 
 # ── WebSocket ───────────────────────────────────────────────────────────
