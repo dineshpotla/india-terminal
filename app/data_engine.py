@@ -6,6 +6,7 @@ Falls back to yfinance when hosted environments cannot access NSE cleanly.
 
 import asyncio
 import calendar
+import hashlib
 import json
 import os
 import random
@@ -14,8 +15,9 @@ import time
 import traceback
 from collections import OrderedDict
 from datetime import datetime, timedelta
+import threading
 from typing import Dict, List, Optional, Set
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -172,6 +174,7 @@ NEWS_FEEDS_GLOBAL = [
     "https://www.forexlive.com/feed/",
     "https://www.aljazeera.com/xml/rss/all.xml",
     "https://feeds.bbci.co.uk/news/business/rss.xml",
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://feeds.finance.yahoo.com/rss/2.0/headline",
     "https://seekingalpha.com/market_currents.xml",
     "https://www.livemint.com/rss/news",
@@ -193,8 +196,14 @@ NEWS_FEEDS_GLOBAL = [
     "https://news.google.com/rss/search?q=crude+oil+brent+price+when:6h&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=federal+reserve+OR+dollar+index+OR+treasury+yield+when:6h&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=iran+war+OR+sanctions+OR+tariff+trade+war+when:6h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=iran+ceasefire+OR+pakistan+iran+OR+%22ceasefire+talks%22+OR+%22peace+talks%22+iran+OR+%22middle+east+ceasefire%22+when:6h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=ceasefire+OR+truce+OR+negotiations+iran+when:6h&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=S%26P+500+OR+Nasdaq+OR+Dow+Jones+when:6h&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=global+selloff+OR+risk-off+OR+credit+spreads+OR+treasury+auction+when:6h&hl=en&gl=US&ceid=US:en",
+
+    # Reuters (broad site coverage; avoids direct reuters.com feeds that datacenters often block)
+    "https://news.google.com/rss/search?q=site:reuters.com+when:1h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site:reuters.com+when:6h&hl=en&gl=US&ceid=US:en",
 ]
 NEWS_FEEDS_GOLD_SILVER = [
     # India-focused
@@ -226,8 +235,87 @@ NEWS_FEEDS_GOLD_SILVER = [
 ]
 NEWS_FEEDS = NEWS_FEEDS_INDIA + NEWS_FEEDS_GLOBAL + NEWS_FEEDS_GOLD_SILVER
 _GLOBAL_FEEDS_SET = set(NEWS_FEEDS_GLOBAL + NEWS_FEEDS_GOLD_SILVER)
+_INDIA_FEEDS_SET = set(NEWS_FEEDS_INDIA)
 
 TRADIENT_NEWS_URL = "https://api.tradient.org/v1/api/market/news"
+
+# Live blog pages: polled on a short interval. URLs are never tied to one story — they come from
+# LIVE_STORY_URLS (optional) plus automatic discovery (Google News RSS → publisher links that look
+# like /live/ pages). Uses only URL shape + allowlisted domains, not topic keywords.
+_LIVE_TITLE_BAD = (
+    "subscribe", "newsletter", "cookie policy", "sign in", "follow us", "skip to",
+    "privacy policy", "ad choices", "terms of use", "copyright",
+)
+
+# Topic-agnostic discovery: “live” page patterns on major wires / broadcasters.
+LIVE_DISCOVERY_FEEDS = [
+    "https://news.google.com/rss/search?q=site:reuters.com+(live+OR+%22live+updates%22)+when:6h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site:bbc.co.uk+(news+live+OR+%2Flive%2F)+when:6h&hl=en&gl=UK&ceid=GB:en",
+    "https://news.google.com/rss/search?q=site:theguardian.com+live+when:6h&hl=en&gl=UK&ceid=GB:en",
+]
+
+_LIVE_PATH_HINTS = (
+    "/live/", "-live-", "live-updates", "liveblog", "live-blog", "as-it-happened",
+)
+
+_DEFAULT_LIVE_DISCOVERY_DOMAINS = (
+    "reuters.com", "bbc.co.uk", "bbc.com", "theguardian.com",
+)
+
+
+def _live_discovery_domains() -> List[str]:
+    raw = os.getenv("LIVE_DISCOVERY_DOMAINS", "").strip()
+    if raw:
+        return [d.strip().lower() for d in raw.split(",") if d.strip()]
+    return list(_DEFAULT_LIVE_DISCOVERY_DOMAINS)
+
+
+def _host_matches_live_domain(host: str, domains: List[str]) -> bool:
+    h = (host or "").lower()
+    return any(d in h for d in domains)
+
+
+def _is_probable_live_page(url: str, domains: List[str]) -> bool:
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    if p.scheme not in ("http", "https") or not p.netloc:
+        return False
+    if not _host_matches_live_domain(p.netloc, domains):
+        return False
+    path = (p.path or "").lower()
+    return any(hint in path for hint in _LIVE_PATH_HINTS)
+
+
+def _live_brand_from_url(url: str) -> str:
+    try:
+        h = urlparse(url).netloc.lower().replace("www.", "")
+        if "reuters" in h:
+            return "Reuters"
+        if "bbc" in h:
+            return "BBC"
+        if "guardian" in h:
+            return "The Guardian"
+        part = h.split(".")[0]
+        return part.upper()[:14] if part else "LIVE"
+    except Exception:
+        return "LIVE"
+
+
+def _live_story_id(url: str) -> str:
+    u = url.rstrip("/")
+    tail = u.split("/")[-1]
+    return (tail[:48] or "live")
+
+
+def _live_title_ok(title: str) -> bool:
+    tl = title.lower().strip()
+    if len(tl) < 20:
+        return False
+    if title.strip().startswith("http"):
+        return False
+    return not any(b in tl for b in _LIVE_TITLE_BAD)
 
 NV_API_KEY = os.getenv("NV_API_KEY", "")
 NV_API_URL = os.getenv("NV_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
@@ -240,7 +328,9 @@ _LLM_SYSTEM = (
     "You output ONLY a raw JSON array. No markdown, no explanation, no text before or after. "
     "Each element: "
     '{"idx":N,"stocks":[],"sentiment":"bullish"|"bearish"|"neutral",'
-    '"impact":"high"|"medium"|"low","breaking":true|false,"gold_silver":true|false}'
+    '"impact":"high"|"medium"|"low","breaking":true|false,'
+    '"gold_silver":true|false,"india_market_impact":true|false,'
+    '"market_relevant":true|false,"company_specific":true|false}'
 )
 _LLM_PROMPT_PREFIX = (
     f"NIFTY 50 symbols: {_NIFTY50_SYMBOLS_STR}.\n"
@@ -251,6 +341,14 @@ _LLM_PROMPT_PREFIX = (
     "false for stock results, SEBI filings, dividends, company-specific events.\n"
     "- gold_silver: true if about gold, silver, precious metals, bullion, MCX/COMEX metals, "
     "gold ETFs, sovereign gold bonds. false otherwise.\n"
+    "- india_market_impact: true if the headline has ANY plausible channel to affect Indian markets "
+    "(even low/indirect impact): INR, crude/oil, yields, global risk-on/off, sanctions, geopolitics, "
+    "Fed/ECB/BoJ policy, global equities spillover, commodities, shipping/energy. "
+    "false ONLY if clearly irrelevant to markets (sports/celebrity/space/recipes etc.).\n"
+    "- market_relevant: true if the headline is relevant to markets/trading anywhere (macro, rates, "
+    "inflation, FX, commodities, geopolitics that moves risk, broad indexes). false for human-interest.\n"
+    "- company_specific: true if primarily about ONE specific company/stock/earnings/shares. "
+    "false for macro/geopolitics.\n"
     "- Output the JSON array and nothing else.\n\n"
 )
 
@@ -292,11 +390,50 @@ _GLOBAL_EXCLUDE_KW = {
     "sports", "football", "soccer", "nba", "nfl", "mlb", "tennis", "cricket",
     "celebrity", "movie", "music", "tv", "hollywood", "fashion",
     "recipe", "cooking", "travel", "weather",
+    # general human-interest / politics noise
+    "immigration agents", "detained", "deported",
+    "easter email", "jesus", "church", "prayer",
+    "toilet paper",
+    "photo of earth", "far side",
+    "soldier's wife", "military spouse",
+    "scrimping and saving",
+    "impeachment",
+}
+
+_INDIA_IMPACT_HINT_KW = {
+    "india", "indian", "nifty", "sensex", "bse", "nse", "rupee", "inr",
+    "rbi", "sebi ban", "sebi order", "sebi probe",
+    "fii", "fpi", "dii", "msci india",
+    "adani", "reliance", "tata", "infosys", "tcs", "hdfc",
+    "oil price", "crude oil", "brent", "opec",
+    "fed rate", "rate cut", "rate hike", "federal reserve",
+    "tariff", "trade war", "sanction",
+    "iran", "strait of hormuz", "war escalat",
+    "global selloff", "risk-off", "emerging market",
+    "gold price", "silver price",
+}
+
+_INDIA_NEWS_KW = {
+    "india", "indian", "nifty", "sensex", "bse", "nse", "rupee", "inr",
+    "rbi", "sebi", "mumbai", "delhi", "modi",
+    "fii", "fpi", "dii", "msci india",
+    "adani", "reliance", "tata", "infosys", "tcs", "hdfc", "wipro",
+    "hcl tech", "bajaj", "icici", "sbi", "kotak", "axis bank",
+    "mcx", "ncdex", "bse sensex", "nse nifty",
+    "ipo india", "q4 results", "q3 results", "q2 results", "q1 results",
+    "quarterly results", "annual results",
+    "hindunilvr", "itc", "maruti", "titan", "bharti",
+    "larsen", "ultratech", "mahindra", "coal india", "ntpc",
+    "ongc", "power grid", "sun pharma", "dr reddy",
+    "nifty 50", "nifty bank", "nifty it", "india vix",
+    "dalal street", "bombay stock",
 }
 
 _TICKER_PAREN_RE = re.compile(r"\([A-Z]{1,5}(?:[:.][A-Z]{1,5})?\)")
 _SHARES_MOVE_RE = re.compile(
-    r"\bshares?\b.*\b(rise|rises|rose|fall|falls|fell|jump|jumps|jumped|slump|slumps|slumped|surge|surges|surged|plunge|plunges|plunged)\b",
+    r"\b(shares?|stock)\b.*\b(rise|rises|rose|fall|falls|fell|drop|drops|dropped|"
+    r"jump|jumps|jumped|slump|slumps|slumped|slide|slides|slid|surge|surges|surged|"
+    r"plunge|plunges|plunged|soar|soars|soared|rally|rallies|rallied)\b",
     re.IGNORECASE,
 )
 
@@ -465,9 +602,25 @@ class DataEngine:
         self._running = False
         self._market_task: Optional[asyncio.Task] = None
         self._news_task: Optional[asyncio.Task] = None
+        self._llm_task: Optional[asyncio.Task] = None
+        self._live_task: Optional[asyncio.Task] = None
         self._ws_clients: Set = set()
         self._refresh_count = 0
         self._llm_cache: OrderedDict = OrderedDict()
+        self._live_lock = threading.Lock()
+        self._news_lock = threading.Lock()
+        self._live_seen: Set[str] = set()
+        self._live_log_state: Dict[str, str] = {}
+        self._asyncio_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Dynamic live-blog URLs (auto-discovered); LRU by insertion order
+        self._discovered_live_urls: OrderedDict[str, bool] = OrderedDict()
+        self._live_fetch_failures: Dict[str, int] = {}
+        self._max_discovered_live_urls = max(3, min(20, int(os.getenv("LIVE_DISCOVERY_MAX_URLS", "8"))))
+        self._live_fail_drop_after = max(5, int(os.getenv("LIVE_DISCOVERY_DROP_FAILS", "18")))
+        # LLM classification stack (LIFO). New headlines push here; worker pops one at a time.
+        self._llm_stack: List[dict] = []
+        self._llm_pending: Set[str] = set()
+        self._llm_lock = threading.Lock()
 
     @property
     def market_status(self) -> str:
@@ -491,18 +644,151 @@ class DataEngine:
         if self._running:
             return
         self._running = True
+        self._asyncio_loop = asyncio.get_running_loop()
         self._market_task = asyncio.create_task(self._market_loop())
         self._news_task = asyncio.create_task(self._news_loop())
+        self._llm_task = asyncio.create_task(self._llm_loop())
+        self._live_task = asyncio.create_task(self._live_stories_loop())
 
     async def stop(self):
         self._running = False
-        tasks = [t for t in (self._market_task, self._news_task) if t]
+        tasks = [t for t in (self._market_task, self._news_task, self._llm_task, self._live_task) if t]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._market_task = None
         self._news_task = None
+        self._llm_task = None
+        self._live_task = None
+        self._asyncio_loop = None
+
+    def _push_llm_stack(self, items: List[dict]):
+        """Push uncached items onto the LLM stack (LIFO). Thread-safe."""
+        if not NV_API_KEY or not items:
+            return
+        with self._llm_lock:
+            for it in items:
+                title = (it.get("title") or "").strip()
+                if not title:
+                    continue
+                cache_key = title[:80].lower()
+                if cache_key in self._llm_cache or cache_key in self._llm_pending:
+                    continue
+                self._llm_stack.append({"cache_key": cache_key, "title": title})
+                self._llm_pending.add(cache_key)
+
+    def _pop_llm_stack(self) -> Optional[dict]:
+        """Pop one item from LLM stack (LIFO). Thread-safe."""
+        with self._llm_lock:
+            if not self._llm_stack:
+                return None
+            return self._llm_stack.pop()
+
+    def _mark_llm_done(self, cache_key: str):
+        with self._llm_lock:
+            self._llm_pending.discard(cache_key)
+
+    def _apply_llm_result_to_news(self, cache_key: str, result: dict):
+        """Apply cached LLM result to any matching items in current news list."""
+        for item in self._news:
+            if item.get("title", "")[:80].lower() != cache_key:
+                continue
+            stocks = result.get("stocks") or []
+            if stocks:
+                item["watchlist_stocks"] = stocks
+            item["sentiment"] = result.get("sentiment", item.get("sentiment", "neutral"))
+            item["impact"] = result.get("impact", item.get("impact", "low"))
+            item["gold_silver"] = bool(result.get("gold_silver", item.get("gold_silver", False)))
+            item["india_market_impact"] = bool(result.get("india_market_impact", False))
+            item["market_relevant"] = bool(result.get("market_relevant", item.get("market_relevant", False)))
+            item["company_specific"] = bool(result.get("company_specific", item.get("company_specific", False)))
+            # BREAKING is India-impact-only and never stock-event.
+            brk = item.get("india_market_impact", False)
+            if item.get("stock_event"):
+                brk = False
+            if item.get("company_specific"):
+                brk = False
+            item["breaking"] = brk
+
+    async def _llm_loop(self):
+        """Background LLM worker: pops headlines from stack and classifies one at a time."""
+        try:
+            while self._running:
+                job = self._pop_llm_stack()
+                if not job:
+                    await asyncio.sleep(0.25)
+                    continue
+                cache_key = job["cache_key"]
+                title = job["title"]
+                try:
+                    # Choose model based on current backlog (cold start => faster model).
+                    with self._llm_lock:
+                        backlog = len(self._llm_stack)
+                    model = NV_FAST_MODEL if backlog > 10 else NV_API_MODEL
+
+                    entry = await asyncio.to_thread(self._llm_call_one, title, model)
+                    if not entry or not isinstance(entry, dict):
+                        # Fail closed for breaking/India impact.
+                        result = {
+                            "stocks": [],
+                            "sentiment": "neutral",
+                            "impact": "low",
+                            "breaking": False,
+                            "gold_silver": False,
+                            "india_market_impact": False,
+                            "market_relevant": False,
+                            "company_specific": True,
+                        }
+                    else:
+                        valid_syms = set(SECTOR_MAP.keys())
+                        stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
+                        sentiment = entry.get("sentiment", "neutral")
+                        if sentiment not in ("bullish", "bearish", "neutral"):
+                            sentiment = "neutral"
+                        impact = entry.get("impact", "low")
+                        if impact not in ("high", "medium", "low"):
+                            impact = "low"
+                        is_gs = bool(entry.get("gold_silver", False))
+                        is_india = bool(entry.get("india_market_impact", False))
+                        if "market_relevant" in entry:
+                            is_market_rel = bool(entry.get("market_relevant"))
+                        else:
+                            # Backward compatibility with older cached/model outputs.
+                            # If it can impact India or is precious-metals related, treat as market-relevant.
+                            is_market_rel = bool(is_india or is_gs or entry.get("breaking", False))
+
+                        if "company_specific" in entry:
+                            is_comp = bool(entry.get("company_specific"))
+                        else:
+                            is_comp = bool(job.get("company_specific", False))
+                        # BREAKING tab is India-impact-only (LLM-gated), and must not include company/stock-specific items.
+                        is_brk = is_india
+                        if job.get("stock_event") or is_comp or job.get("company_specific"):
+                            is_brk = False
+                        result = {
+                            "stocks": stocks,
+                            "sentiment": sentiment,
+                            "impact": impact,
+                            "breaking": is_brk,
+                            "gold_silver": is_gs,
+                            "india_market_impact": is_india,
+                            "market_relevant": is_market_rel,
+                            "company_specific": is_comp,
+                        }
+
+                    # Cache + apply to live news
+                    self._llm_cache[cache_key] = result
+                    while len(self._llm_cache) > LLM_CACHE_SIZE:
+                        self._llm_cache.popitem(last=False)
+                    self._apply_llm_result_to_news(cache_key, result)
+                    await self._broadcast("news")
+                except Exception:
+                    traceback.print_exc()
+                finally:
+                    self._mark_llm_done(cache_key)
+        except asyncio.CancelledError:
+            return
 
     async def _market_loop(self):
         """Fetch NSE indices + stocks + GIFT Nifty every 60 s."""
@@ -543,6 +829,434 @@ class DataEngine:
                 await asyncio.sleep(60)
         except asyncio.CancelledError:
             return
+
+    async def _live_stories_loop(self):
+        """Poll live pages + deep-read breaking articles. Discovery runs in background, never blocks polling."""
+        try:
+            interval = max(30, int(os.getenv("LIVE_STORY_POLL_SECS", "90")))
+            discover_secs = max(120, int(os.getenv("LIVE_STORY_DISCOVER_SECS", "300")))
+            last_discover = 0.0
+            cycle = 0
+            while self._running:
+                cycle += 1
+                try:
+                    await asyncio.to_thread(self._poll_live_story_pages)
+                except Exception:
+                    traceback.print_exc()
+                now = time.time()
+                if now - last_discover >= discover_secs:
+                    last_discover = now
+                    try:
+                        await asyncio.to_thread(self._discover_live_pages_from_rss)
+                    except Exception:
+                        traceback.print_exc()
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+    def _env_live_story_urls(self) -> List[str]:
+        raw = os.getenv("LIVE_STORY_URLS", "").strip()
+        if not raw:
+            return []
+        return [u.strip() for u in raw.split(",") if u.strip()]
+
+    def _env_live_url_set(self) -> Set[str]:
+        return set(self._env_live_story_urls())
+
+    def _active_live_story_urls(self) -> List[str]:
+        """Explicit env URLs first, then auto-discovered live pages (capped)."""
+        cap = max(4, min(24, int(os.getenv("LIVE_POLL_MAX_URLS", "12"))))
+        env_u = self._env_live_story_urls()
+        discovered = list(self._discovered_live_urls.keys())
+        out: List[str] = []
+        seen: Set[str] = set()
+        for u in env_u + discovered:
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append(u)
+        return out[:cap]
+
+    def _resolve_google_news_link(self, url: str) -> Optional[str]:
+        """Follow redirects (Google News → publisher). Uses HEAD for speed."""
+        try:
+            r = requests.head(
+                url,
+                timeout=8,
+                headers={"User-Agent": random.choice(_USER_AGENTS)},
+                allow_redirects=True,
+            )
+            final = r.url if r.url and len(r.url) > 12 else None
+            if final:
+                return final
+            r2 = requests.get(url, timeout=10, headers={"User-Agent": random.choice(_USER_AGENTS)},
+                              allow_redirects=True, stream=True)
+            r2.close()
+            return r2.url if r2.url and len(r2.url) > 12 else None
+        except Exception:
+            return None
+
+    def _discover_live_pages_from_rss(self):
+        """Refresh candidate live URLs from generic RSS searches (any major breaking story, any topic)."""
+        domains = _live_discovery_domains()
+        feeds: List[str] = list(LIVE_DISCOVERY_FEEDS)
+        extra = os.getenv("LIVE_DISCOVERY_FEEDS", "").strip()
+        if extra:
+            feeds.extend(u.strip() for u in extra.split(",") if u.strip().startswith("http"))
+        added = 0
+        for feed_url in feeds:
+            try:
+                r = requests.get(
+                    feed_url,
+                    timeout=22,
+                    headers={"User-Agent": random.choice(_USER_AGENTS)},
+                )
+                if r.status_code != 200:
+                    continue
+                fp = feedparser.parse(r.content)
+            except Exception:
+                continue
+            resolved_count = 0
+            for entry in fp.entries[:20]:
+                link = (entry.get("link") or "").strip()
+                if not link:
+                    continue
+                title_lower = (entry.get("title") or "").lower()
+                if not any(h in title_lower for h in ("live", "updates", "as it happened")):
+                    continue
+                canon = self._resolve_google_news_link(link)
+                resolved_count += 1
+                if resolved_count > 6:
+                    break
+                if not canon or not _is_probable_live_page(canon, domains):
+                    continue
+                if canon in self._discovered_live_urls:
+                    self._discovered_live_urls.move_to_end(canon)
+                else:
+                    self._discovered_live_urls[canon] = True
+                    added += 1
+                while len(self._discovered_live_urls) > self._max_discovered_live_urls:
+                    self._discovered_live_urls.popitem(last=False)
+        if added:
+            print(f"[Live] discovery: +{added} URL(s); tracking {len(self._discovered_live_urls)} live page(s)")
+
+    def _http_get_html(self, url: str) -> Optional[str]:
+        headers = {
+            "User-Agent": random.choice(_USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        }
+        ck = (os.getenv("LIVE_PAGE_EXTRA_COOKIE", "") or os.getenv("REUTERS_EXTRA_COOKIE", "")).strip()
+        if ck:
+            headers["Cookie"] = ck
+        try:
+            r = requests.get(url, timeout=28, headers=headers, allow_redirects=True)
+            if r.status_code != 200:
+                return None
+            if len(r.text) < 4000:
+                # Bot wall / interstitial — HTML too small to be a real article page
+                return None
+            return r.text
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_live_candidates_from_json(obj, seen_titles: Set[str], base_url: str) -> List[dict]:
+        """Pull likely live-post headlines from Reuters __NEXT_DATA__ (and similar) trees."""
+        out: List[dict] = []
+
+        def maybe_add(title: str, link: Optional[str], t_raw: Optional[str]):
+            title = (title or "").strip()
+            if not _live_title_ok(title) or title in seen_titles:
+                return
+            seen_titles.add(title)
+            if link and link.startswith("/"):
+                link = urljoin(base_url, link)
+            elif not link or not link.startswith("http"):
+                link = base_url
+            out.append({"title": title, "link": link, "t_raw": t_raw})
+
+        def walk(node):
+            if isinstance(node, dict):
+                title_val = None
+                for k in ("headline", "title"):
+                    v = node.get(k)
+                    if isinstance(v, str) and len(v.strip()) > 12:
+                        title_val = v.strip()
+                        break
+                link_val = None
+                for k in ("url", "canonicalUrl", "canonical_url"):
+                    v = node.get(k)
+                    if isinstance(v, str) and (v.startswith("http") or v.startswith("/")):
+                        link_val = v
+                        break
+                t_raw = None
+                for k in ("datePublished", "publishedTime", "displayTime", "firstPublished", "timestamp"):
+                    v = node.get(k)
+                    if v is not None:
+                        t_raw = str(v)
+                        break
+                if title_val and _live_title_ok(title_val):
+                    maybe_add(title_val, link_val, t_raw)
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for it in node:
+                    walk(it)
+
+        walk(obj)
+        return out
+
+    @staticmethod
+    def _extract_body_text(html: str) -> str:
+        """Extract clean readable text from article HTML (paragraphs, headings, list items)."""
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.select("script, style, nav, footer, header, noscript, iframe, svg, form"):
+            tag.decompose()
+        parts: List[str] = []
+        for el in soup.select("article p, article li, article h2, article h3, "
+                              "[data-testid] p, [data-testid] li, "
+                              "main p, main li, main h2, main h3, "
+                              ".article-body p, .article-body li"):
+            t = el.get_text(" ", strip=True)
+            if t and len(t) > 15:
+                parts.append(t)
+        if not parts:
+            for el in soup.find_all("p"):
+                t = el.get_text(" ", strip=True)
+                if t and len(t) > 20:
+                    parts.append(t)
+        return "\n".join(parts[:200])
+
+    def _llm_extract_developments(self, body_text: str, source_brand: str) -> List[str]:
+        """Ask the LLM to read the full article body and extract individual developments as headlines."""
+        if not NV_API_KEY or not body_text or len(body_text) < 80:
+            return []
+        truncated = body_text[:6000]
+        system_prompt = (
+            "You are a wire-service editor. Read the article text and extract up to 10 distinct, "
+            "important NEW developments or facts as short news headlines (one sentence each, under 120 chars). "
+            "Focus on: geopolitics, policy decisions, military actions, economic impacts, market reactions, "
+            "diplomatic moves, deadlines, official statements. "
+            "Skip: author bios, navigation text, ads, generic filler. "
+            "Output ONLY a JSON array of strings. No markdown, no explanation."
+        )
+        user_msg = f"Source: {source_brand}\n\nArticle text:\n{truncated}"
+        try:
+            r = requests.post(
+                NV_API_URL,
+                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": NV_FAST_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "temperature": 0.15,
+                    "max_tokens": 1024,
+                },
+                timeout=30,
+            )
+            if r.status_code != 200:
+                return []
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            start = text.find("[")
+            end = text.rfind("]")
+            if start == -1 or end == -1:
+                return []
+            raw = text[start:end + 1]
+            try:
+                arr = json.loads(raw)
+            except json.JSONDecodeError:
+                arr = re.findall(r'"([^"]{20,})"', raw)
+            if not isinstance(arr, list):
+                return []
+            return [s.strip() for s in arr if isinstance(s, str) and len(s.strip()) > 20][:10]
+        except Exception:
+            return []
+
+    def _parse_live_page_items(self, html: str, page_url: str) -> List[dict]:
+        items_from_structure: List[dict] = []
+        m = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            html,
+            re.DOTALL,
+        )
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                items_from_structure = self._extract_live_candidates_from_json(data, set(), page_url)[:30]
+            except json.JSONDecodeError:
+                pass
+
+        if not items_from_structure:
+            soup = BeautifulSoup(html, "html.parser")
+            seen: Set[str] = set()
+            for h in soup.select('article h2, article h3, [data-testid="Heading"]'):
+                t = h.get_text(" ", strip=True)
+                if _live_title_ok(t) and t not in seen:
+                    seen.add(t)
+                    items_from_structure.append({"title": t, "link": page_url, "t_raw": None})
+
+        body_text = self._extract_body_text(html)
+        brand = _live_brand_from_url(page_url)
+        llm_headlines = self._llm_extract_developments(body_text, brand)
+
+        seen_titles: Set[str] = {it["title"].lower()[:50] for it in items_from_structure}
+        for headline in llm_headlines:
+            k = headline.lower()[:50]
+            if k not in seen_titles:
+                seen_titles.add(k)
+                items_from_structure.append({"title": headline, "link": page_url, "t_raw": None})
+
+        return items_from_structure[:40]
+
+    def _live_digest(self, title: str, link: Optional[str]) -> str:
+        basis = f"{title}\n{link or ''}"
+        return hashlib.sha256(basis.encode("utf-8", errors="ignore")).hexdigest()[:28]
+
+    def _live_post_to_news_item(self, title: str, link: str, page_url: str) -> dict:
+        now = datetime.now(IST)
+        tags = self._classify_news(title, "")
+        combined = title.lower()
+        india_hint = any(kw in combined for kw in _INDIA_IMPACT_HINT_KW)
+        india_news = any(kw in combined for kw in _INDIA_NEWS_KW)
+        brk_pre = india_hint and not tags.get("stock_event", False) and not tags.get("company_specific", False)
+        return {
+            "title": title,
+            "link": link or page_url,
+            "source": f"{_live_brand_from_url(page_url)} LIVE",
+            "live_story": True,
+            "age_secs": 0,
+            "time": "just now",
+            "is_fresh": True,
+            "global_news": True,
+            "india_news": india_news,
+            "breaking": brk_pre,
+            "breaking_hint": tags["breaking"],
+            "stock_event": tags["stock_event"],
+            "gold_silver": tags["gold_silver"],
+            "india_market_impact": india_hint,
+            "market_relevant": tags.get("market_relevant", False),
+            "company_specific": tags.get("company_specific", False),
+            "watchlist_stocks": tags["watchlist_stocks"],
+        }
+
+    def _schedule_news_broadcast(self):
+        loop = getattr(self, "_asyncio_loop", None)
+        if not loop or not loop.is_running():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._broadcast("news"), loop)
+        except Exception:
+            pass
+
+    def _merge_live_items_front(self, fresh: List[dict]) -> int:
+        """Prepend new live-blog posts to the in-memory wire, deduped by headline."""
+        if not fresh:
+            return 0
+        with self._news_lock:
+            keys = {n["title"][:50].lower() for n in self._news}
+            prefix: List[dict] = []
+            for it in fresh:
+                k = it["title"][:50].lower()
+                if k in keys:
+                    continue
+                keys.add(k)
+                prefix.append(it)
+            if not prefix:
+                return 0
+            self._news = prefix + self._news
+            self._news = self._news[:80]
+        return len(prefix)
+
+    def _deep_read_breaking_articles(self):
+        """Proactively fetch the full text of top breaking news articles, extract developments."""
+        with self._news_lock:
+            candidates = [
+                n for n in self._news
+                if n.get("breaking")
+                and n.get("link")
+                and n["link"].startswith("http")
+                and not n.get("live_story")
+                and not n.get("_deep_read_done")
+            ]
+        max_reads = max(1, min(5, int(os.getenv("LIVE_DEEP_READ_MAX", "3"))))
+        for item in candidates[:max_reads]:
+            link = item["link"]
+            sid = _live_story_id(link)
+            html = self._http_get_html(link)
+            item["_deep_read_done"] = True
+            if not html:
+                continue
+            body_text = self._extract_body_text(html)
+            if not body_text or len(body_text) < 100:
+                continue
+            brand = _live_brand_from_url(link)
+            headlines = self._llm_extract_developments(body_text, brand)
+            if not headlines:
+                continue
+            fresh: List[dict] = []
+            for hl in headlines:
+                d = self._live_digest(hl, link)
+                with self._live_lock:
+                    if d in self._live_seen:
+                        continue
+                    self._live_seen.add(d)
+                    fresh.append(self._live_post_to_news_item(hl, link, link))
+            if fresh:
+                print(f"[Live] deep-read {sid}: +{len(fresh)} developments from article body")
+                inserted = self._merge_live_items_front(fresh)
+                if inserted:
+                    self._push_llm_stack(fresh)
+                    self._schedule_news_broadcast()
+
+    def _poll_live_story_pages(self):
+        urls = self._active_live_story_urls()
+        any_new = 0
+
+        self._deep_read_breaking_articles()
+
+        if not urls:
+            return
+        for page_url in urls:
+            sid = _live_story_id(page_url)
+            html = self._http_get_html(page_url)
+            if not html:
+                if page_url not in self._env_live_url_set():
+                    fc = self._live_fetch_failures.get(page_url, 0) + 1
+                    self._live_fetch_failures[page_url] = fc
+                    if fc >= self._live_fail_drop_after:
+                        self._discovered_live_urls.pop(page_url, None)
+                        self._live_fetch_failures.pop(page_url, None)
+                        print(f"[Live] dropped discovery URL after repeated failures: {sid}")
+                if self._live_log_state.get(sid) != "blocked":
+                    print(f"[Live] {sid}: page fetch blocked/empty — set LIVE_PAGE_EXTRA_COOKIE if needed, "
+                          f"or use LIVE_STORY_URLS / LIVE_DISCOVERY_FEEDS")
+                    self._live_log_state[sid] = "blocked"
+                continue
+            self._live_fetch_failures.pop(page_url, None)
+            self._live_log_state[sid] = "ok"
+            items = self._parse_live_page_items(html, page_url)
+            fresh_batch: List[dict] = []
+            for it in items:
+                d = self._live_digest(it["title"], it["link"])
+                with self._live_lock:
+                    if d in self._live_seen:
+                        continue
+                    self._live_seen.add(d)
+                    fresh_batch.append(self._live_post_to_news_item(it["title"], it["link"], page_url))
+            if fresh_batch:
+                print(f"[Live] {sid}: extracted {len(fresh_batch)} new post(s)")
+                inserted = self._merge_live_items_front(fresh_batch)
+                if inserted:
+                    any_new += inserted
+                    self._push_llm_stack(fresh_batch)
+        if any_new:
+            self._schedule_news_broadcast()
 
     # ── NSE data (indices + stocks in 2 API calls) ─────────────────────
 
@@ -924,6 +1638,12 @@ class DataEngine:
                 item["impact"] = cached["impact"]
                 item["breaking"] = cached.get("breaking", item.get("breaking", False))
                 item["gold_silver"] = cached.get("gold_silver", False) or item.get("gold_silver", False)
+                item["india_market_impact"] = cached.get("india_market_impact", False)
+                # BREAKING is India-impact-only.
+                if not item["india_market_impact"]:
+                    item["breaking"] = False
+                if item.get("stock_event"):
+                    item["breaking"] = False
             else:
                 uncached.append(item)
 
@@ -935,6 +1655,9 @@ class DataEngine:
         for item in uncached:
             entry = self._llm_call_one(item["title"], model)
             if not entry or not isinstance(entry, dict):
+                # LLM must decide India impact for BREAKING; fail closed.
+                item["india_market_impact"] = False
+                item["breaking"] = False
                 continue
             stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
             sentiment = entry.get("sentiment", "neutral")
@@ -947,12 +1670,16 @@ class DataEngine:
             if item.get("stock_event"):
                 is_brk = False
             is_gs = bool(entry.get("gold_silver", False)) or item.get("gold_silver", False)
+            is_india_impact = bool(entry.get("india_market_impact", False))
+            # BREAKING is strictly India-market-impacting only (LLM-gated).
+            is_brk = is_brk and is_india_impact
             result = {
                 "stocks": stocks,
                 "sentiment": sentiment,
                 "impact": impact,
                 "breaking": is_brk,
                 "gold_silver": is_gs,
+                "india_market_impact": is_india_impact,
             }
 
             cache_key = item["title"][:80].lower()
@@ -966,6 +1693,7 @@ class DataEngine:
             item["impact"] = impact
             item["breaking"] = is_brk
             item["gold_silver"] = is_gs
+            item["india_market_impact"] = is_india_impact
             ok += 1
 
         print(f"[LLM] {ok}/{len(uncached)} new via {model.split('/')[-1]}, "
@@ -982,6 +1710,7 @@ class DataEngine:
             try:
                 feed = feedparser.parse(url)
                 is_global_feed = url in _GLOBAL_FEEDS_SET
+                is_india_feed = url in _INDIA_FEEDS_SET
                 source = feed.feed.get("title", "")
                 if " - " in source:
                     parts = source.split(" - ")
@@ -1008,6 +1737,10 @@ class DataEngine:
                     tags = self._classify_news(title, summary)
                     age_secs = int((now - pub_dt).total_seconds()) if pub_dt else 999999
                     display_src = self._display_news_source(url, source, title, entry)
+                    combined_text = title.lower() + (" " + summary.lower() if summary else "")
+                    india_hint = any(kw in combined_text for kw in _INDIA_IMPACT_HINT_KW)
+                    india_news = is_india_feed or any(kw in combined_text for kw in _INDIA_NEWS_KW)
+                    brk_pre = india_hint and not tags.get("stock_event", False) and not tags.get("company_specific", False)
                     raw.append({
                         "title": title,
                         "link": entry.get("link", ""),
@@ -1016,9 +1749,12 @@ class DataEngine:
                         "time": self._relative_time(pub_dt) if pub_dt else "",
                         "is_fresh": age_secs < 900,
                         "global_news": is_global_feed,
-                        "breaking": tags["breaking"],
+                        "india_news": india_news,
+                        "breaking": brk_pre,
+                        "breaking_hint": tags["breaking"],
                         "stock_event": tags["stock_event"],
                         "gold_silver": tags["gold_silver"],
+                        "india_market_impact": india_hint,
                         "market_relevant": tags.get("market_relevant", False),
                         "company_specific": tags.get("company_specific", False),
                         "watchlist_stocks": tags["watchlist_stocks"],
@@ -1049,10 +1785,26 @@ class DataEngine:
             if not is_dup:
                 seen_keys.add(exact_key)
                 unique.append(item)
-        if unique:
-            unique = unique[:80]
-            self._llm_classify_all(unique)
-            self._news = unique
+        with self._news_lock:
+            prior_live = [
+                n for n in self._news
+                if n.get("live_story") and n.get("age_secs", 999999) < 12 * 3600
+            ]
+        unique_trim = unique[:80] if unique else []
+        if not unique_trim and not prior_live:
+            return
+        combined: List[dict] = []
+        seen_k: Set[str] = set()
+        for item in prior_live + unique_trim:
+            k = item["title"][:50].lower()
+            if k in seen_k:
+                continue
+            seen_k.add(k)
+            combined.append(item)
+        with self._news_lock:
+            self._news = combined[:80]
+        if unique_trim:
+            self._push_llm_stack(unique_trim)
 
     def _fetch_tradient_news(self, raw: list, now: datetime, cutoff: datetime):
         """Pull corporate filings from Tradient and append to raw list."""
@@ -1084,6 +1836,9 @@ class DataEngine:
                 # Tradient API doesn't provide a canonical public article URL.
                 # Provide a safe fallback link so items are clickable.
                 link = "https://www.google.com/search?q=" + quote_plus(title)
+                trad_combined = (title + " " + body + " " + stock).lower()
+                trad_india_hint = any(kw in trad_combined for kw in _INDIA_IMPACT_HINT_KW)
+                trad_brk = trad_india_hint and not tags.get("stock_event", False) and not tags.get("company_specific", False)
                 raw.append({
                     "title": title,
                     "link": link,
@@ -1092,9 +1847,12 @@ class DataEngine:
                     "time": self._relative_time(pub_dt) if pub_dt else "",
                     "is_fresh": age_secs < 900,
                     "global_news": False,
-                    "breaking": tags["breaking"],
+                    "india_news": True,
+                    "breaking": trad_brk,
+                    "breaking_hint": tags["breaking"],
                     "stock_event": tags["stock_event"],
                     "gold_silver": tags["gold_silver"],
+                    "india_market_impact": trad_india_hint,
                     "market_relevant": tags.get("market_relevant", False),
                     "company_specific": tags.get("company_specific", False),
                     "watchlist_stocks": tags["watchlist_stocks"],

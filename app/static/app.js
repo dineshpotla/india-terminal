@@ -116,37 +116,23 @@
         clearChildren($indices);
 
         indices.forEach(function (idx) {
-            var card = el("div", "index-card");
-
-            var left = el("div");
-            left.appendChild(el("div", "index-name", idx.name));
-            left.appendChild(el("div", "index-price",
+            var chip = el("div", "idx-chip");
+            chip.appendChild(el("span", "idx-chip-name", idx.name));
+            chip.appendChild(el("span", "idx-chip-price",
                 Number(idx.price).toLocaleString("en-IN", { maximumFractionDigits: 2 })));
-
-            var right = el("div", "index-meta");
-            var chg = el("div", "index-change " + cls(idx.change),
-                arrow(idx.change) + " " + fmtChange(idx.change));
-            var pct = el("div", "index-change " + cls(idx.change_pct), fmtPct(idx.change_pct));
-            pct.style.fontSize = "13px";
-            pct.style.fontWeight = "700";
-            right.appendChild(chg);
-            right.appendChild(pct);
-
-            card.appendChild(left);
-            card.appendChild(right);
-            $indices.appendChild(card);
+            var chgSpan = el("span", "idx-chip-chg " + cls(idx.change_pct),
+                arrow(idx.change) + " " + fmtPct(idx.change_pct));
+            chip.appendChild(chgSpan);
+            $indices.appendChild(chip);
         });
 
         clearChildren($breadth);
         var breadthData = dashboardData && dashboardData.breadth;
         if (breadthData && breadthData.advances) {
-            var advSpan = el("span", "up", "ADV: " + breadthData.advances);
-            var decSpan = el("span", "down", "DEC: " + breadthData.declines);
-            $breadth.appendChild(advSpan);
-            $breadth.appendChild(document.createTextNode("  |  "));
-            $breadth.appendChild(decSpan);
+            $breadth.appendChild(el("span", "up", "ADV:" + breadthData.advances));
+            $breadth.appendChild(document.createTextNode(" "));
+            $breadth.appendChild(el("span", "down", "DEC:" + breadthData.declines));
         }
-        $breadth.appendChild(document.createTextNode("  |  " + indices.length + " indices"));
     }
 
     // ── Render: Movers ─────────────────────────────────────────────────
@@ -193,12 +179,17 @@
         if (!news) return [];
         if (currentNewsTab === "all") return news;
         if (currentNewsTab === "breaking") {
-            return news.filter(function (n) { return n.breaking && !n.stock_event; });
+            return news.filter(function (n) {
+                return n.breaking && !n.stock_event && !n.company_specific && n.india_market_impact;
+            });
         }
         if (currentNewsTab === "global") {
             return news.filter(function (n) {
                 return n.global_news && n.market_relevant && !n.stock_event && !n.company_specific;
             });
+        }
+        if (currentNewsTab === "india") {
+            return news.filter(function (n) { return n.india_news; });
         }
         if (currentNewsTab === "gold_silver") {
             return news.filter(function (n) { return n.gold_silver; });
@@ -232,6 +223,7 @@
         if (!filtered || !filtered.length) {
             var emptyMsg = "Waiting for headlines\u2026";
             if (currentNewsTab === "breaking") emptyMsg = "No breaking news right now";
+            else if (currentNewsTab === "india") emptyMsg = "No India news right now";
             else if (currentNewsTab === "global") emptyMsg = "No global news right now";
             else if (currentNewsTab === "gold_silver") emptyMsg = "No gold & silver news right now";
             else if (currentNewsTab === "watchlist") emptyMsg = "No watchlist news \u2014 add stocks above";
@@ -939,7 +931,7 @@
     function handleMobileInit() {
         if (isMobile.matches) {
             var active = document.querySelector(".mobile-nav-btn.active");
-            activateMobilePanel(active ? active.dataset.panel : "panel-indices");
+            activateMobilePanel(active ? active.dataset.panel : "panel-news");
         } else {
             allPanels.forEach(function (p) { p.classList.remove("mobile-active"); });
         }

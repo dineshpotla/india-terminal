@@ -46,20 +46,16 @@
             </div>
         </header>
 
+        <!-- ── Indices Strip ──────────────────────────────────── -->
+        <div class="indices-strip" id="indices-strip">
+            <div class="indices-strip-items" id="indices-body">
+                <span class="idx-loading">Fetching indices…</span>
+            </div>
+            <div class="indices-strip-breadth" id="market-breadth"></div>
+        </div>
+
         <!-- ── Panels ──────────────────────────────────────────── -->
         <div class="panels">
-
-            <!-- Market Overview -->
-            <section class="panel" id="panel-indices">
-                <div class="panel-head">
-                    <h2>MARKET OVERVIEW</h2>
-                    <span class="panel-dot live-dot"></span>
-                </div>
-                <div class="panel-body" id="indices-body">
-                    <div class="loading-placeholder">Fetching indices…</div>
-                </div>
-                <div class="market-breadth" id="market-breadth"></div>
-            </section>
 
             <!-- Top Movers -->
             <section class="panel" id="panel-movers">
@@ -78,6 +74,7 @@
                     <div class="tab-group">
                         <button class="news-tab active" data-news="all">ALL</button>
                         <button class="news-tab" data-news="breaking">BREAKING</button>
+                        <button class="news-tab" data-news="india">INDIA</button>
                         <button class="news-tab" data-news="global">GLOBAL</button>
                         <button class="news-tab" data-news="gold_silver">GOLD &amp; SILVER</button>
                         <button class="news-tab" data-news="watchlist">WATCHLIST</button>
@@ -167,15 +164,11 @@
 
         <!-- ── Mobile Bottom Nav ─────────────────────────────── -->
         <nav class="mobile-nav" id="mobile-nav">
-            <button class="mobile-nav-btn active" data-panel="panel-indices">
-                <span class="mobile-nav-icon">◈</span>
-                <span class="mobile-nav-label">Overview</span>
-            </button>
             <button class="mobile-nav-btn" data-panel="panel-movers">
                 <span class="mobile-nav-icon">⇅</span>
                 <span class="mobile-nav-label">Movers</span>
             </button>
-            <button class="mobile-nav-btn" data-panel="panel-news">
+            <button class="mobile-nav-btn active" data-panel="panel-news">
                 <span class="mobile-nav-icon">⚡</span>
                 <span class="mobile-nav-label">News</span>
             </button>
