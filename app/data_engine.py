@@ -1,7 +1,7 @@
 """
 Market data engine — fetches live data from NSE India + RSS news.
 Uses NSE's own API for indices & stocks (single request per type).
-Falls back to yfinance for chart data only.
+Falls back to yfinance when hosted environments cannot access NSE cleanly.
 """
 
 import asyncio
@@ -53,6 +53,80 @@ SECTOR_MAP = {
 
 TRACKED_INDICES = {"NIFTY 50", "NIFTY BANK", "NIFTY NEXT 50", "NIFTY IT",
                    "NIFTY MIDCAP 50", "NIFTY FINANCIAL SERVICES", "INDIA VIX"}
+
+YF_INDEX_MAP = {
+    "NIFTY 50": "^NSEI",
+    "NIFTY BANK": "^NSEBANK",
+    "NIFTY MIDCAP 50": "^NSEMDCP50",
+    "NIFTY FINANCIAL SERVICES": "^CNXFIN",
+    "NIFTY IT": "^CNXIT",
+    "INDIA VIX": "^INDIAVIX",
+}
+
+YF_STOCK_SYMBOLS = [
+    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
+    "BAJAJ-AUTO", "BAJAJFINSV", "BAJFINANCE", "BEL", "BHARTIARTL",
+    "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL", "GRASIM",
+    "HCLTECH", "HDFCBANK", "HDFCLIFE", "HINDALCO", "HINDUNILVR",
+    "ICICIBANK", "INDIGO", "INFY", "ITC", "JIOFIN", "JSWSTEEL",
+    "KOTAKBANK", "LT", "M&M", "MARUTI", "MAXHEALTH", "NESTLEIND",
+    "NTPC", "ONGC", "POWERGRID", "RELIANCE", "SBILIFE", "SBIN",
+    "SHRIRAMFIN", "SUNPHARMA", "TATACONSUM", "TATASTEEL", "TCS",
+    "TECHM", "TITAN", "TMPV", "TRENT", "ULTRACEMCO", "WIPRO",
+]
+
+YF_COMPANY_NAMES = {
+    "ADANIENT": "Adani Enterprises Limited",
+    "ADANIPORTS": "Adani Ports and Special Economic Zone Limited",
+    "APOLLOHOSP": "Apollo Hospitals Enterprise Limited",
+    "ASIANPAINT": "Asian Paints Limited",
+    "AXISBANK": "Axis Bank Limited",
+    "BAJAJ-AUTO": "Bajaj Auto Limited",
+    "BAJAJFINSV": "Bajaj Finserv Limited",
+    "BAJFINANCE": "Bajaj Finance Limited",
+    "BEL": "Bharat Electronics Limited",
+    "BHARTIARTL": "Bharti Airtel Limited",
+    "CIPLA": "Cipla Limited",
+    "COALINDIA": "Coal India Limited",
+    "DRREDDY": "Dr. Reddy's Laboratories Limited",
+    "EICHERMOT": "Eicher Motors Limited",
+    "ETERNAL": "ETERNAL LIMITED",
+    "GRASIM": "Grasim Industries Limited",
+    "HCLTECH": "HCL Technologies Limited",
+    "HDFCBANK": "HDFC Bank Limited",
+    "HDFCLIFE": "HDFC Life Insurance Company Limited",
+    "HINDALCO": "Hindalco Industries Limited",
+    "HINDUNILVR": "Hindustan Unilever Limited",
+    "ICICIBANK": "ICICI Bank Limited",
+    "INDIGO": "InterGlobe Aviation Limited",
+    "INFY": "Infosys Limited",
+    "ITC": "ITC Limited",
+    "JIOFIN": "Jio Financial Services Limited",
+    "JSWSTEEL": "JSW Steel Limited",
+    "KOTAKBANK": "Kotak Mahindra Bank Limited",
+    "LT": "Larsen & Toubro Limited",
+    "M&M": "Mahindra & Mahindra Limited",
+    "MARUTI": "Maruti Suzuki India Limited",
+    "MAXHEALTH": "Max Healthcare Institute Limited",
+    "NESTLEIND": "Nestle India Limited",
+    "NTPC": "NTPC Limited",
+    "ONGC": "Oil & Natural Gas Corporation Limited",
+    "POWERGRID": "Power Grid Corporation of India Limited",
+    "RELIANCE": "Reliance Industries Limited",
+    "SBILIFE": "SBI Life Insurance Company Limited",
+    "SBIN": "State Bank of India",
+    "SHRIRAMFIN": "Shriram Finance Limited",
+    "SUNPHARMA": "Sun Pharmaceutical Industries Limited",
+    "TATACONSUM": "TATA CONSUMER PRODUCTS LIMITED",
+    "TATASTEEL": "Tata Steel Limited",
+    "TCS": "Tata Consultancy Services Limited",
+    "TECHM": "Tech Mahindra Limited",
+    "TITAN": "Titan Company Limited",
+    "TMPV": "Tata Motors Passenger Vehicles Limited",
+    "TRENT": "Trent Limited",
+    "ULTRACEMCO": "UltraTech Cement Limited",
+    "WIPRO": "Wipro Limited",
+}
 
 NEWS_FEEDS = [
     "https://feeds.feedburner.com/ndtvprofit-latest",
@@ -246,10 +320,108 @@ class DataEngine:
 
     # ── NSE data (indices + stocks in 2 API calls) ─────────────────────
 
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def _fetch_nse_data(self):
         self._fetch_nse_stocks()
         time.sleep(1)
         self._fetch_nse_indices()
+        if not self._stocks:
+            print("[Market] NSE stocks unavailable — using Yahoo Finance fallback")
+            self._fetch_yf_stocks()
+        if not self._indices:
+            print("[Market] NSE indices unavailable — using Yahoo Finance fallback")
+            self._fetch_yf_indices()
+
+    def _fetch_yf_indices(self):
+        results = []
+        for name, yf_symbol in YF_INDEX_MAP.items():
+            try:
+                info = yf.Ticker(yf_symbol).fast_info
+                price = self._to_float(info.get("lastPrice"))
+                prev = self._to_float(info.get("previousClose"))
+                if not price or not prev:
+                    continue
+                change = price - prev
+                pct = (change / prev * 100) if prev else 0
+                results.append({
+                    "symbol": name,
+                    "name": name,
+                    "price": round(price, 2),
+                    "change": round(change, 2),
+                    "change_pct": round(pct, 2),
+                    "open": round(self._to_float(info.get("open"), price), 2),
+                    "high": round(self._to_float(info.get("dayHigh"), price), 2),
+                    "low": round(self._to_float(info.get("dayLow"), price), 2),
+                    "advances": None,
+                    "declines": None,
+                })
+            except Exception as e:
+                print(f"[YF Index] {name}: {e}")
+        if results:
+            self._indices = results
+
+    def _fetch_yf_stocks(self):
+        yf_symbols = [f"{sym}.NS" for sym in YF_STOCK_SYMBOLS]
+        try:
+            data = yf.download(
+                yf_symbols,
+                period="5d",
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+                group_by="ticker",
+                threads=True,
+            )
+        except Exception as e:
+            print(f"[YF Stocks] download failed: {e}")
+            return
+
+        columns = set(data.columns.get_level_values(0))
+        stocks: Dict[str, dict] = {}
+        for sym in YF_STOCK_SYMBOLS:
+            yf_symbol = f"{sym}.NS"
+            if yf_symbol not in columns:
+                continue
+            frame = data[yf_symbol][["Open", "High", "Low", "Close", "Volume"]]
+            closes = frame["Close"].dropna()
+            if closes.empty:
+                continue
+            row = frame.loc[closes.index[-1]]
+            price = self._to_float(row.get("Close"))
+            if not price:
+                continue
+            prev_close = self._to_float(closes.iloc[-2] if len(closes) > 1 else price, price)
+            change = price - prev_close if prev_close else 0
+            pct = (change / prev_close * 100) if prev_close else 0
+            open_price = self._to_float(row.get("Open"), price)
+            high = self._to_float(row.get("High"), price)
+            low = self._to_float(row.get("Low"), price)
+            volume = int(self._to_float(row.get("Volume"), 0))
+            stocks[sym] = {
+                "symbol": sym,
+                "name": YF_COMPANY_NAMES.get(sym, sym),
+                "sector": SECTOR_MAP.get(sym, "Other"),
+                "price": round(price, 2),
+                "change": round(change, 2),
+                "change_pct": round(pct, 2),
+                "open": round(open_price, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "volume": volume,
+                "prev_close": round(prev_close, 2),
+                "year_high": round(high, 2),
+                "year_low": round(low, 2),
+            }
+        if stocks:
+            self._stocks = stocks
 
     def _fetch_nse_indices(self):
         data = self._nse.get(NSE_INDICES_URL)
@@ -514,6 +686,9 @@ class DataEngine:
                 adv = idx["advances"]
                 dec = idx.get("declines", 0)
                 break
+        if not adv and self._stocks:
+            adv = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) > 0)
+            dec = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) < 0)
         return {
             "indices": self._indices,
             "stocks": list(self._stocks.values()),
