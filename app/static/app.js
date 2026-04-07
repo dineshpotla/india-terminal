@@ -196,7 +196,9 @@
             return news.filter(function (n) { return n.breaking && !n.stock_event; });
         }
         if (currentNewsTab === "global") {
-            return news.filter(function (n) { return n.global_news && n.market_relevant; });
+            return news.filter(function (n) {
+                return n.global_news && n.market_relevant && !n.stock_event && !n.company_specific;
+            });
         }
         if (currentNewsTab === "gold_silver") {
             return news.filter(function (n) { return n.gold_silver; });

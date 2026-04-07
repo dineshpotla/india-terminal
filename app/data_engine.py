@@ -294,6 +294,12 @@ _GLOBAL_EXCLUDE_KW = {
     "recipe", "cooking", "travel", "weather",
 }
 
+_TICKER_PAREN_RE = re.compile(r"\([A-Z]{1,5}(?:[:.][A-Z]{1,5})?\)")
+_SHARES_MOVE_RE = re.compile(
+    r"\bshares?\b.*\b(rise|rises|rose|fall|falls|fell|jump|jumps|jumped|slump|slumps|slumped|surge|surges|surged|plunge|plunges|plunged)\b",
+    re.IGNORECASE,
+)
+
 _BREAKING_MARKET_KW = {
     "breaking", "just in", "flash", "alert", "urgent", "exclusive",
     "rbi rate", "rbi policy", "rbi governor", "rate cut", "rate hike",
@@ -749,6 +755,7 @@ class DataEngine:
         if is_stock_event:
             is_breaking = False
         is_gold_silver = any(kw in combined for kw in _GOLD_SILVER_KW)
+        is_company_specific = bool(_TICKER_PAREN_RE.search(title)) or bool(_SHARES_MOVE_RE.search(combined)) or is_stock_event
         # Generic market relevance: used for GLOBAL tab filtering
         is_market_rel = any(kw in combined for kw in _GLOBAL_MARKET_KW) and not any(
             kw in combined for kw in _GLOBAL_EXCLUDE_KW
@@ -771,6 +778,7 @@ class DataEngine:
             "stock_event": is_stock_event,
             "gold_silver": is_gold_silver,
             "market_relevant": is_market_rel,
+            "company_specific": is_company_specific,
             "watchlist_stocks": matched,
         }
 
@@ -1012,6 +1020,7 @@ class DataEngine:
                         "stock_event": tags["stock_event"],
                         "gold_silver": tags["gold_silver"],
                         "market_relevant": tags.get("market_relevant", False),
+                        "company_specific": tags.get("company_specific", False),
                         "watchlist_stocks": tags["watchlist_stocks"],
                     })
             except Exception as e:
@@ -1087,6 +1096,7 @@ class DataEngine:
                     "stock_event": tags["stock_event"],
                     "gold_silver": tags["gold_silver"],
                     "market_relevant": tags.get("market_relevant", False),
+                    "company_specific": tags.get("company_specific", False),
                     "watchlist_stocks": tags["watchlist_stocks"],
                 })
                 tradient_sent = obj.get("overall_sentiment", "").lower()
