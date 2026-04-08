@@ -1,18 +1,66 @@
 """FastAPI server — serves the terminal UI and exposes market data APIs."""
 
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from .data_engine import DataEngine
+from .data_engine import DataEngine, SECTOR_MAP, YF_COMPANY_NAMES
+from .watchlist_store import WatchlistStore
 
 STATIC = Path(__file__).parent / "static"
+_WATCHLIST_SYMBOL_RE = re.compile(r"^[A-Z0-9&.-]{1,20}$")
 
 engine = DataEngine()
+watchlist_store = WatchlistStore()
+
+
+class WatchlistPayload(BaseModel):
+    symbols: list[str] = Field(default_factory=list)
+
+
+def _normalize_symbol(symbol: str) -> str:
+    sym = (symbol or "").strip().upper()
+    if not sym or not _WATCHLIST_SYMBOL_RE.fullmatch(sym):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+    return sym
+
+
+def _known_symbol(symbol: str) -> bool:
+    return (
+        symbol in SECTOR_MAP
+        or symbol in YF_COMPANY_NAMES
+        or engine.get_stock(symbol) is not None
+    )
+
+
+def _normalize_symbols(symbols: list[str]) -> list[str]:
+    seen = set()
+    valid = []
+    for raw in symbols:
+        try:
+            sym = _normalize_symbol(raw)
+        except HTTPException:
+            continue
+        if sym in seen or not _known_symbol(sym):
+            continue
+        seen.add(sym)
+        valid.append(sym)
+    return valid
+
+
+def _watchlist_response() -> dict:
+    return {
+        "symbols": watchlist_store.list_symbols(),
+        "storage": watchlist_store.storage_mode,
+        "durable": watchlist_store.durable,
+        "initialized": watchlist_store.initialized,
+    }
 
 
 @asynccontextmanager
@@ -64,6 +112,37 @@ async def search(q: str = Query("")):
     return JSONResponse(engine.search(q))
 
 
+@app.get("/api/watchlist")
+async def get_watchlist():
+    return JSONResponse(_watchlist_response())
+
+
+@app.post("/api/watchlist/sync")
+async def sync_watchlist(payload: WatchlistPayload):
+    symbols = _normalize_symbols(payload.symbols)
+    await asyncio.to_thread(watchlist_store.merge_symbols, symbols)
+    for sym in symbols:
+        asyncio.create_task(engine.fetch_watchlist_stock_news(sym))
+    return JSONResponse(_watchlist_response())
+
+
+@app.put("/api/watchlist/{symbol}")
+async def add_watchlist_symbol(symbol: str):
+    sym = _normalize_symbol(symbol)
+    if not _known_symbol(sym):
+        raise HTTPException(status_code=404, detail="Unknown symbol")
+    await asyncio.to_thread(watchlist_store.add_symbol, sym)
+    asyncio.create_task(engine.fetch_watchlist_stock_news(sym))
+    return JSONResponse(_watchlist_response())
+
+
+@app.delete("/api/watchlist/{symbol}")
+async def delete_watchlist_symbol(symbol: str):
+    sym = _normalize_symbol(symbol)
+    await asyncio.to_thread(watchlist_store.remove_symbol, sym)
+    return JSONResponse(_watchlist_response())
+
+
 @app.get("/api/options/{symbol}")
 async def options(symbol: str, expiry: str = Query("")):
     data = await asyncio.to_thread(engine.get_option_chain, symbol, expiry or None)
@@ -88,6 +167,9 @@ async def ws_endpoint(ws: WebSocket):
                 detail = engine.get_stock(sym)
                 if detail:
                     await ws.send_text(json.dumps({"type": "stock", "data": detail}))
+            elif msg.startswith("watchlist:"):
+                sym = msg.split(":")[1].strip().upper()
+                asyncio.create_task(engine.fetch_watchlist_stock_news(sym))
     except WebSocketDisconnect:
         pass
     finally:

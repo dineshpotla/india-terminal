@@ -235,8 +235,10 @@
             var wlSet = {};
             watchlist.forEach(function (s) { wlSet[s] = true; });
             return news.filter(function (n) {
-                if (!n.watchlist_stocks || !n.watchlist_stocks.length) return false;
-                return n.watchlist_stocks.some(function (s) { return wlSet[s]; });
+                if (n.watchlist_stocks && n.watchlist_stocks.length) {
+                    if (n.watchlist_stocks.some(function (s) { return wlSet[s]; })) return true;
+                }
+                return false;
             });
         }
         return news;
@@ -300,9 +302,11 @@
                 titleCls += " wire-sent-" + n.sentiment;
             }
             var titleEl = el("span", titleCls, n.title);
-            if (n.watchlist_stocks && n.watchlist_stocks.length) {
+            var chipStocks = (n.watchlist_stocks && n.watchlist_stocks.length) ? n.watchlist_stocks
+                : (n.keyword_stocks && n.keyword_stocks.length) ? n.keyword_stocks : [];
+            if (chipStocks.length) {
                 var chips = el("span", "wire-chips");
-                n.watchlist_stocks.slice(0, 3).forEach(function (sym) {
+                chipStocks.slice(0, 3).forEach(function (sym) {
                     var chip = el("span", "wire-chip", sym);
                     chip.addEventListener("click", function (e) {
                         e.stopPropagation();
@@ -675,30 +679,101 @@
 
     // ── Watchlist ──────────────────────────────────────────────────────
 
-    function loadWatchlist() {
+    function normalizeWatchlist(list) {
+        var seen = {};
+        return (list || []).map(function (sym) {
+            return String(sym || "").trim().toUpperCase();
+        }).filter(function (sym) {
+            if (!sym || seen[sym]) return false;
+            seen[sym] = true;
+            return true;
+        });
+    }
+
+    function loadWatchlistLocal() {
         try {
             var saved = localStorage.getItem("imt_watchlist");
-            if (saved) watchlist = JSON.parse(saved);
-        } catch (e) { watchlist = []; }
+            return normalizeWatchlist(saved ? JSON.parse(saved) : []);
+        } catch (e) { return []; }
     }
 
     function saveWatchlist() {
         try { localStorage.setItem("imt_watchlist", JSON.stringify(watchlist)); } catch (e) {}
     }
 
-    function addToWatchlist(sym) {
-        if (watchlist.indexOf(sym) !== -1) return;
-        watchlist.push(sym);
+    function applyWatchlist(symbols) {
+        watchlist = normalizeWatchlist(symbols);
         saveWatchlist();
         renderWatchlistTable();
         if (currentNewsTab === "watchlist" && dashboardData) renderNews(dashboardData.news);
+        if (ws && ws.readyState === WebSocket.OPEN && watchlist.length) {
+            watchlist.forEach(function (sym) { ws.send("watchlist:" + sym); });
+        }
     }
 
-    function removeFromWatchlist(sym) {
-        watchlist = watchlist.filter(function (s) { return s !== sym; });
-        saveWatchlist();
-        renderWatchlistTable();
-        if (currentNewsTab === "watchlist" && dashboardData) renderNews(dashboardData.news);
+    async function fetchWatchlistRemote() {
+        var res = await fetch("/api/watchlist");
+        if (!res.ok) throw new Error("watchlist fetch failed");
+        return await res.json();
+    }
+
+    async function syncWatchlistRemote(symbols) {
+        var res = await fetch("/api/watchlist/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ symbols: normalizeWatchlist(symbols) }),
+        });
+        if (!res.ok) throw new Error("watchlist sync failed");
+        var data = await res.json();
+        return normalizeWatchlist(data.symbols || []);
+    }
+
+    async function loadWatchlist() {
+        var local = loadWatchlistLocal();
+        try {
+            var remoteState = await fetchWatchlistRemote();
+            var remote = normalizeWatchlist(remoteState.symbols || []);
+            var initialized = !!remoteState.initialized;
+            if (!initialized && local.length) {
+                remote = await syncWatchlistRemote(local);
+            }
+            applyWatchlist(initialized ? remote : (remote.length ? remote : local));
+        } catch (err) {
+            console.warn("[Watchlist] Falling back to local storage:", err);
+            applyWatchlist(local);
+        }
+    }
+
+    async function addToWatchlist(sym) {
+        if (watchlist.indexOf(sym) !== -1) return;
+        var prev = watchlist.slice();
+        applyWatchlist(watchlist.concat([sym]));
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send("watchlist:" + sym);
+        }
+        try {
+            var res = await fetch("/api/watchlist/" + encodeURIComponent(sym), { method: "PUT" });
+            if (!res.ok) throw new Error("watchlist add failed");
+            var data = await res.json();
+            applyWatchlist(data.symbols || prev.concat([sym]));
+        } catch (err) {
+            console.error("[Watchlist] Add failed:", err);
+            applyWatchlist(prev);
+        }
+    }
+
+    async function removeFromWatchlist(sym) {
+        var prev = watchlist.slice();
+        applyWatchlist(watchlist.filter(function (s) { return s !== sym; }));
+        try {
+            var res = await fetch("/api/watchlist/" + encodeURIComponent(sym), { method: "DELETE" });
+            if (!res.ok) throw new Error("watchlist remove failed");
+            var data = await res.json();
+            applyWatchlist(data.symbols || watchlist);
+        } catch (err) {
+            console.error("[Watchlist] Remove failed:", err);
+            applyWatchlist(prev);
+        }
     }
 
     function renderWatchlistTable() {
@@ -795,8 +870,6 @@
         }
     });
 
-    loadWatchlist();
-
     // ── Full Render ────────────────────────────────────────────────────
 
     function renderDashboard(data, isLive) {
@@ -831,7 +904,12 @@
         var proto = location.protocol === "https:" ? "wss" : "ws";
         ws = new WebSocket(proto + "://" + location.host + "/ws");
 
-        ws.onopen = function () { console.log("[WS] Connected"); };
+        ws.onopen = function () {
+            console.log("[WS] Connected");
+            if (watchlist.length) {
+                watchlist.forEach(function (sym) { ws.send("watchlist:" + sym); });
+            }
+        };
 
         ws.onmessage = function (evt) {
             try {
@@ -866,6 +944,7 @@
 
     async function initialLoad() {
         try {
+            await loadWatchlist();
             var res = await fetch("/api/dashboard");
             var data = await res.json();
             renderDashboard(data);

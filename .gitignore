@@ -5,3 +5,4 @@ __pycache__/
 .playwright-*-profile/
 .env
 .env.*
+data/
