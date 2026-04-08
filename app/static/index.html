@@ -30,6 +30,7 @@
                 <div class="nav-tabs">
                     <button class="nav-tab active" data-view="investing">INVESTING</button>
                     <button class="nav-tab" data-view="options">OPTIONS</button>
+                    <button class="nav-tab" data-view="global">GLOBAL MARKETS</button>
                 </div>
             </div>
             <div class="header-center">
@@ -157,9 +158,15 @@
             </div>
         </div>
 
-        <!-- ── Ticker Bar ──────────────────────────────────────── -->
-        <div class="ticker-bar">
-            <div class="ticker-track" id="ticker-track"></div>
+        <!-- ── Global Markets View ────────────────────────────────── -->
+        <div id="global-view" class="global-view">
+            <div class="gm-header">
+                <span id="gm-status" class="gm-status"></span>
+                <span id="gm-updated" class="gm-updated"></span>
+            </div>
+            <div class="gm-grid" id="gm-grid">
+                <div class="gm-loading">Fetching global markets…</div>
+            </div>
         </div>
 
         <!-- ── Mobile Bottom Nav ─────────────────────────────── -->

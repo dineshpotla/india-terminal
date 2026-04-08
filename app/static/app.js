@@ -12,6 +12,7 @@
     let currentNewsTab = "all";
     let selectedStock = null;
     let dashboardData = null;
+    let currentView = "investing";
     let watchlist = [];
 
     const $ = (id) => document.getElementById(id);
@@ -26,7 +27,9 @@
     const $stockHero   = $("stock-hero");
     const $chartBox    = $("chart-container");
     const $sectors     = $("sectors-body");
-    const $ticker      = $("ticker-track");
+    const $gmGrid      = $("gm-grid");
+    const $gmStatus    = $("gm-status");
+    const $gmUpdated   = $("gm-updated");
     const $search      = $("search-input");
     const $results     = $("search-results");
     const $wlInput     = $("wl-input");
@@ -37,6 +40,31 @@
     const $giftPrice   = $("gift-price");
     const $giftPts     = $("gift-pts");
     const $giftPct     = $("gift-pct");
+
+    // ── Price change tracking (orderbook-style flash) ──────────────────
+
+    var prevPrices = {};
+
+    function flashDir(key, price) {
+        var prev = prevPrices[key];
+        prevPrices[key] = price;
+        if (prev == null || prev === price) return null;
+        return price > prev ? "green" : "red";
+    }
+
+    function applyFlash(element, dir) {
+        if (!dir) return;
+        element.classList.remove("flash-green", "flash-red");
+        void element.offsetWidth;
+        element.classList.add(dir === "green" ? "flash-green" : "flash-red");
+    }
+
+    function applyTextFlash(element, dir) {
+        if (!dir) return;
+        element.classList.remove("flash-green-text", "flash-red-text");
+        void element.offsetWidth;
+        element.classList.add(dir === "green" ? "flash-green-text" : "flash-red-text");
+    }
 
     // ── Helpers ────────────────────────────────────────────────────────
 
@@ -107,6 +135,9 @@
         $giftPts.className = "gift-pts " + c;
         $giftPct.textContent = fmtPct(gn.change_pct);
         $giftPct.className = "gift-pct " + c;
+
+        var dir = flashDir("gift-nifty", gn.price);
+        applyTextFlash($giftPrice, dir);
     }
 
     // ── Render: Indices ────────────────────────────────────────────────
@@ -118,12 +149,17 @@
         indices.forEach(function (idx) {
             var chip = el("div", "idx-chip");
             chip.appendChild(el("span", "idx-chip-name", idx.name));
-            chip.appendChild(el("span", "idx-chip-price",
-                Number(idx.price).toLocaleString("en-IN", { maximumFractionDigits: 2 })));
+            var priceSpan = el("span", "idx-chip-price",
+                Number(idx.price).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
+            chip.appendChild(priceSpan);
             var chgSpan = el("span", "idx-chip-chg " + cls(idx.change_pct),
                 arrow(idx.change) + " " + fmtPct(idx.change_pct));
             chip.appendChild(chgSpan);
             $indices.appendChild(chip);
+
+            var dir = flashDir("idx:" + idx.name, idx.price);
+            applyFlash(chip, dir);
+            applyTextFlash(priceSpan, dir);
         });
 
         clearChildren($breadth);
@@ -342,26 +378,87 @@
         });
     }
 
-    // ── Render: Ticker Bar ─────────────────────────────────────────────
+    // ── Render: Global Markets View ──────────────────────────────────────
 
-    function renderTicker(stocks) {
-        if (!stocks || !stocks.length) return;
-        clearChildren($ticker);
+    function fmtGlobalPrice(n) {
+        if (n == null) return "\u2014";
+        if (n >= 1000) return Number(n).toLocaleString("en-US", {
+            minimumFractionDigits: 2, maximumFractionDigits: 2,
+        });
+        return Number(n).toFixed(n < 10 ? 4 : 2);
+    }
 
-        function addItems() {
-            stocks.forEach(function (s) {
-                var item = el("span", "ticker-item");
-                item.dataset.sym = s.symbol;
-                item.appendChild(el("span", "ticker-sym", s.symbol));
-                item.appendChild(el("span", "ticker-price", fmtPrice(s.price)));
-                item.appendChild(el("span", "ticker-chg " + cls(s.change_pct), fmtPct(s.change_pct)));
-                item.addEventListener("click", function () { selectStock(s.symbol); });
-                $ticker.appendChild(item);
-            });
+    function updateGlobalStatus(streaming, lastUpdate) {
+        if ($gmStatus) {
+            if (streaming) {
+                $gmStatus.textContent = "LIVE STREAMING";
+                $gmStatus.className = "gm-status streaming";
+            } else {
+                $gmStatus.textContent = "POLLING";
+                $gmStatus.className = "gm-status polling";
+            }
         }
+        if ($gmUpdated && lastUpdate) {
+            $gmUpdated.textContent = "Updated " + lastUpdate;
+        }
+    }
 
-        addItems();
-        addItems();
+    function renderGlobalMarkets(futures) {
+        if (!futures || !futures.length) return;
+        clearChildren($gmGrid);
+
+        var regions = [];
+        var regionMap = {};
+        futures.forEach(function (f) {
+            var r = f.region || "OTHER";
+            if (!regionMap[r]) {
+                regionMap[r] = [];
+                regions.push(r);
+            }
+            regionMap[r].push(f);
+        });
+
+        regions.forEach(function (region) {
+            var section = el("div", "gm-section");
+
+            var head = el("div", "gm-section-head");
+            head.appendChild(el("span", "gm-section-title", region));
+            section.appendChild(head);
+
+            var table = el("table", "gm-table");
+            var thead = el("thead");
+            var headerRow = el("tr");
+            ["NAME", "LTP", "CHANGE", "CHG%"].forEach(function (h) {
+                headerRow.appendChild(el("th", "", h));
+            });
+            thead.appendChild(headerRow);
+            table.appendChild(thead);
+
+            var tbody = el("tbody");
+            regionMap[region].forEach(function (f) {
+                var tr = el("tr");
+                tr.appendChild(el("td", "", f.name));
+                var priceTd = el("td", "gm-price", fmtGlobalPrice(f.price));
+                tr.appendChild(priceTd);
+
+                var chgSign = f.change >= 0 ? "+" : "";
+                var chgTd = el("td", "gm-chg " + cls(f.change_pct),
+                    chgSign + f.change.toFixed(2));
+                tr.appendChild(chgTd);
+
+                var pctTd = el("td", "gm-pct " + cls(f.change_pct), fmtPct(f.change_pct));
+                tr.appendChild(pctTd);
+
+                tbody.appendChild(tr);
+
+                var dir = flashDir("gm:" + f.name, f.price);
+                applyFlash(tr, dir);
+                applyTextFlash(priceTd, dir);
+            });
+            table.appendChild(tbody);
+            section.appendChild(table);
+            $gmGrid.appendChild(section);
+        });
     }
 
     // ── Render: Stock Detail ───────────────────────────────────────────
@@ -620,7 +717,8 @@
             var row = el("div", "wl-row" + (selectedStock === sym ? " wl-row-active" : ""));
             row.appendChild(el("span", "wl-row-sym", sym));
             row.appendChild(el("span", "wl-row-name", stock ? (stock.name || "") : ""));
-            row.appendChild(el("span", "wl-row-price", stock ? fmtPrice(stock.price) : "\u2014"));
+            var priceEl = el("span", "wl-row-price", stock ? fmtPrice(stock.price) : "\u2014");
+            row.appendChild(priceEl);
             var chgEl = el("span", "wl-row-chg " + (stock ? cls(stock.change_pct) : "flat"),
                 stock ? fmtPct(stock.change_pct) : "");
             row.appendChild(chgEl);
@@ -632,6 +730,12 @@
             row.appendChild(rm);
             row.addEventListener("click", function () { selectStock(sym); });
             $wlTable.appendChild(row);
+
+            if (stock) {
+                var dir = flashDir("wl:" + sym, stock.price);
+                applyFlash(row, dir);
+                applyTextFlash(priceEl, dir);
+            }
         });
     }
 
@@ -709,7 +813,8 @@
         renderMovers(data.movers);
         renderNews(data.news, isLive);
         renderSectors(data.sectors);
-        renderTicker(data.stocks);
+        renderGlobalMarkets(data.global_futures);
+        updateGlobalStatus(data.global_streaming, data.last_global_update);
         renderWatchlistTable();
 
         if (selectedStock && data.stocks) {
@@ -733,6 +838,15 @@
                 var msg = JSON.parse(evt.data);
                 if (msg.type === "update" && msg.data) {
                     renderDashboard(msg.data, true);
+                } else if (msg.type === "global_tick" && msg.global_futures) {
+                    if (dashboardData) {
+                        dashboardData.global_futures = msg.global_futures;
+                        if (msg.gift_nifty) dashboardData.gift_nifty = msg.gift_nifty;
+                        if (msg.last_global_update) dashboardData.last_global_update = msg.last_global_update;
+                    }
+                    if (msg.gift_nifty) renderGiftNifty(msg.gift_nifty);
+                    updateGlobalStatus(msg.global_streaming, msg.last_global_update);
+                    if (currentView === "global") renderGlobalMarkets(msg.global_futures);
                 } else if (msg.type === "news" && msg.news) {
                     if (dashboardData) dashboardData.news = msg.news;
                     renderNews(msg.news, true);
@@ -760,7 +874,6 @@
 
     // ── View Switching (INVESTING / OPTIONS) ───────────────────────────
 
-    var currentView = "investing";
     var $terminal = document.querySelector(".terminal");
     var navTabs = document.querySelectorAll(".nav-tab");
 
@@ -776,6 +889,9 @@
                 ocRefreshTimer = setInterval(fetchOptionChain, 30000);
             } else {
                 if (ocRefreshTimer) { clearInterval(ocRefreshTimer); ocRefreshTimer = null; }
+            }
+            if (view === "global" && dashboardData) {
+                renderGlobalMarkets(dashboardData.global_futures);
             }
         });
     });

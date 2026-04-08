@@ -17,7 +17,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta
 import threading
 from typing import Dict, List, Optional, Set
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -66,6 +66,50 @@ SECTOR_MAP = {
 
 TRACKED_INDICES = {"NIFTY 50", "NIFTY BANK", "NIFTY NEXT 50", "NIFTY IT",
                    "NIFTY MIDCAP 50", "NIFTY FINANCIAL SERVICES", "INDIA VIX"}
+
+GLOBAL_FUTURES = [
+    # US Markets
+    ("S&P 500", "ES=F", "US MARKETS"),
+    ("NASDAQ", "NQ=F", "US MARKETS"),
+    ("DOW JONES", "YM=F", "US MARKETS"),
+    ("RUSSELL 2000", "^RUT", "US MARKETS"),
+    # European Markets
+    ("FTSE 100", "^FTSE", "EUROPEAN MARKETS"),
+    ("DAX", "^GDAXI", "EUROPEAN MARKETS"),
+    ("CAC 40", "^FCHI", "EUROPEAN MARKETS"),
+    ("EURO STOXX 50", "^STOXX50E", "EUROPEAN MARKETS"),
+    # Asian Markets
+    ("GIFT NIFTY", None, "ASIAN MARKETS"),
+    ("NIKKEI 225", "^N225", "ASIAN MARKETS"),
+    ("HANG SENG", "^HSI", "ASIAN MARKETS"),
+    ("SHANGHAI", "000001.SS", "ASIAN MARKETS"),
+    ("KOSPI", "^KS11", "ASIAN MARKETS"),
+    ("TAIWAN", "^TWII", "ASIAN MARKETS"),
+    ("STRAITS TIMES", "^STI", "ASIAN MARKETS"),
+    ("SET COMPOSITE", "^SET.BK", "ASIAN MARKETS"),
+    ("JAKARTA", "^JKSE", "ASIAN MARKETS"),
+    # Commodities
+    ("CRUDE OIL (WTI)", "CL=F", "COMMODITIES"),
+    ("BRENT CRUDE", "BZ=F", "COMMODITIES"),
+    ("NATURAL GAS", "NG=F", "COMMODITIES"),
+    ("GOLD", "GC=F", "COMMODITIES"),
+    ("SILVER", "SI=F", "COMMODITIES"),
+    ("COPPER", "HG=F", "COMMODITIES"),
+    # Currencies
+    ("EUR/USD", "EURUSD=X", "CURRENCIES"),
+    ("GBP/USD", "GBPUSD=X", "CURRENCIES"),
+    ("USD/JPY", "JPY=X", "CURRENCIES"),
+    ("USD/INR", "INR=X", "CURRENCIES"),
+    ("DXY (Dollar Index)", "DX-Y.NYB", "CURRENCIES"),
+    # Crypto
+    ("BITCOIN", "BTC-USD", "CRYPTO"),
+    ("ETHEREUM", "ETH-USD", "CRYPTO"),
+    # Bonds
+    ("US 10Y YIELD", "^TNX", "BONDS"),
+    ("US 2Y YIELD", "^IRX", "BONDS"),
+]
+
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
 YF_INDEX_MAP = {
     "NIFTY 50": "^NSEI",
@@ -206,20 +250,44 @@ NEWS_FEEDS_GLOBAL = [
     "https://news.google.com/rss/search?q=site:reuters.com+when:6h&hl=en&gl=US&ceid=US:en",
 ]
 NEWS_FEEDS_GOLD_SILVER = [
-    # India-focused
+    # ── Direct RSS (institutional + mining / silver industry) ─────────
+    # World Gold Council (demand trends, industry research, policy)
+    "https://www.gold.org/rss.xml",
+    # Silver Institute (supply/demand, market commentary)
+    "https://www.silverinstitute.org/feed/",
+    # Broad mining wire (filter with gold/silver keywords + LLM downstream)
+    "https://www.mining.com/feed/",
+
+    # ── India retail / exchange context ───────────────────────────────
     "https://news.google.com/rss/search?q=gold+price+OR+%22gold+rate%22+OR+%22gold+today%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
     "https://news.google.com/rss/search?q=silver+price+OR+%22silver+rate%22+OR+%22silver+today%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
     "https://news.google.com/rss/search?q=%22MCX+gold%22+OR+%22MCX+silver%22+OR+%22COMEX+gold%22+OR+%22COMEX+silver%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
     "https://news.google.com/rss/search?q=%22precious+metals%22+OR+%22gold+jewellery%22+OR+%22gold+import%22+india+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=site:economictimes.indiatimes.com+gold+OR+silver+OR+bullion+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=site:moneycontrol.com+gold+OR+silver+OR+MCX+OR+bullion+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
 
-    # Global price / instruments / FX tickers
+    # ── Global price / market structure ────────────────────────────────
     "https://news.google.com/rss/search?q=gold+price+OR+silver+price+when:1d&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=XAUUSD+OR+XAGUSD+OR+%22spot+gold%22+OR+%22spot+silver%22+when:1d&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=gold+futures+OR+silver+futures+OR+%22COMEX+gold%22+OR+%22COMEX+silver%22+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+ETF+OR+GLD+OR+IAU+OR+SLV+when:1d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=gold+ETF+OR+GLD+OR+IAU+OR+SLV+OR+%22gld+etf%22+when:1d&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=gold+rally+OR+gold+crash+OR+gold+forecast+OR+silver+rally+OR+silver+forecast+when:1d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=LBMA+OR+%22london+bullion%22+OR+%22fixes+gold%22+OR+%22gold+fix%22+when:2d&hl=en&gl=UK&ceid=GB:en",
+    "https://news.google.com/rss/search?q=Shanghai+Gold+Exchange+OR+SGE+gold+when:2d&hl=en&gl=US&ceid=US:en",
 
-    # Wider global publishers (via Google News site filters)
+    # ── Official sector: reserves, PBOC, IMF, sovereign buying ─────────
+    "https://news.google.com/rss/search?q=PBOC+gold+OR+%22People%27s+Bank+of+China%22+gold+OR+%22China+gold+reserves%22+OR+%22Chinese+central+bank%22+gold+when:3d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=central+bank+gold+OR+%22gold+reserves%22+OR+%22official+gold%22+OR+%22sovereign+gold%22+when:2d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=IMF+gold+OR+%22IMF+gold+sale%22+OR+%22IMF+gold+sales%22+OR+World+Bank+gold+when:3d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site:imf.org+gold+when:14d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site:worldbank.org+gold+OR+silver+OR+bullion+when:14d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=Poland+gold+OR+Turkey+gold+OR+India+gold+reserves+OR+Russia+gold+reserves+when:3d&hl=en&gl=US&ceid=US:en",
+
+    # ── Silver fundamentals / industry (beyond spot price) ────────────
+    "https://news.google.com/rss/search?q=%22silver+supply%22+OR+%22silver+deficit%22+OR+%22silver+demand%22+OR+photovoltaic+silver+when:3d&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=%22World+Gold+Council%22+OR+%22gold+demand+trends%22+OR+wgc+gold+when:7d&hl=en&gl=US&ceid=US:en",
+
+    # ── Tier-1 publishers (Google News site filters) ────────────────
     "https://news.google.com/rss/search?q=gold+OR+silver+site:reuters.com+when:1d&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=gold+OR+silver+site:bloomberg.com+when:1d&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=gold+OR+silver+site:cnbc.com+when:1d&hl=en&gl=US&ceid=US:en",
@@ -228,13 +296,12 @@ NEWS_FEEDS_GOLD_SILVER = [
     "https://news.google.com/rss/search?q=gold+OR+silver+site:barrons.com+when:1d&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=gold+OR+silver+site:investing.com+when:1d&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=gold+OR+silver+site:fxstreet.com+when:1d&hl=en&gl=US&ceid=US:en",
+    # Kitco site search only — direct /news/*.rss URLs now serve HTML shells
     "https://news.google.com/rss/search?q=gold+OR+silver+site:kitco.com+when:1d&hl=en&gl=US&ceid=US:en",
-    # Direct Kitco RSS
-    "https://www.kitco.com/news/category/markets/rss",
-    "https://www.kitco.com/news/category/mining/rss",
 ]
 NEWS_FEEDS = NEWS_FEEDS_INDIA + NEWS_FEEDS_GLOBAL + NEWS_FEEDS_GOLD_SILVER
 _GLOBAL_FEEDS_SET = set(NEWS_FEEDS_GLOBAL + NEWS_FEEDS_GOLD_SILVER)
+_GOLD_FEEDS_SET = set(NEWS_FEEDS_GOLD_SILVER)
 _INDIA_FEEDS_SET = set(NEWS_FEEDS_INDIA)
 
 TRADIENT_NEWS_URL = "https://api.tradient.org/v1/api/market/news"
@@ -340,7 +407,9 @@ _LLM_PROMPT_PREFIX = (
     "market crash/rally, FII/FPI, sanctions, geopolitics). "
     "false for stock results, SEBI filings, dividends, company-specific events.\n"
     "- gold_silver: true if about gold, silver, precious metals, bullion, MCX/COMEX metals, "
-    "gold ETFs, sovereign gold bonds. false otherwise.\n"
+    "gold ETFs, sovereign gold bonds, central bank gold reserves/buying/selling, "
+    "PBOC/China gold purchases, IMF gold, World Gold Council, LBMA, Shanghai Gold Exchange, "
+    "silver supply/demand/deficit, mining gold/silver. false otherwise.\n"
     "- india_market_impact: true if the headline has ANY plausible channel to affect Indian markets "
     "(even low/indirect impact): INR, crude/oil, yields, global risk-on/off, sanctions, geopolitics, "
     "Fed/ECB/BoJ policy, global equities spillover, commodities, shipping/energy. "
@@ -358,11 +427,18 @@ _GOLD_SILVER_KW = {
     "gold price", "silver price", "gold rate", "silver rate",
     "gold etf", "silver etf", "gold futures", "silver futures",
     "gold import", "gold export", "gold jewellery", "gold jewelry",
-    "gold mining", "silver mining", "gold reserve", "gold standard",
+    "gold mining", "silver mining", "gold reserve", "gold reserves",
+    "gold standard", "official gold", "sovereign gold",
     "xau", "xag", "gold rally", "gold crash", "gold forecast",
     "sovereign gold bond", "sgb", "hallmark",
     "gold demand", "gold supply", "gold smuggling",
     "yellow metal", "white metal",
+    # Official sector / institutions / supply–demand studies
+    "pboc", "people's bank", "shanghai gold exchange", "lbma",
+    "world gold council", "gold demand trends", "silver institute",
+    "silver supply", "silver demand", "silver deficit",
+    "imf gold", "tonnes of gold", "tons of gold", "troy ounce",
+    "photovoltaic silver", "solar silver", "industrial silver",
 }
 
 _GLOBAL_MARKET_KW = {
@@ -398,6 +474,13 @@ _GLOBAL_EXCLUDE_KW = {
     "soldier's wife", "military spouse",
     "scrimping and saving",
     "impeachment",
+    # wellness / awareness / lifestyle filler
+    "stress awareness", "awareness month", "awareness day", "awareness week",
+    "coping with", "mental health tip", "self-care",
+    "watch:", "watch live:", "how to watch",
+    "horoscope", "zodiac", "astrology",
+    "obituary", "funeral", "memorial service",
+    "dog", "cat", "pet", "puppy", "kitten",
 }
 
 _INDIA_IMPACT_HINT_KW = {
@@ -464,11 +547,15 @@ _STOCK_EVENT_KW = {
     "demat", "demat certificate", "depository", "encumbrance", "share encumbrance",
     "disclosure", "annual disclosure", "non-large corporate", "non large corporate",
     "trading window", "special transfer window", "physical share transfer",
+    "trading approval", "gets trading approval", "trading nod",
     "regulation 74(5)", "reg 74(5)", "74(5)",
     "regulation 7(3)", "reg 7(3)", "7(3)",
     "regulation 40", "reg 40", "40(10)", "40(9)",
     "clarifies bse query", "bse query", "seeks clarification", "clarification",
     "cirs", "cirp", "insolvency", "resolution professional",
+    "independent director resigns", "director resigns", "company secretary resigns",
+    "rights issue", "egm set for", "board meeting",
+    "dp certificate", "dematerialization",
 }
 
 _WATCHLIST_NAMES = {}
@@ -607,6 +694,7 @@ class DataEngine:
         self._ws_clients: Set = set()
         self._refresh_count = 0
         self._llm_cache: OrderedDict = OrderedDict()
+        self._global_futures: List[dict] = []
         self._live_lock = threading.Lock()
         self._news_lock = threading.Lock()
         self._live_seen: Set[str] = set()
@@ -617,6 +705,22 @@ class DataEngine:
         self._live_fetch_failures: Dict[str, int] = {}
         self._max_discovered_live_urls = max(3, min(20, int(os.getenv("LIVE_DISCOVERY_MAX_URLS", "8"))))
         self._live_fail_drop_after = max(5, int(os.getenv("LIVE_DISCOVERY_DROP_FAILS", "18")))
+        # Global markets: Yahoo WebSocket streaming for true real-time prices.
+        self._global_task: Optional[asyncio.Task] = None
+        self._gift_task: Optional[asyncio.Task] = None
+        self._last_global_update: Optional[str] = None
+        self._last_gift_fetch_ts: float = 0.0
+        self._global_tick_count = 0
+        self._global_stream_connected = False
+        # Snapshot of previous_close per symbol (seeded by first yfinance fetch)
+        self._global_prev_close: Dict[str, float] = {}
+        # Live prices from streaming (symbol -> {price, change, change_pct, ...})
+        self._global_live: Dict[str, dict] = {}
+        self._global_dirty = False  # True when new ticks arrived since last broadcast
+        _gift_secs = int(os.getenv("GIFT_NIFTY_REFRESH_SECS", "15"))
+        self._gift_refresh_secs = max(8, min(300, _gift_secs))
+        _bcast_ms = int(os.getenv("GLOBAL_BROADCAST_MS", "1000"))
+        self._global_broadcast_interval = max(200, min(10000, _bcast_ms)) / 1000.0
         # LLM classification stack (LIFO). New headlines push here; worker pops one at a time.
         self._llm_stack: List[dict] = []
         self._llm_pending: Set[str] = set()
@@ -646,18 +750,23 @@ class DataEngine:
         self._running = True
         self._asyncio_loop = asyncio.get_running_loop()
         self._market_task = asyncio.create_task(self._market_loop())
+        self._global_task = asyncio.create_task(self._global_stream_loop())
+        self._gift_task = asyncio.create_task(self._gift_nifty_loop())
         self._news_task = asyncio.create_task(self._news_loop())
         self._llm_task = asyncio.create_task(self._llm_loop())
         self._live_task = asyncio.create_task(self._live_stories_loop())
 
     async def stop(self):
         self._running = False
-        tasks = [t for t in (self._market_task, self._news_task, self._llm_task, self._live_task) if t]
+        tasks = [t for t in (self._market_task, self._global_task, self._gift_task,
+                              self._news_task, self._llm_task, self._live_task) if t]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._market_task = None
+        self._global_task = None
+        self._gift_task = None
         self._news_task = None
         self._llm_task = None
         self._live_task = None
@@ -811,6 +920,261 @@ class DataEngine:
                 except Exception:
                     traceback.print_exc()
                 await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            return
+
+    async def _global_stream_loop(self):
+        """Connect to Yahoo Finance WebSocket for true real-time global prices.
+
+        Architecture:
+        1. Seed previous_close values via one yfinance REST call.
+        2. Open a persistent WebSocket to wss://streamer.finance.yahoo.com.
+        3. On each tick, update _global_live; mark dirty.
+        4. A separate broadcast coroutine flushes dirty state to UI clients
+           at a capped rate (default 1 Hz) so the DOM isn't overwhelmed.
+        5. On disconnect, reconnect with exponential backoff; fall back to
+           REST polling if streaming is unavailable for >60s.
+        """
+        try:
+            import base64 as _b64
+            import json as _json
+            from websockets.asyncio.client import connect as _ws_connect
+            from yfinance.live import PricingData as _PricingData
+            from google.protobuf.json_format import MessageToDict as _MessageToDict
+        except ModuleNotFoundError:
+            print("[Global WS] Streaming unavailable in current runtime — using REST polling only")
+            try:
+                while self._running:
+                    try:
+                        await asyncio.to_thread(self._fetch_global_futures)
+                        self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+                        await self._broadcast("global_tick")
+                    except Exception:
+                        traceback.print_exc()
+                    await asyncio.sleep(max(10, self._gift_refresh_secs))
+            except asyncio.CancelledError:
+                return
+            return
+
+        yf_entries = [(lbl, sym, reg) for lbl, sym, reg in GLOBAL_FUTURES if sym]
+        symbols = [sym for _, sym, _ in yf_entries]
+        sym_to_label = {sym: lbl for lbl, sym, _ in yf_entries}
+        sym_to_region = {sym: reg for _, sym, reg in yf_entries}
+
+        # — Seed previous_close from REST (once, then periodically refresh) —
+        async def _seed_prev_close():
+            def _fetch():
+                try:
+                    ok = 0
+                    for sym in symbols:
+                        snap = self._fetch_yahoo_chart_snapshot(sym)
+                        pc = self._to_float((snap or {}).get("prev_close"), 0.0)
+                        if pc:
+                            self._global_prev_close[sym] = pc
+                            ok += 1
+                    print(f"[Global WS] Seeded previous_close for {ok}/{len(symbols)} symbols")
+                except Exception as e:
+                    print(f"[Global WS] Seed error: {e}")
+            await asyncio.to_thread(_fetch)
+
+        # — Broadcast coroutine: flush dirty state at capped rate —
+        async def _broadcast_loop():
+            try:
+                while self._running:
+                    await asyncio.sleep(self._global_broadcast_interval)
+                    if not self._global_dirty:
+                        continue
+                    self._global_dirty = False
+                    self._rebuild_global_futures()
+                    self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+                    await self._broadcast("global_tick")
+            except asyncio.CancelledError:
+                return
+
+        broadcast_task = asyncio.create_task(_broadcast_loop())
+        backoff = 1
+        last_rest_fallback = 0.0
+        REST_FALLBACK_SECS = 15
+
+        try:
+            await _seed_prev_close()
+            # Also do one REST fetch so the UI has data before first WS tick.
+            await asyncio.to_thread(self._fetch_global_futures)
+            self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+            await self._broadcast("global_tick")
+
+            while self._running:
+                try:
+                    async with _ws_connect(
+                        "wss://streamer.finance.yahoo.com/?version=2",
+                        additional_headers={"User-Agent": random.choice(_USER_AGENTS)},
+                        ping_interval=20,
+                        ping_timeout=10,
+                        close_timeout=5,
+                    ) as ws:
+                        self._global_stream_connected = True
+                        backoff = 1
+                        await ws.send(_json.dumps({"subscribe": symbols}))
+                        print(f"[Global WS] Connected — streaming {len(symbols)} symbols")
+
+                        resub_interval = 30
+                        last_resub = time.time()
+                        refresh_prev_interval = 3600
+                        last_prev_refresh = time.time()
+
+                        async for raw in ws:
+                            if not self._running:
+                                break
+                            try:
+                                msg = _json.loads(raw)
+                                b64 = msg.get("message", "")
+                                if not b64:
+                                    continue
+                                decoded = _b64.b64decode(b64)
+                                pd = _PricingData()
+                                pd.ParseFromString(decoded)
+                                d = _MessageToDict(pd, preserving_proto_field_name=True)
+                                sym = d.get("id", "")
+                                price = d.get("price")
+                                if not sym or not price:
+                                    continue
+                                prev = d.get("previous_close") or self._global_prev_close.get(sym)
+                                if prev:
+                                    self._global_prev_close[sym] = prev
+                                    chg = price - prev
+                                    chg_pct = (chg / prev * 100) if prev else 0
+                                else:
+                                    chg = d.get("change", 0)
+                                    chg_pct = d.get("change_percent", 0)
+                                self._global_live[sym] = {
+                                    "name": sym_to_label.get(sym, sym),
+                                    "symbol": sym,
+                                    "region": sym_to_region.get(sym, "OTHER"),
+                                    "price": round(float(price), 2 if float(price) >= 10 else 4),
+                                    "change": round(float(chg), 2),
+                                    "change_pct": round(float(chg_pct), 2),
+                                }
+                                self._global_dirty = True
+                                self._global_tick_count += 1
+                            except Exception:
+                                pass
+
+                            now = time.time()
+                            if now - last_resub >= resub_interval:
+                                await ws.send(_json.dumps({"subscribe": symbols}))
+                                last_resub = now
+                            if now - last_prev_refresh >= refresh_prev_interval:
+                                asyncio.create_task(asyncio.to_thread(lambda: _seed_prev_close()))
+                                last_prev_refresh = now
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._global_stream_connected = False
+                    print(f"[Global WS] Disconnected: {e} — reconnecting in {backoff}s")
+
+                    # Fall back to REST polling while disconnected
+                    now = time.time()
+                    if now - last_rest_fallback >= REST_FALLBACK_SECS:
+                        try:
+                            await asyncio.to_thread(self._fetch_global_futures)
+                            self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+                            await self._broadcast("global_tick")
+                        except Exception:
+                            pass
+                        last_rest_fallback = time.time()
+
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            broadcast_task.cancel()
+            self._global_stream_connected = False
+
+    def _rebuild_global_futures(self):
+        """Merge streaming _global_live data with any REST-sourced entries into _global_futures."""
+        merged: Dict[str, dict] = {}
+        for item in self._global_futures:
+            merged[item["symbol"]] = item
+        for sym, live in self._global_live.items():
+            merged[sym] = live
+        if self._gift_nifty:
+            merged["GIFTNIFTY"] = {
+                "name": "GIFT NIFTY",
+                "symbol": "GIFTNIFTY",
+                "region": "ASIAN MARKETS",
+                "price": self._gift_nifty["price"],
+                "change": self._gift_nifty["change"],
+                "change_pct": self._gift_nifty["change_pct"],
+            }
+        results = list(merged.values())
+        order = {r: i for i, (_, _, r) in enumerate(GLOBAL_FUTURES)}
+        results.sort(key=lambda x: (order.get(x["region"], 99),
+            next((i for i, (l, _, _) in enumerate(GLOBAL_FUTURES) if l == x["name"]), 99)))
+        self._global_futures = results
+
+    def _fetch_yahoo_chart_snapshot(self, symbol: str) -> Optional[dict]:
+        """Fetch a compact quote snapshot from Yahoo's public chart endpoint."""
+        try:
+            url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""))
+            r = requests.get(
+                url,
+                params={
+                    "range": "5d",
+                    "interval": "1d",
+                    "includePrePost": "false",
+                    "events": "div,splits",
+                },
+                headers={"User-Agent": random.choice(_USER_AGENTS)},
+                timeout=20,
+            )
+            if r.status_code != 200:
+                print(f"[Global] {symbol} chart HTTP {r.status_code}")
+                return None
+            payload = r.json()
+            result = ((payload.get("chart") or {}).get("result") or [None])[0]
+            if not result:
+                return None
+            meta = result.get("meta") or {}
+            indicators = result.get("indicators") or {}
+            quotes = (indicators.get("quote") or [{}])[0] or {}
+            closes = [self._to_float(v, 0.0) for v in (quotes.get("close") or []) if v is not None]
+
+            price = self._to_float(meta.get("regularMarketPrice"), 0.0)
+            if not price and closes:
+                price = closes[-1]
+            if not price:
+                return None
+
+            prev = self._to_float(meta.get("chartPreviousClose"), 0.0)
+            if not prev:
+                prev = self._to_float(meta.get("previousClose"), 0.0)
+            if not prev and len(closes) >= 2:
+                prev = closes[-2]
+            if not prev and closes:
+                prev = closes[-1]
+
+            return {
+                "price": price,
+                "prev_close": prev,
+            }
+        except Exception as e:
+            print(f"[Global] {symbol} snapshot error: {e}")
+            return None
+
+    async def _gift_nifty_loop(self):
+        """Poll GIFT Nifty price on its own short interval (scrape source doesn't have a WS)."""
+        try:
+            while self._running:
+                try:
+                    await asyncio.to_thread(self._fetch_gift_nifty)
+                    self._last_gift_fetch_ts = time.time()
+                    self._global_dirty = True
+                except Exception:
+                    traceback.print_exc()
+                await asyncio.sleep(self._gift_refresh_secs)
         except asyncio.CancelledError:
             return
 
@@ -1170,7 +1534,7 @@ class DataEngine:
             if not prefix:
                 return 0
             self._news = prefix + self._news
-            self._news = self._news[:80]
+            self._news = self._news[:120]
         return len(prefix)
 
     def _deep_read_breaking_articles(self):
@@ -1421,6 +1785,49 @@ class DataEngine:
             }
         except Exception as e:
             print(f"[GIFT Nifty] {e}")
+
+    def _fetch_global_futures(self):
+        """Fetch global markets via Yahoo chart endpoint (used for initial seed + polling fallback)."""
+        try:
+            yf_entries = [(lbl, sym, reg) for lbl, sym, reg in GLOBAL_FUTURES if sym]
+            results = []
+            for label, sym, region in yf_entries:
+                snap = self._fetch_yahoo_chart_snapshot(sym)
+                if not snap:
+                    continue
+                price = self._to_float(snap.get("price"), 0.0)
+                prev = self._to_float(snap.get("prev_close"), 0.0)
+                if not price:
+                    continue
+                if prev:
+                    self._global_prev_close[sym] = prev
+                chg = price - prev if prev else 0.0
+                chg_pct = (chg / prev * 100) if prev else 0.0
+                results.append({
+                    "name": label,
+                    "symbol": sym,
+                    "region": region,
+                    "price": round(price, 2 if price >= 10 else 4),
+                    "change": round(chg, 2 if abs(chg) >= 1 else 4),
+                    "change_pct": round(chg_pct, 2),
+                })
+            if self._gift_nifty:
+                gn = self._gift_nifty
+                results.append({
+                    "name": "GIFT NIFTY",
+                    "symbol": "GIFTNIFTY",
+                    "region": "ASIAN MARKETS",
+                    "price": gn["price"],
+                    "change": gn["change"],
+                    "change_pct": gn["change_pct"],
+                })
+            if results:
+                order = {r: i for i, (_, _, r) in enumerate(GLOBAL_FUTURES)}
+                results.sort(key=lambda x: (order.get(x["region"], 99),
+                    next((i for i, (l, _, _) in enumerate(GLOBAL_FUTURES) if l == x["name"]), 99)))
+                self._global_futures = results
+        except Exception as e:
+            print(f"[Global] {e}")
 
     def _fetch_nse_stocks(self):
         data = self._nse.get(NSE_NIFTY50_URL)
@@ -1704,12 +2111,14 @@ class DataEngine:
         now = datetime.now(IST)
         cutoff = now - timedelta(hours=18)
         global_cutoff = now - timedelta(hours=6)
+        gold_cutoff = now - timedelta(hours=24)
         raw: List[dict] = []
 
         for url in NEWS_FEEDS:
             try:
                 feed = feedparser.parse(url)
                 is_global_feed = url in _GLOBAL_FEEDS_SET
+                is_gold_feed = url in _GOLD_FEEDS_SET
                 is_india_feed = url in _INDIA_FEEDS_SET
                 source = feed.feed.get("title", "")
                 if " - " in source:
@@ -1722,9 +2131,11 @@ class DataEngine:
                 for entry in feed.entries[:30]:
                     pub_dt = self._parse_pub_time(entry)
                     if pub_dt:
-                        if is_global_feed and pub_dt < global_cutoff:
+                        if is_gold_feed and pub_dt < gold_cutoff:
                             continue
-                        if (not is_global_feed) and pub_dt < cutoff:
+                        elif is_global_feed and pub_dt < global_cutoff:
+                            continue
+                        elif (not is_global_feed) and pub_dt < cutoff:
                             continue
                     else:
                         # Avoid undated backlog especially for global feeds
@@ -1790,19 +2201,24 @@ class DataEngine:
                 n for n in self._news
                 if n.get("live_story") and n.get("age_secs", 999999) < 12 * 3600
             ]
-        unique_trim = unique[:80] if unique else []
-        if not unique_trim and not prior_live:
+        if not unique and not prior_live:
             return
+        # Reserve slots for gold/silver items so they don't get crowded out
+        gold_items = [u for u in unique if u.get("gold_silver")]
+        other_items = [u for u in unique if not u.get("gold_silver")]
+        unique_trim = (gold_items[:20] + other_items)[:100]
+        live_cap = min(len(prior_live), 30)
+        capped_live = prior_live[:live_cap]
         combined: List[dict] = []
         seen_k: Set[str] = set()
-        for item in prior_live + unique_trim:
+        for item in capped_live + unique_trim:
             k = item["title"][:50].lower()
             if k in seen_k:
                 continue
             seen_k.add(k)
             combined.append(item)
         with self._news_lock:
-            self._news = combined[:80]
+            self._news = combined[:130]
         if unique_trim:
             self._push_llm_stack(unique_trim)
 
@@ -1911,6 +2327,9 @@ class DataEngine:
             "news": self._news,
             "sectors": self._sectors,
             "gift_nifty": self._gift_nifty,
+            "global_futures": self._global_futures,
+            "last_global_update": self._last_global_update,
+            "global_streaming": self._global_stream_connected,
             "market_status": self.market_status,
             "last_update": self._last_update,
             "time": datetime.now(IST).strftime("%H:%M:%S"),
@@ -2043,6 +2462,14 @@ class DataEngine:
             return
         if msg_type == "news":
             payload = json.dumps({"type": "news", "news": self._news})
+        elif msg_type == "global_tick":
+            payload = json.dumps({
+                "type": "global_tick",
+                "global_futures": self._global_futures,
+                "gift_nifty": self._gift_nifty,
+                "last_global_update": self._last_global_update,
+                "global_streaming": self._global_stream_connected,
+            })
         else:
             payload = json.dumps({"type": "update", "data": self.get_dashboard()})
         dead = set()
