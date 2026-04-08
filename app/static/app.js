@@ -14,6 +14,8 @@
     let dashboardData = null;
     let currentView = "investing";
     let watchlist = [];
+    let stockCache = {};
+    const stockFetchInflight = {};
 
     const $ = (id) => document.getElementById(id);
     const $clock       = $("clock");
@@ -581,14 +583,56 @@
     }
     window.addEventListener("resize", handleResize);
 
+    function rememberStock(stock) {
+        if (!stock || !stock.symbol) return;
+        var sym = String(stock.symbol).toUpperCase();
+        stockCache[sym] = Object.assign({}, stockCache[sym] || {}, stock, { symbol: sym });
+    }
+
+    function rememberStocks(stocks) {
+        (stocks || []).forEach(rememberStock);
+    }
+
+    function findKnownStock(symbol) {
+        var sym = String(symbol || "").toUpperCase();
+        if (dashboardData && dashboardData.stocks) {
+            var live = dashboardData.stocks.find(function (s) { return s.symbol === sym; });
+            if (live) return live;
+        }
+        return stockCache[sym] || null;
+    }
+
+    async function fetchStockDetail(symbol) {
+        var sym = String(symbol || "").toUpperCase();
+        if (!sym) return null;
+        if (stockFetchInflight[sym]) return stockFetchInflight[sym];
+        stockFetchInflight[sym] = (async function () {
+            try {
+                var res = await fetch("/api/stock/" + encodeURIComponent(sym));
+                if (!res.ok) return null;
+                var stock = await res.json();
+                rememberStock(stock);
+                return stock;
+            } finally {
+                delete stockFetchInflight[sym];
+            }
+        })();
+        return stockFetchInflight[sym];
+    }
+
+    async function hydrateWatchlistStocks() {
+        var missing = watchlist.filter(function (sym) { return !findKnownStock(sym); });
+        if (!missing.length) return;
+        await Promise.all(missing.slice(0, 6).map(fetchStockDetail));
+        renderWatchlistTable();
+    }
+
     // ── Stock Selection ────────────────────────────────────────────────
 
-    function selectStock(symbol) {
+    async function selectStock(symbol) {
         selectedStock = symbol;
-        var stock = null;
-        if (dashboardData && dashboardData.stocks) {
-            stock = dashboardData.stocks.find(function (s) { return s.symbol === symbol; });
-        }
+        var stock = findKnownStock(symbol);
+        if (!stock) stock = await fetchStockDetail(symbol);
         if (stock) {
             renderStockDetail(stock);
             $stockHero.style.display = "";
@@ -637,6 +681,7 @@
             try {
                 var res = await fetch("/api/search?q=" + encodeURIComponent(q));
                 var items = await res.json();
+                rememberStocks(items);
                 clearChildren($results);
                 if (!items.length) { $results.classList.remove("visible"); return; }
 
@@ -705,6 +750,7 @@
         watchlist = normalizeWatchlist(symbols);
         saveWatchlist();
         renderWatchlistTable();
+        hydrateWatchlistStocks();
         if (currentNewsTab === "watchlist" && dashboardData) renderNews(dashboardData.news);
         if (ws && ws.readyState === WebSocket.OPEN && watchlist.length) {
             watchlist.forEach(function (sym) { ws.send("watchlist:" + sym); });
@@ -783,12 +829,8 @@
                 "Type in the search box above to add stocks to your watchlist"));
             return;
         }
-        var stocks = dashboardData ? dashboardData.stocks : [];
         watchlist.forEach(function (sym) {
-            var stock = null;
-            for (var i = 0; i < stocks.length; i++) {
-                if (stocks[i].symbol === sym) { stock = stocks[i]; break; }
-            }
+            var stock = findKnownStock(sym);
             var row = el("div", "wl-row" + (selectedStock === sym ? " wl-row-active" : ""));
             row.appendChild(el("span", "wl-row-sym", sym));
             row.appendChild(el("span", "wl-row-name", stock ? (stock.name || "") : ""));
@@ -814,16 +856,21 @@
         });
     }
 
-    function showWatchlistSuggestions(query) {
+    async function showWatchlistSuggestions(query) {
         clearChildren($wlSuggest);
-        if (!query || !dashboardData || !dashboardData.stocks) {
+        if (!query) {
             $wlSuggest.classList.remove("visible");
             return;
         }
-        var q = query.toUpperCase();
-        var matches = dashboardData.stocks.filter(function (s) {
-            return s.symbol.indexOf(q) !== -1 || (s.name || "").toUpperCase().indexOf(q) !== -1;
-        }).slice(0, 10);
+        var matches = [];
+        try {
+            var res = await fetch("/api/search?q=" + encodeURIComponent(query));
+            if (!res.ok) throw new Error("watchlist search failed");
+            matches = await res.json();
+            rememberStocks(matches);
+        } catch (err) {
+            console.error("Watchlist search error:", err);
+        }
 
         if (!matches.length) {
             $wlSuggest.classList.remove("visible");
@@ -851,8 +898,17 @@
         $wlSuggest.classList.add("visible");
     }
 
+    var wlSuggestTimeout = null;
     $wlInput.addEventListener("input", function () {
-        showWatchlistSuggestions($wlInput.value.trim());
+        clearTimeout(wlSuggestTimeout);
+        var query = $wlInput.value.trim();
+        if (!query) {
+            $wlSuggest.classList.remove("visible");
+            return;
+        }
+        wlSuggestTimeout = setTimeout(function () {
+            showWatchlistSuggestions(query);
+        }, 200);
     });
 
     $wlInput.addEventListener("focus", function () {
@@ -874,6 +930,7 @@
 
     function renderDashboard(data, isLive) {
         dashboardData = data;
+        rememberStocks(data.stocks);
 
         var st = data.market_status || "CLOSED";
         $status.textContent = st;

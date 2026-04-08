@@ -40,6 +40,8 @@ _USER_AGENTS = [
 NSE_BASE = "https://www.nseindia.com"
 NSE_INDICES_URL = NSE_BASE + "/api/allIndices"
 NSE_NIFTY50_URL = NSE_BASE + "/api/equity-stockIndices?index=NIFTY%2050"
+NSE_SEARCH_URL = NSE_BASE + "/api/search/autocomplete?q={query}"
+NSE_QUOTE_EQUITY_URL = NSE_BASE + "/api/quote-equity?symbol={symbol}"
 NSE_OC_INDEX_URL = NSE_BASE + "/api/option-chain-indices?symbol={symbol}"
 NSE_OC_EQUITY_URL = NSE_BASE + "/api/option-chain-equities?symbol={symbol}"
 OC_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
@@ -725,6 +727,9 @@ class DataEngine:
         self._llm_stack: List[dict] = []
         self._llm_pending: Set[str] = set()
         self._llm_lock = threading.Lock()
+        self._search_cache: OrderedDict = OrderedDict()
+        self._search_cache_ttl = 300
+        self._search_cache_max = 64
 
     @property
     def market_status(self) -> str:
@@ -2396,15 +2401,139 @@ class DataEngine:
             "breadth": {"advances": adv, "declines": dec},
         }
 
+    def _cache_search_results(self, query: str, results: list):
+        self._search_cache[query] = {
+            "results": results,
+            "expires": time.time() + self._search_cache_ttl,
+        }
+        self._search_cache.move_to_end(query)
+        while len(self._search_cache) > self._search_cache_max:
+            self._search_cache.popitem(last=False)
+
+    def _search_nse_equities(self, query: str) -> list:
+        q = (query or "").strip().upper()
+        if not q:
+            return []
+        cached = self._search_cache.get(q)
+        if cached and cached.get("expires", 0) > time.time():
+            self._search_cache.move_to_end(q)
+            return cached.get("results", [])
+
+        data = self._nse.get(NSE_SEARCH_URL.format(query=quote(q)))
+        results = []
+        for item in (data or {}).get("symbols", []):
+            if item.get("result_type") != "symbol" or item.get("result_sub_type") != "equity":
+                continue
+            symbol = (item.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            results.append({
+                "symbol": symbol,
+                "name": item.get("symbol_info") or symbol,
+                "sector": SECTOR_MAP.get(symbol, "Other"),
+            })
+        self._cache_search_results(q, results)
+        return results
+
+    def _build_stock_payload(
+        self,
+        symbol: str,
+        name: str,
+        sector: str,
+        price: float,
+        change: float,
+        change_pct: float,
+        open_price: float,
+        high: float,
+        low: float,
+        volume: int,
+        prev_close: float,
+        year_high: float,
+        year_low: float,
+    ) -> dict:
+        return {
+            "symbol": symbol,
+            "name": name or symbol,
+            "sector": sector or SECTOR_MAP.get(symbol, "Other"),
+            "price": round(price, 2),
+            "change": round(change, 2),
+            "change_pct": round(change_pct, 2),
+            "open": round(open_price, 2),
+            "high": round(high, 2),
+            "low": round(low, 2),
+            "volume": int(volume),
+            "prev_close": round(prev_close, 2),
+            "year_high": round(year_high, 2),
+            "year_low": round(year_low, 2),
+        }
+
+    def _fetch_nse_equity_quote(self, symbol: str) -> Optional[dict]:
+        data = self._nse.get(NSE_QUOTE_EQUITY_URL.format(symbol=quote(symbol)))
+        if not data or not isinstance(data, dict):
+            return None
+        info = data.get("info") or {}
+        price_info = data.get("priceInfo") or {}
+        security_info = data.get("securityInfo") or {}
+        name = info.get("companyName") or YF_COMPANY_NAMES.get(symbol, symbol)
+        sector = info.get("industry") or security_info.get("industry") or SECTOR_MAP.get(symbol, "Other")
+        price = self._to_float(price_info.get("lastPrice"))
+        prev_close = self._to_float(price_info.get("previousClose"), price)
+        if not price:
+            return None
+        change = self._to_float(price_info.get("change"), price - prev_close if prev_close else 0)
+        pct = self._to_float(price_info.get("pChange"), (change / prev_close * 100) if prev_close else 0)
+        open_price = self._to_float(price_info.get("open"), price)
+        intraday = price_info.get("intraDayHighLow") or {}
+        week = price_info.get("weekHighLow") or {}
+        high = self._to_float(intraday.get("max"), price)
+        low = self._to_float(intraday.get("min"), price)
+        year_high = self._to_float(week.get("max"), high)
+        year_low = self._to_float(week.get("min"), low)
+        volume = self._to_float((data.get("securityWiseDP") or {}).get("quantityTraded"), 0)
+        if not volume:
+            volume = self._to_float((data.get("marketDeptOrderBook") or {}).get("tradeInfo", {}).get("totalTradedVolume"), 0)
+        return self._build_stock_payload(
+            symbol=symbol,
+            name=name,
+            sector=sector,
+            price=price,
+            change=change,
+            change_pct=pct,
+            open_price=open_price,
+            high=high,
+            low=low,
+            volume=int(volume),
+            prev_close=prev_close,
+            year_high=year_high,
+            year_low=year_low,
+        )
+
     def get_stock(self, symbol: str) -> Optional[dict]:
-        return self._stocks.get(symbol.upper())
+        sym = symbol.upper()
+        stock = self._stocks.get(sym)
+        if stock:
+            return stock
+        return self._fetch_nse_equity_quote(sym)
 
     def search(self, query: str) -> list:
-        q = query.upper()
-        return [
+        q = query.upper().strip()
+        if not q:
+            return []
+        local = [
             s for s in self._stocks.values()
             if q in s["symbol"] or q in s.get("name", "").upper()
-        ][:12]
+        ]
+        results = []
+        seen = set()
+        for item in local + self._search_nse_equities(q):
+            sym = item.get("symbol")
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            results.append(item)
+            if len(results) >= 12:
+                break
+        return results
 
     async def get_chart(self, symbol: str, period: str = "1d",
                         interval: str = "5m") -> list:
