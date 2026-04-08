@@ -63,6 +63,12 @@ def _watchlist_response() -> dict:
     }
 
 
+def _refresh_watchlist_symbol(symbol: str):
+    fetcher = getattr(engine, "fetch_watchlist_stock_news", None)
+    if callable(fetcher):
+        asyncio.create_task(fetcher(symbol))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await engine.start()
@@ -122,7 +128,7 @@ async def sync_watchlist(payload: WatchlistPayload):
     symbols = _normalize_symbols(payload.symbols)
     await asyncio.to_thread(watchlist_store.merge_symbols, symbols)
     for sym in symbols:
-        asyncio.create_task(engine.fetch_watchlist_stock_news(sym))
+        _refresh_watchlist_symbol(sym)
     return JSONResponse(_watchlist_response())
 
 
@@ -132,7 +138,7 @@ async def add_watchlist_symbol(symbol: str):
     if not _known_symbol(sym):
         raise HTTPException(status_code=404, detail="Unknown symbol")
     await asyncio.to_thread(watchlist_store.add_symbol, sym)
-    asyncio.create_task(engine.fetch_watchlist_stock_news(sym))
+    _refresh_watchlist_symbol(sym)
     return JSONResponse(_watchlist_response())
 
 
@@ -169,7 +175,7 @@ async def ws_endpoint(ws: WebSocket):
                     await ws.send_text(json.dumps({"type": "stock", "data": detail}))
             elif msg.startswith("watchlist:"):
                 sym = msg.split(":")[1].strip().upper()
-                asyncio.create_task(engine.fetch_watchlist_stock_news(sym))
+                _refresh_watchlist_symbol(sym)
     except WebSocketDisconnect:
         pass
     finally:
