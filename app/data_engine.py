@@ -6,7 +6,9 @@ Falls back to yfinance when hosted environments cannot access NSE cleanly.
 
 import asyncio
 import calendar
+import csv
 import hashlib
+import io
 import json
 import os
 import random
@@ -40,8 +42,11 @@ _USER_AGENTS = [
 NSE_BASE = "https://www.nseindia.com"
 NSE_INDICES_URL = NSE_BASE + "/api/allIndices"
 NSE_NIFTY50_URL = NSE_BASE + "/api/equity-stockIndices?index=NIFTY%2050"
-NSE_SEARCH_URL = NSE_BASE + "/api/search/autocomplete?q={query}"
 NSE_QUOTE_EQUITY_URL = NSE_BASE + "/api/quote-equity?symbol={symbol}"
+NSE_EQUITY_LIST_URLS = (
+    "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+    "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+)
 NSE_OC_INDEX_URL = NSE_BASE + "/api/option-chain-indices?symbol={symbol}"
 NSE_OC_EQUITY_URL = NSE_BASE + "/api/option-chain-equities?symbol={symbol}"
 OC_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
@@ -730,6 +735,9 @@ class DataEngine:
         self._search_cache: OrderedDict = OrderedDict()
         self._search_cache_ttl = 300
         self._search_cache_max = 64
+        self._equity_catalog: List[dict] = []
+        self._equity_catalog_loaded_at = 0.0
+        self._equity_catalog_ttl = 12 * 60 * 60
 
     @property
     def market_status(self) -> str:
@@ -2419,21 +2427,51 @@ class DataEngine:
             self._search_cache.move_to_end(q)
             return cached.get("results", [])
 
-        data = self._nse.get(NSE_SEARCH_URL.format(query=quote(q)))
+        catalog = self._load_equity_catalog()
         results = []
-        for item in (data or {}).get("symbols", []):
-            if item.get("result_type") != "symbol" or item.get("result_sub_type") != "equity":
-                continue
-            symbol = (item.get("symbol") or "").strip().upper()
-            if not symbol:
+        for item in catalog:
+            symbol = item["symbol"]
+            name = item["name"]
+            if q not in symbol and q not in name.upper():
                 continue
             results.append({
                 "symbol": symbol,
-                "name": item.get("symbol_info") or symbol,
+                "name": name,
                 "sector": SECTOR_MAP.get(symbol, "Other"),
             })
+            if len(results) >= 24:
+                break
         self._cache_search_results(q, results)
         return results
+
+    def _load_equity_catalog(self) -> List[dict]:
+        now = time.time()
+        if self._equity_catalog and now - self._equity_catalog_loaded_at < self._equity_catalog_ttl:
+            return self._equity_catalog
+
+        catalog = []
+        for url in NSE_EQUITY_LIST_URLS:
+            try:
+                r = requests.get(url, headers={"User-Agent": random.choice(_USER_AGENTS)}, timeout=20)
+                if r.status_code != 200 or not r.text.strip():
+                    continue
+                rows = list(csv.DictReader(io.StringIO(r.text)))
+                for row in rows:
+                    symbol = (row.get("SYMBOL") or "").strip().upper()
+                    name = (row.get("NAME OF COMPANY") or "").strip()
+                    series = (row.get(" SERIES") or row.get("SERIES") or "").strip().upper()
+                    if not symbol or not name or (series and series not in {"EQ", "T0"}):
+                        continue
+                    catalog.append({"symbol": symbol, "name": name})
+                if catalog:
+                    break
+            except Exception as e:
+                print(f"[Search] Equity catalog fetch error: {e}")
+
+        if catalog:
+            self._equity_catalog = catalog
+            self._equity_catalog_loaded_at = now
+        return self._equity_catalog
 
     def _build_stock_payload(
         self,
@@ -2508,12 +2546,48 @@ class DataEngine:
             year_low=year_low,
         )
 
+    def _fetch_yf_equity_quote(self, symbol: str) -> Optional[dict]:
+        try:
+            hist = yf.Ticker(f"{symbol}.NS").history(period="5d", interval="1d")
+        except Exception as e:
+            print(f"[YF Quote] {symbol}: {e}")
+            return None
+        closes = hist["Close"].dropna() if "Close" in hist else []
+        if len(closes) == 0:
+            return None
+        row = hist.loc[closes.index[-1]]
+        price = self._to_float(row.get("Close"))
+        if not price:
+            return None
+        prev_close = self._to_float(closes.iloc[-2] if len(closes) > 1 else price, price)
+        change = price - prev_close if prev_close else 0
+        pct = (change / prev_close * 100) if prev_close else 0
+        name = YF_COMPANY_NAMES.get(symbol, symbol)
+        catalog_match = next((item for item in self._load_equity_catalog() if item["symbol"] == symbol), None)
+        if catalog_match:
+            name = catalog_match["name"]
+        return self._build_stock_payload(
+            symbol=symbol,
+            name=name,
+            sector=SECTOR_MAP.get(symbol, "Other"),
+            price=price,
+            change=change,
+            change_pct=pct,
+            open_price=self._to_float(row.get("Open"), price),
+            high=self._to_float(row.get("High"), price),
+            low=self._to_float(row.get("Low"), price),
+            volume=int(self._to_float(row.get("Volume"), 0)),
+            prev_close=prev_close,
+            year_high=self._to_float(hist["High"].max() if "High" in hist else price, price),
+            year_low=self._to_float(hist["Low"].min() if "Low" in hist else price, price),
+        )
+
     def get_stock(self, symbol: str) -> Optional[dict]:
         sym = symbol.upper()
         stock = self._stocks.get(sym)
         if stock:
             return stock
-        return self._fetch_nse_equity_quote(sym)
+        return self._fetch_nse_equity_quote(sym) or self._fetch_yf_equity_quote(sym)
 
     def search(self, query: str) -> list:
         q = query.upper().strip()
@@ -2533,6 +2607,16 @@ class DataEngine:
             results.append(item)
             if len(results) >= 12:
                 break
+        if not results and re.fullmatch(r"[A-Z0-9&.-]{1,20}", q):
+            stock = self._fetch_yf_equity_quote(q)
+            if stock:
+                results.append({
+                    "symbol": stock["symbol"],
+                    "name": stock["name"],
+                    "sector": stock["sector"],
+                    "price": stock["price"],
+                    "change_pct": stock["change_pct"],
+                })
         return results
 
     async def get_chart(self, symbol: str, period: str = "1d",
