@@ -25,3 +25,13 @@ This repo is already configured for Render with [`render.yaml`](render.yaml).
    - Health check: `/health`
 
 The repo includes [`.python-version`](.python-version) to keep Render on Python `3.9` instead of inheriting Render's moving default interpreter version.
+
+## Watchlist persistence
+
+The app stores the shared watchlist in a database when `DATABASE_URL` is set.
+
+- The current `render.yaml` provisions a Render Postgres database for zero-setup deploys.
+- For a permanent watchlist, point `DATABASE_URL` at a non-expiring Postgres database.
+  Examples: a paid Render Postgres instance, or any external hosted Postgres.
+- Free Render Postgres expires after 30 days, so it is not a permanent store.
+- You can also set `WATCHLIST_SEED_SYMBOLS=RELIANCE,TCS,INFY` to repopulate a default watchlist if the database is ever replaced or reset.

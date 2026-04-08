@@ -805,7 +805,7 @@ class DataEngine:
                 continue
             stocks = result.get("stocks") or []
             if stocks:
-                item["watchlist_stocks"] = stocks
+                item["watchlist_stocks"] = list(dict.fromkeys(stocks))
             item["sentiment"] = result.get("sentiment", item.get("sentiment", "neutral"))
             item["impact"] = result.get("impact", item.get("impact", "low"))
             item["gold_silver"] = bool(result.get("gold_silver", item.get("gold_silver", False)))
@@ -1164,6 +1164,93 @@ class DataEngine:
             print(f"[Global] {symbol} snapshot error: {e}")
             return None
 
+    def _search_stock_news(self, symbol: str) -> List[dict]:
+        """Search Google News RSS for a specific stock symbol over the past 12 hours.
+
+        Returns formatted news items ready to merge into self._news.
+        """
+        company_name = YF_COMPANY_NAMES.get(symbol, "")
+        short_name = company_name.replace(" Limited", "").replace(" Ltd", "").strip() if company_name else ""
+
+        queries = []
+        if short_name:
+            queries.append(f'"{short_name}" when:12h')
+        queries.append(f"{symbol} NSE stock when:12h")
+
+        now = datetime.now(IST)
+        cutoff = now - timedelta(hours=12)
+        results: List[dict] = []
+        seen_titles: Set[str] = set()
+
+        for q in queries:
+            url = f"https://news.google.com/rss/search?q={quote_plus(q)}&hl=en-IN&gl=IN&ceid=IN:en"
+            try:
+                feed = feedparser.parse(url)
+                for entry in feed.entries[:15]:
+                    pub_dt = self._parse_pub_time(entry)
+                    if pub_dt and pub_dt < cutoff:
+                        continue
+                    title = entry.get("title", "").strip()
+                    if not title:
+                        continue
+                    title_key = title.lower()[:50]
+                    if title_key in seen_titles:
+                        continue
+                    seen_titles.add(title_key)
+                    summary = entry.get("summary", "").strip()[:300]
+                    tags = self._classify_news(title, summary)
+                    wl_stocks = [symbol]
+                    for s in tags["keyword_stocks"]:
+                        if s not in wl_stocks:
+                            wl_stocks.append(s)
+                    age_secs = int((now - pub_dt).total_seconds()) if pub_dt else 999999
+                    display_src = self._display_news_source(url, "Google News", title, entry)
+                    combined_text = title.lower() + (" " + summary.lower() if summary else "")
+                    india_hint = any(kw in combined_text for kw in _INDIA_IMPACT_HINT_KW)
+                    india_news = any(kw in combined_text for kw in _INDIA_NEWS_KW)
+                    results.append({
+                        "title": title,
+                        "link": entry.get("link", ""),
+                        "source": display_src,
+                        "age_secs": age_secs,
+                        "time": self._relative_time(pub_dt) if pub_dt else "",
+                        "is_fresh": age_secs < 900,
+                        "global_news": False,
+                        "india_news": india_news,
+                        "breaking": False,
+                        "breaking_hint": tags["breaking"],
+                        "stock_event": tags["stock_event"],
+                        "gold_silver": tags["gold_silver"],
+                        "india_market_impact": india_hint,
+                        "market_relevant": tags.get("market_relevant", False),
+                        "company_specific": True,
+                        "keyword_stocks": tags["keyword_stocks"],
+                        "watchlist_stocks": wl_stocks,
+                    })
+            except Exception as e:
+                print(f"[WL Search] {symbol} feed error: {e}")
+
+        print(f"[WL Search] {symbol}: {len(results)} items from {len(queries)} queries")
+        return results
+
+    async def fetch_watchlist_stock_news(self, symbol: str):
+        """Async entry point: search for stock news, merge into live feed, broadcast."""
+        symbol = symbol.upper().strip()
+        if symbol not in SECTOR_MAP and symbol not in YF_COMPANY_NAMES:
+            return
+        items = await asyncio.to_thread(self._search_stock_news, symbol)
+        if not items:
+            return
+        with self._news_lock:
+            existing_titles = {n["title"].lower()[:50] for n in self._news}
+            new_items = [it for it in items if it["title"].lower()[:50] not in existing_titles]
+            if new_items:
+                self._news.extend(new_items)
+                self._news.sort(key=lambda x: x.get("age_secs", 999999))
+        if new_items:
+            self._push_llm_stack(new_items)
+            await self._broadcast("news")
+
     async def _gift_nifty_loop(self):
         """Poll GIFT Nifty price on its own short interval (scrape source doesn't have a WS)."""
         try:
@@ -1506,7 +1593,8 @@ class DataEngine:
             "india_market_impact": india_hint,
             "market_relevant": tags.get("market_relevant", False),
             "company_specific": tags.get("company_specific", False),
-            "watchlist_stocks": tags["watchlist_stocks"],
+            "keyword_stocks": tags["keyword_stocks"],
+            "watchlist_stocks": [],
         }
 
     def _schedule_news_broadcast(self):
@@ -1900,7 +1988,7 @@ class DataEngine:
             "gold_silver": is_gold_silver,
             "market_relevant": is_market_rel,
             "company_specific": is_company_specific,
-            "watchlist_stocks": matched,
+            "keyword_stocks": matched,
         }
 
     @staticmethod
@@ -1967,54 +2055,23 @@ class DataEngine:
         """Classify a single headline via NVIDIA API. Returns parsed dict or None."""
         user_msg = _LLM_PROMPT_PREFIX + f'1. "{headline}"'
         try:
-            if model == "moonshotai/kimi-k2.5":
-                r = requests.post(
-                    NV_API_URL,
-                    headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": _LLM_SYSTEM},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        "temperature": 0.1,
-                        "max_tokens": 2048,
-                        "stream": True,
-                    },
-                    timeout=90,
-                    stream=True,
-                )
-                if r.status_code != 200:
-                    return None
-                content = ""
-                for line in r.iter_lines(decode_unicode=True):
-                    if not line or not line.startswith("data: ") or line == "data: [DONE]":
-                        continue
-                    try:
-                        delta = json.loads(line[6:]).get("choices", [{}])[0].get("delta", {})
-                        content += delta.get("content", "") or ""
-                    except Exception:
-                        pass
-                text = content.strip()
-            else:
-                r = requests.post(
-                    NV_API_URL,
-                    headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": _LLM_SYSTEM},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        "temperature": 0.1,
-                        "max_tokens": 512,
-                    },
-                    timeout=30,
-                )
-                if r.status_code != 200:
-                    return None
-                text = r.json()["choices"][0]["message"]["content"].strip()
-
+            r = requests.post(
+                NV_API_URL,
+                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _LLM_SYSTEM},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 512,
+                },
+                timeout=30,
+            )
+            if r.status_code != 200:
+                return None
+            text = r.json()["choices"][0]["message"]["content"].strip()
             text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             start = text.find("[")
             end = text.rfind("]")
@@ -2040,7 +2097,7 @@ class DataEngine:
                 self._llm_cache.move_to_end(cache_key)
                 cached = self._llm_cache[cache_key]
                 if cached["stocks"]:
-                    item["watchlist_stocks"] = cached["stocks"]
+                    item["watchlist_stocks"] = list(dict.fromkeys(cached["stocks"]))
                 item["sentiment"] = cached["sentiment"]
                 item["impact"] = cached["impact"]
                 item["breaking"] = cached.get("breaking", item.get("breaking", False))
@@ -2095,7 +2152,7 @@ class DataEngine:
                 self._llm_cache.popitem(last=False)
 
             if stocks:
-                item["watchlist_stocks"] = stocks
+                item["watchlist_stocks"] = list(dict.fromkeys(stocks))
             item["sentiment"] = sentiment
             item["impact"] = impact
             item["breaking"] = is_brk
@@ -2168,7 +2225,8 @@ class DataEngine:
                         "india_market_impact": india_hint,
                         "market_relevant": tags.get("market_relevant", False),
                         "company_specific": tags.get("company_specific", False),
-                        "watchlist_stocks": tags["watchlist_stocks"],
+                        "keyword_stocks": tags["keyword_stocks"],
+                        "watchlist_stocks": [],
                     })
             except Exception as e:
                 print(f"[News] RSS error: {e}")
@@ -2271,7 +2329,8 @@ class DataEngine:
                     "india_market_impact": trad_india_hint,
                     "market_relevant": tags.get("market_relevant", False),
                     "company_specific": tags.get("company_specific", False),
-                    "watchlist_stocks": tags["watchlist_stocks"],
+                    "keyword_stocks": tags["keyword_stocks"],
+                    "watchlist_stocks": [],
                 })
                 tradient_sent = obj.get("overall_sentiment", "").lower()
                 if tradient_sent in ("positive", "very positive"):
@@ -2326,6 +2385,7 @@ class DataEngine:
             "movers": self._movers,
             "news": self._news,
             "sectors": self._sectors,
+            "sector_map": SECTOR_MAP,
             "gift_nifty": self._gift_nifty,
             "global_futures": self._global_futures,
             "last_global_update": self._last_global_update,

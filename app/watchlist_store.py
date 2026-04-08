@@ -29,6 +29,9 @@ class WatchlistStore:
                 str(Path(__file__).resolve().parent.parent / "data" / "watchlist.db"),
             )
         )
+        self._seed_symbols = self._parse_seed_symbols(
+            os.getenv("WATCHLIST_SEED_SYMBOLS", "")
+        )
 
         if self._db_url and psycopg is not None:
             self._mode = "postgres"
@@ -40,6 +43,19 @@ class WatchlistStore:
             self._sqlite = sqlite3.connect(self._sqlite_path, check_same_thread=False)
             self._sqlite.row_factory = sqlite3.Row
             self._init_sqlite()
+        self._seed_if_empty()
+
+    @staticmethod
+    def _parse_seed_symbols(raw: str) -> List[str]:
+        seen = set()
+        items = []
+        for part in raw.replace("\n", ",").split(","):
+            sym = part.strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            items.append(sym)
+        return items
 
     @property
     def storage_mode(self) -> str:
@@ -136,6 +152,11 @@ class WatchlistStore:
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 """
             )
+
+    def _seed_if_empty(self):
+        if self.initialized or not self._seed_symbols or self.list_symbols():
+            return
+        self.merge_symbols(self._seed_symbols)
 
     def list_symbols(self) -> List[str]:
         if self._mode == "postgres":
