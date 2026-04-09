@@ -147,6 +147,7 @@ TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
 YF_INDEX_MAP = {
     "NIFTY 50": "^NSEI",
     "NIFTY BANK": "^NSEBANK",
+    "NIFTY NEXT 50": "^NSMIDCP",
     "NIFTY MIDCAP 50": "^NSEMDCP50",
     "NIFTY FINANCIAL SERVICES": "^CNXFIN",
     "NIFTY IT": "^CNXIT",
@@ -2119,6 +2120,26 @@ class DataEngine:
                     }
             except Exception as e:
                 print(f"[YF Index] {name}: {e}")
+            if not row:
+                snap = self._fetch_yahoo_chart_snapshot(yf_symbol)
+                if snap:
+                    price = self._to_float(snap.get("price"), 0.0)
+                    prev = self._to_float(snap.get("prev_close"), 0.0)
+                    if price:
+                        change = price - prev if prev else 0.0
+                        pct = (change / prev * 100) if prev else 0.0
+                        row = {
+                            "symbol": name,
+                            "name": name,
+                            "price": round(price, 2),
+                            "change": round(change, 2),
+                            "change_pct": round(pct, 2),
+                            "open": round(price, 2),
+                            "high": round(price, 2),
+                            "low": round(price, 2),
+                            "advances": None,
+                            "declines": None,
+                        }
             if not row and TWELVE_DATA_API_KEY:
                 td_spec = INDIA_YF_INDEX_TO_TWELVE.get(yf_symbol)
                 if td_spec:
