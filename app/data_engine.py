@@ -459,9 +459,6 @@ TWELVE_DATA_STOCK_FALLBACK_CAP = max(
 TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
 NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", NV_API_MODEL)
-LLM_BATCH_THRESHOLD = max(2, int(os.getenv("NV_BATCH_THRESHOLD", "10")))
-LLM_BATCH_SIZE = max(1, min(24, int(os.getenv("NV_BATCH_SIZE", "12"))))
-LLM_BATCH_MAX_TOKENS = max(512, min(4096, int(os.getenv("NV_BATCH_MAX_TOKENS", "2048"))))
 LLM_CACHE_SIZE = 500
 
 _LLM_SYSTEM = (
@@ -889,14 +886,7 @@ class DataEngine:
                 cache_key = title[:80].lower()
                 if cache_key in self._llm_cache or cache_key in self._llm_pending:
                     continue
-                self._llm_stack.append({
-                    "cache_key": cache_key,
-                    "title": title,
-                    "stock_event": bool(it.get("stock_event", False)),
-                    "gold_silver": bool(it.get("gold_silver", False)),
-                    "market_relevant": bool(it.get("market_relevant", False)),
-                    "company_specific": bool(it.get("company_specific", False)),
-                })
+                self._llm_stack.append({"cache_key": cache_key, "title": title})
                 self._llm_pending.add(cache_key)
                 added = True
         if added:
@@ -909,154 +899,109 @@ class DataEngine:
                 return None
             return self._llm_stack.pop()
 
-    def _pop_llm_stack_batch(self, limit: int) -> List[dict]:
-        """Pop up to `limit` items from the LLM stack in LIFO order."""
-        if limit <= 0:
-            return []
-        with self._llm_lock:
-            if not self._llm_stack:
-                return []
-            take = min(limit, len(self._llm_stack))
-            return [self._llm_stack.pop() for _ in range(take)]
-
     def _mark_llm_done(self, cache_key: str):
         with self._llm_lock:
             self._llm_pending.discard(cache_key)
-
-    def _cache_llm_result(self, cache_key: str, result: dict):
-        self._llm_cache[cache_key] = result
-        while len(self._llm_cache) > LLM_CACHE_SIZE:
-            self._llm_cache.popitem(last=False)
-
-    @staticmethod
-    def _fallback_llm_result(item: Optional[dict] = None) -> dict:
-        item = item or {}
-        return {
-            "stocks": [],
-            "sentiment": "neutral",
-            "impact": "low",
-            "breaking": False,
-            "gold_silver": bool(item.get("gold_silver", False)),
-            "india_market_impact": False,
-            "market_relevant": bool(item.get("market_relevant", False)),
-            "company_specific": bool(item.get("company_specific", False)),
-        }
-
-    def _normalize_llm_result(
-        self,
-        entry: Optional[dict],
-        item: Optional[dict] = None,
-        valid_syms: Optional[Set[str]] = None,
-    ) -> dict:
-        fallback = self._fallback_llm_result(item)
-        if not entry or not isinstance(entry, dict):
-            return fallback
-        valid_syms = valid_syms or self._valid_equity_symbols()
-        stocks = []
-        for symbol in entry.get("stocks", []) or []:
-            if not isinstance(symbol, str):
-                continue
-            sym = symbol.strip().upper()
-            if sym and sym in valid_syms:
-                stocks.append(sym)
-        sentiment = entry.get("sentiment", "neutral")
-        if sentiment not in ("bullish", "bearish", "neutral"):
-            sentiment = "neutral"
-        impact = entry.get("impact", "low")
-        if impact not in ("high", "medium", "low"):
-            impact = "low"
-        is_gs = bool(entry.get("gold_silver", fallback["gold_silver"]))
-        is_india = bool(entry.get("india_market_impact", False))
-        if "market_relevant" in entry:
-            is_market_rel = bool(entry.get("market_relevant"))
-        else:
-            is_market_rel = bool(fallback["market_relevant"] or is_india or is_gs or entry.get("breaking", False))
-        if "company_specific" in entry:
-            is_comp = bool(entry.get("company_specific"))
-        else:
-            is_comp = bool(fallback["company_specific"])
-        is_brk = is_india
-        if item and item.get("stock_event"):
-            is_brk = False
-        if is_comp:
-            is_brk = False
-        return {
-            "stocks": list(dict.fromkeys(stocks)),
-            "sentiment": sentiment,
-            "impact": impact,
-            "breaking": is_brk,
-            "gold_silver": is_gs,
-            "india_market_impact": is_india,
-            "market_relevant": is_market_rel,
-            "company_specific": is_comp,
-        }
-
-    @staticmethod
-    def _apply_llm_result_fields(item: dict, result: dict):
-        stocks = result.get("stocks") or []
-        if stocks:
-            item["watchlist_stocks"] = list(dict.fromkeys(stocks))
-        item["sentiment"] = result.get("sentiment", item.get("sentiment", "neutral"))
-        item["impact"] = result.get("impact", item.get("impact", "low"))
-        item["gold_silver"] = bool(result.get("gold_silver", item.get("gold_silver", False)))
-        item["india_market_impact"] = bool(result.get("india_market_impact", item.get("india_market_impact", False)))
-        item["market_relevant"] = bool(result.get("market_relevant", item.get("market_relevant", False)))
-        item["company_specific"] = bool(result.get("company_specific", item.get("company_specific", False)))
-        brk = bool(result.get("breaking", item.get("breaking", False)))
-        if not item.get("india_market_impact"):
-            brk = False
-        if item.get("stock_event"):
-            brk = False
-        if item.get("company_specific"):
-            brk = False
-        item["breaking"] = brk
 
     def _apply_llm_result_to_news(self, cache_key: str, result: dict):
         """Apply cached LLM result to any matching items in current news list."""
         for item in self._news:
             if item.get("title", "")[:80].lower() != cache_key:
                 continue
-            self._apply_llm_result_fields(item, result)
+            stocks = result.get("stocks") or []
+            if stocks:
+                item["watchlist_stocks"] = list(dict.fromkeys(stocks))
+            item["sentiment"] = result.get("sentiment", item.get("sentiment", "neutral"))
+            item["impact"] = result.get("impact", item.get("impact", "low"))
+            item["gold_silver"] = bool(result.get("gold_silver", item.get("gold_silver", False)))
+            item["india_market_impact"] = bool(result.get("india_market_impact", False))
+            item["market_relevant"] = bool(result.get("market_relevant", item.get("market_relevant", False)))
+            item["company_specific"] = bool(result.get("company_specific", item.get("company_specific", False)))
+            # BREAKING is India-impact-only and never stock-event.
+            brk = item.get("india_market_impact", False)
+            if item.get("stock_event"):
+                brk = False
+            if item.get("company_specific"):
+                brk = False
+            item["breaking"] = brk
 
     async def _llm_loop(self):
-        """Background LLM worker: drains queued headlines, batching when backlog is high."""
+        """Background LLM worker: pops headlines from stack and classifies one at a time."""
         try:
             while self._running:
-                with self._llm_lock:
-                    backlog = len(self._llm_stack)
-                if not backlog:
-                    await asyncio.sleep(0.25)
-                    continue
-                batch_size = LLM_BATCH_SIZE if backlog > LLM_BATCH_THRESHOLD else 1
-                jobs = self._pop_llm_stack_batch(batch_size)
-                if not jobs:
+                job = self._pop_llm_stack()
+                if not job:
                     await asyncio.sleep(0.25)
                     continue
                 await self._broadcast("llm_queue")
-                model = NV_FAST_MODEL if len(jobs) > 1 or backlog > LLM_BATCH_THRESHOLD else NV_API_MODEL
-                valid_syms = self._valid_equity_symbols()
-                entries: List[Optional[dict]] = [None] * len(jobs)
+                cache_key = job["cache_key"]
+                title = job["title"]
                 try:
-                    entries = await asyncio.to_thread(
-                        self._llm_call_batch,
-                        [job["title"] for job in jobs],
-                        model,
-                    )
-                    if len(entries) < len(jobs):
-                        entries.extend([None] * (len(jobs) - len(entries)))
-                except Exception:
-                    traceback.print_exc()
-                try:
-                    for job, entry in zip(jobs, entries):
-                        result = self._normalize_llm_result(entry, job, valid_syms)
-                        self._cache_llm_result(job["cache_key"], result)
-                        self._apply_llm_result_to_news(job["cache_key"], result)
+                    # Choose model based on current backlog (cold start => faster model).
+                    with self._llm_lock:
+                        backlog = len(self._llm_stack)
+                    model = NV_FAST_MODEL if backlog > 10 else NV_API_MODEL
+
+                    entry = await asyncio.to_thread(self._llm_call_one, title, model)
+                    if not entry or not isinstance(entry, dict):
+                        # Fail closed for breaking/India impact.
+                        result = {
+                            "stocks": [],
+                            "sentiment": "neutral",
+                            "impact": "low",
+                            "breaking": False,
+                            "gold_silver": False,
+                            "india_market_impact": False,
+                            "market_relevant": False,
+                            "company_specific": True,
+                        }
+                    else:
+                        valid_syms = self._valid_equity_symbols()
+                        stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
+                        sentiment = entry.get("sentiment", "neutral")
+                        if sentiment not in ("bullish", "bearish", "neutral"):
+                            sentiment = "neutral"
+                        impact = entry.get("impact", "low")
+                        if impact not in ("high", "medium", "low"):
+                            impact = "low"
+                        is_gs = bool(entry.get("gold_silver", False))
+                        is_india = bool(entry.get("india_market_impact", False))
+                        if "market_relevant" in entry:
+                            is_market_rel = bool(entry.get("market_relevant"))
+                        else:
+                            # Backward compatibility with older cached/model outputs.
+                            # If it can impact India or is precious-metals related, treat as market-relevant.
+                            is_market_rel = bool(is_india or is_gs or entry.get("breaking", False))
+
+                        if "company_specific" in entry:
+                            is_comp = bool(entry.get("company_specific"))
+                        else:
+                            is_comp = bool(job.get("company_specific", False))
+                        # BREAKING tab is India-impact-only (LLM-gated), and must not include company/stock-specific items.
+                        is_brk = is_india
+                        if job.get("stock_event") or is_comp or job.get("company_specific"):
+                            is_brk = False
+                        result = {
+                            "stocks": stocks,
+                            "sentiment": sentiment,
+                            "impact": impact,
+                            "breaking": is_brk,
+                            "gold_silver": is_gs,
+                            "india_market_impact": is_india,
+                            "market_relevant": is_market_rel,
+                            "company_specific": is_comp,
+                        }
+
+                    # Cache + apply to live news
+                    self._llm_cache[cache_key] = result
+                    while len(self._llm_cache) > LLM_CACHE_SIZE:
+                        self._llm_cache.popitem(last=False)
+                    self._apply_llm_result_to_news(cache_key, result)
                     await self._broadcast("news")
                 except Exception:
                     traceback.print_exc()
                 finally:
-                    for job in jobs:
-                        self._mark_llm_done(job["cache_key"])
+                    self._mark_llm_done(cache_key)
         except asyncio.CancelledError:
             return
 
@@ -2643,27 +2588,9 @@ class DataEngine:
         return "News"[:20]
 
     @staticmethod
-    def _extract_llm_json_array(text: str) -> Optional[str]:
-        text = (text or "").strip()
-        text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        start = text.find("[")
-        end = text.rfind("]")
-        if start != -1 and end != -1 and end >= start:
-            return text[start:end + 1]
-        if text.startswith("{") and text.endswith("}"):
-            return "[" + text + "]"
-        return None
-
-    @classmethod
-    def _llm_call_batch(cls, headlines: List[str], model: str) -> List[Optional[dict]]:
-        """Classify one or more headlines via NVIDIA API, preserving input order."""
-        if not headlines:
-            return []
-        user_msg = _LLM_PROMPT_PREFIX + "\n".join(
-            f'{idx}. "{headline}"' for idx, headline in enumerate(headlines, 1)
-        )
-        results: List[Optional[dict]] = [None] * len(headlines)
-        max_tokens = min(LLM_BATCH_MAX_TOKENS, max(512, 160 * len(headlines)))
+    def _llm_call_one(headline: str, model: str) -> Optional[dict]:
+        """Classify a single headline via NVIDIA API. Returns parsed dict or None."""
+        user_msg = _LLM_PROMPT_PREFIX + f'1. "{headline}"'
         try:
             r = requests.post(
                 NV_API_URL,
@@ -2675,43 +2602,27 @@ class DataEngine:
                         {"role": "user", "content": user_msg},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": max_tokens,
+                    "max_tokens": 512,
                 },
-                timeout=45 if len(headlines) > 1 else 30,
+                timeout=30,
             )
             if r.status_code != 200:
-                return results
+                return None
             text = r.json()["choices"][0]["message"]["content"].strip()
-            raw = cls._extract_llm_json_array(text)
-            if not raw:
-                return results
-            arr = json.loads(raw)
-            if isinstance(arr, dict):
-                arr = [arr]
-            if not isinstance(arr, list):
-                return results
-            for offset, entry in enumerate(arr, 1):
-                if not isinstance(entry, dict):
-                    continue
-                idx = entry.get("idx", offset)
-                try:
-                    idx = int(idx)
-                except (TypeError, ValueError):
-                    continue
-                if 1 <= idx <= len(headlines):
-                    results[idx - 1] = entry
-            return results
+            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            start = text.find("[")
+            end = text.rfind("]")
+            if start != -1 and end != -1:
+                text = text[start:end + 1]
+            elif text.startswith("{"):
+                text = "[" + text + "]"
+            arr = json.loads(text)
+            return arr[0] if arr else None
         except Exception:
-            return results
-
-    @classmethod
-    def _llm_call_one(cls, headline: str, model: str) -> Optional[dict]:
-        """Classify a single headline via NVIDIA API. Returns parsed dict or None."""
-        results = cls._llm_call_batch([headline], model)
-        return results[0] if results else None
+            return None
 
     def _llm_classify_all(self, items: List[dict]):
-        """Classify headlines: apply cache, then use NVIDIA in batches for new ones."""
+        """Classify headlines: apply cache, then LLM for each new one."""
         if not NV_API_KEY or not items:
             return
 
@@ -2722,28 +2633,69 @@ class DataEngine:
             if cache_key in self._llm_cache:
                 self._llm_cache.move_to_end(cache_key)
                 cached = self._llm_cache[cache_key]
-                self._apply_llm_result_fields(item, cached)
+                if cached["stocks"]:
+                    item["watchlist_stocks"] = list(dict.fromkeys(cached["stocks"]))
+                item["sentiment"] = cached["sentiment"]
+                item["impact"] = cached["impact"]
+                item["breaking"] = cached.get("breaking", item.get("breaking", False))
+                item["gold_silver"] = cached.get("gold_silver", False) or item.get("gold_silver", False)
+                item["india_market_impact"] = cached.get("india_market_impact", False)
+                # BREAKING is India-impact-only.
+                if not item["india_market_impact"]:
+                    item["breaking"] = False
+                if item.get("stock_event"):
+                    item["breaking"] = False
             else:
                 uncached.append(item)
 
         if not uncached:
             return
 
-        batch_size = LLM_BATCH_SIZE if len(uncached) > LLM_BATCH_THRESHOLD else 1
-        model = NV_FAST_MODEL if batch_size > 1 else NV_API_MODEL
+        model = NV_FAST_MODEL if len(uncached) > 10 else NV_API_MODEL
         ok = 0
-        for start in range(0, len(uncached), batch_size):
-            chunk = uncached[start:start + batch_size]
-            entries = self._llm_call_batch([item["title"] for item in chunk], model)
-            if len(entries) < len(chunk):
-                entries.extend([None] * (len(chunk) - len(entries)))
-            for item, entry in zip(chunk, entries):
-                result = self._normalize_llm_result(entry, item, valid_syms)
-                cache_key = item["title"][:80].lower()
-                self._cache_llm_result(cache_key, result)
-                self._apply_llm_result_fields(item, result)
-                if entry and isinstance(entry, dict):
-                    ok += 1
+        for item in uncached:
+            entry = self._llm_call_one(item["title"], model)
+            if not entry or not isinstance(entry, dict):
+                # LLM must decide India impact for BREAKING; fail closed.
+                item["india_market_impact"] = False
+                item["breaking"] = False
+                continue
+            stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
+            sentiment = entry.get("sentiment", "neutral")
+            if sentiment not in ("bullish", "bearish", "neutral"):
+                sentiment = "neutral"
+            impact = entry.get("impact", "low")
+            if impact not in ("high", "medium", "low"):
+                impact = "low"
+            is_brk = bool(entry.get("breaking", False))
+            if item.get("stock_event"):
+                is_brk = False
+            is_gs = bool(entry.get("gold_silver", False)) or item.get("gold_silver", False)
+            is_india_impact = bool(entry.get("india_market_impact", False))
+            # BREAKING is strictly India-market-impacting only (LLM-gated).
+            is_brk = is_brk and is_india_impact
+            result = {
+                "stocks": stocks,
+                "sentiment": sentiment,
+                "impact": impact,
+                "breaking": is_brk,
+                "gold_silver": is_gs,
+                "india_market_impact": is_india_impact,
+            }
+
+            cache_key = item["title"][:80].lower()
+            self._llm_cache[cache_key] = result
+            while len(self._llm_cache) > LLM_CACHE_SIZE:
+                self._llm_cache.popitem(last=False)
+
+            if stocks:
+                item["watchlist_stocks"] = list(dict.fromkeys(stocks))
+            item["sentiment"] = sentiment
+            item["impact"] = impact
+            item["breaking"] = is_brk
+            item["gold_silver"] = is_gs
+            item["india_market_impact"] = is_india_impact
+            ok += 1
 
         print(f"[LLM] {ok}/{len(uncached)} new via {model.split('/')[-1]}, "
               f"{len(items)-len(uncached)} cached")
