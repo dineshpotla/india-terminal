@@ -498,6 +498,26 @@ WATCHLIST_NEWS_BACKFILL_LIMIT = max(
     1,
     min(12, int(os.getenv("WATCHLIST_NEWS_BACKFILL_LIMIT", "4" if IS_RENDER else "6"))),
 )
+WATCHLIST_NEWS_ANALYZE_LIMIT = max(
+    1,
+    min(12, int(os.getenv("WATCHLIST_NEWS_ANALYZE_LIMIT", "4" if IS_RENDER else "6"))),
+)
+WATCHLIST_NEWS_MAX_ITEMS = max(
+    1,
+    min(10, int(os.getenv("WATCHLIST_NEWS_MAX_ITEMS", "3" if IS_RENDER else "5"))),
+)
+WATCHLIST_ARTICLE_TIMEOUT_SECS = max(
+    4,
+    min(20, int(os.getenv("WATCHLIST_ARTICLE_TIMEOUT_SECS", "10" if IS_RENDER else "12"))),
+)
+WATCHLIST_ARTICLE_BODY_MAX_CHARS = max(
+    1000,
+    min(20000, int(os.getenv("WATCHLIST_ARTICLE_BODY_MAX_CHARS", "8000"))),
+)
+WATCHLIST_ARTICLE_CACHE_SIZE = max(
+    64,
+    min(1024, int(os.getenv("WATCHLIST_ARTICLE_CACHE_SIZE", "256"))),
+)
 LLM_CACHE_SIZE = 500
 
 _LLM_SYSTEM = (
@@ -526,6 +546,27 @@ _LLM_PROMPT_PREFIX = (
     "inflation, FX, commodities, geopolitics that moves risk, broad indexes). false for human-interest.\n"
     "- company_specific: true if primarily about ONE specific company/stock/earnings/shares. "
     "false for macro/geopolitics.\n"
+    "- Output the JSON array and nothing else.\n\n"
+)
+
+_WATCHLIST_LLM_SYSTEM = (
+    "You output ONLY a raw JSON array with exactly one object. No markdown, no explanation. "
+    'Object schema: {"important":true|false,"stocks":[],"sentiment":"bullish"|"bearish"|"neutral",'
+    '"impact":"high"|"medium"|"low","gold_silver":true|false,"india_market_impact":true|false,'
+    '"market_relevant":true|false,"company_specific":true|false}'
+)
+_WATCHLIST_LLM_PROMPT_PREFIX = (
+    "Rules:\n"
+    "- Read the full article text, not just the headline.\n"
+    "- important: true ONLY if the article contains a fresh, material development for the watched stock "
+    "(results, guidance, order win/loss, regulation, litigation, management change, capital raise/buyback, "
+    "brokerage action, major macro impact clearly tied to the company, or a significant operational update).\n"
+    "- important: false for passing mentions, live-blog tangents, broad market roundups, stale background, "
+    "generic sector summaries, or articles where the watched stock is not meaningfully affected.\n"
+    "- sentiment is the likely read-through for the watched stock after reading the article body.\n"
+    "- stocks: include relevant NSE symbols only when clearly supported by the article.\n"
+    "- company_specific: true if the article is mainly about one or a few companies; false for macro-only news.\n"
+    "- market_relevant: true if the article matters to investors or traders; false for noise.\n"
     "- Output the JSON array and nothing else.\n\n"
 )
 
@@ -841,6 +882,8 @@ class DataEngine:
         self._llm_stack: List[dict] = []
         self._llm_pending: Set[str] = set()
         self._llm_lock = threading.Lock()
+        self._watchlist_article_lock = threading.Lock()
+        self._watchlist_article_cache: OrderedDict = OrderedDict()
         self._search_cache: OrderedDict = OrderedDict()
         self._search_cache_ttl = 300
         self._search_cache_max = 64
@@ -1575,6 +1618,151 @@ class DataEngine:
             print(f"[Global] {symbol} snapshot error: {e}")
             return None
 
+    def _get_watchlist_article_cache(self, cache_key: str) -> Optional[dict]:
+        with self._watchlist_article_lock:
+            cached = self._watchlist_article_cache.get(cache_key)
+            if cached is not None:
+                self._watchlist_article_cache.move_to_end(cache_key)
+            return cached
+
+    def _set_watchlist_article_cache(self, cache_key: str, result: dict):
+        with self._watchlist_article_lock:
+            self._watchlist_article_cache[cache_key] = result
+            self._watchlist_article_cache.move_to_end(cache_key)
+            while len(self._watchlist_article_cache) > WATCHLIST_ARTICLE_CACHE_SIZE:
+                self._watchlist_article_cache.popitem(last=False)
+
+    def _llm_call_watchlist_article(
+        self,
+        symbol: str,
+        company_name: str,
+        title: str,
+        summary: str,
+        body_text: str,
+        model: str,
+    ) -> Optional[dict]:
+        if not NV_API_KEY:
+            return None
+        article_text = (body_text or summary or title).strip()
+        if len(article_text) < 80:
+            return None
+        user_msg = (
+            _WATCHLIST_LLM_PROMPT_PREFIX
+            + f"Watched NSE symbol: {symbol}\n"
+            + f"Company: {company_name or symbol}\n"
+            + f"Headline: {title}\n"
+            + f"Summary: {summary or 'n/a'}\n\n"
+            + "Article text:\n"
+            + article_text[:WATCHLIST_ARTICLE_BODY_MAX_CHARS]
+        )
+        try:
+            r = requests.post(
+                NV_API_URL,
+                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
+                json=self._build_nv_payload(
+                    model,
+                    [
+                        {"role": "system", "content": _WATCHLIST_LLM_SYSTEM},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    0.1,
+                    900,
+                ),
+                timeout=35,
+            )
+            if r.status_code != 200:
+                return None
+            text = self._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
+            arr = json.loads(text)
+            if isinstance(arr, list) and arr:
+                return arr[0] if isinstance(arr[0], dict) else None
+        except Exception:
+            return None
+        return None
+
+    def _analyze_watchlist_candidate(
+        self,
+        symbol: str,
+        company_name: str,
+        title: str,
+        summary: str,
+        link: str,
+        tags: dict,
+    ) -> dict:
+        cache_key = f"{symbol}|{title[:120].lower()}"
+        cached = self._get_watchlist_article_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        resolved_link = link or ""
+        if resolved_link and "news.google.com" in resolved_link:
+            resolved_link = self._resolve_google_news_link(resolved_link) or resolved_link
+
+        body_text = ""
+        if resolved_link.startswith("http"):
+            html = self._http_get_html(resolved_link, timeout=WATCHLIST_ARTICLE_TIMEOUT_SECS)
+            if html:
+                body_text = self._extract_body_text(html)
+
+        if len(body_text) < 120:
+            result = {
+                "important": False,
+                "stocks": [symbol],
+                "sentiment": "neutral",
+                "impact": "low",
+                "gold_silver": bool(tags.get("gold_silver", False)),
+                "india_market_impact": False,
+                "market_relevant": False,
+                "company_specific": True,
+                "link": resolved_link or link,
+                "used_full_article": False,
+            }
+            self._set_watchlist_article_cache(cache_key, result)
+            return result
+
+        model = NV_API_MODEL if len(body_text) >= 400 else NV_FAST_MODEL
+        entry = self._llm_call_watchlist_article(symbol, company_name, title, summary, body_text, model)
+        valid_syms = self._valid_equity_symbols()
+        stocks = [symbol]
+        if entry and isinstance(entry, dict):
+            for extra in entry.get("stocks", []) or []:
+                if extra in valid_syms and extra not in stocks:
+                    stocks.append(extra)
+            sentiment = entry.get("sentiment", "neutral")
+            if sentiment not in ("bullish", "bearish", "neutral"):
+                sentiment = "neutral"
+            impact = entry.get("impact", "low")
+            if impact not in ("high", "medium", "low"):
+                impact = "low"
+            important = bool(entry.get("important", False))
+            market_relevant = bool(entry.get("market_relevant", False) or tags.get("market_relevant", False))
+            company_specific = bool(entry.get("company_specific", True))
+            gold_silver = bool(entry.get("gold_silver", False) or tags.get("gold_silver", False))
+            india_market_impact = bool(entry.get("india_market_impact", False))
+        else:
+            important = False
+            sentiment = "neutral"
+            impact = "low"
+            market_relevant = False
+            company_specific = True
+            gold_silver = bool(tags.get("gold_silver", False))
+            india_market_impact = False
+
+        result = {
+            "important": important,
+            "stocks": stocks,
+            "sentiment": sentiment,
+            "impact": impact,
+            "gold_silver": gold_silver,
+            "india_market_impact": india_market_impact,
+            "market_relevant": market_relevant,
+            "company_specific": company_specific,
+            "link": resolved_link or link,
+            "used_full_article": bool(body_text),
+        }
+        self._set_watchlist_article_cache(cache_key, result)
+        return result
+
     def _search_stock_news(self, symbol: str) -> List[dict]:
         """Search Google News RSS for a specific stock symbol over the past 12 hours.
 
@@ -1596,12 +1784,15 @@ class DataEngine:
         cutoff = now - timedelta(hours=12)
         results: List[dict] = []
         seen_titles: Set[str] = set()
+        analyzed = 0
 
         for q in queries:
             url = f"https://news.google.com/rss/search?q={quote_plus(q)}&hl=en-IN&gl=IN&ceid=IN:en"
             try:
                 feed = feedparser.parse(url)
                 for entry in feed.entries[:15]:
+                    if analyzed >= WATCHLIST_NEWS_ANALYZE_LIMIT or len(results) >= WATCHLIST_NEWS_MAX_ITEMS:
+                        break
                     pub_dt = self._parse_pub_time(entry)
                     if pub_dt and pub_dt < cutoff:
                         continue
@@ -1614,7 +1805,11 @@ class DataEngine:
                     seen_titles.add(title_key)
                     summary = entry.get("summary", "").strip()[:300]
                     tags = self._classify_news(title, summary)
-                    wl_stocks = [symbol]
+                    analyzed += 1
+                    analysis = self._analyze_watchlist_candidate(symbol, company_name, title, summary, entry.get("link", ""), tags)
+                    if not analysis.get("important"):
+                        continue
+                    wl_stocks = list(analysis.get("stocks") or [symbol])
                     for s in tags["keyword_stocks"]:
                         if s not in wl_stocks:
                             wl_stocks.append(s)
@@ -1623,9 +1818,24 @@ class DataEngine:
                     combined_text = title.lower() + (" " + summary.lower() if summary else "")
                     india_hint = any(kw in combined_text for kw in _INDIA_IMPACT_HINT_KW)
                     india_news = any(kw in combined_text for kw in _INDIA_NEWS_KW)
+                    cache_key = title[:80].lower()
+                    with self._llm_lock:
+                        self._llm_cache[cache_key] = {
+                            "stocks": wl_stocks,
+                            "sentiment": analysis.get("sentiment", "neutral"),
+                            "impact": analysis.get("impact", "low"),
+                            "breaking": False,
+                            "gold_silver": analysis.get("gold_silver", tags["gold_silver"]),
+                            "india_market_impact": analysis.get("india_market_impact", False),
+                            "market_relevant": analysis.get("market_relevant", tags.get("market_relevant", False)),
+                            "company_specific": analysis.get("company_specific", True),
+                            "watchlist_important": True,
+                        }
+                        while len(self._llm_cache) > LLM_CACHE_SIZE:
+                            self._llm_cache.popitem(last=False)
                     results.append({
                         "title": title,
-                        "link": entry.get("link", ""),
+                        "link": analysis.get("link") or entry.get("link", ""),
                         "source": display_src,
                         "age_secs": age_secs,
                         "time": self._relative_time(pub_dt) if pub_dt else "",
@@ -1635,18 +1845,21 @@ class DataEngine:
                         "breaking": False,
                         "breaking_hint": tags["breaking"],
                         "stock_event": tags["stock_event"],
-                        "gold_silver": tags["gold_silver"],
-                        "india_market_impact": india_hint,
-                        "market_relevant": tags.get("market_relevant", False),
-                        "company_specific": True,
+                        "gold_silver": analysis.get("gold_silver", tags["gold_silver"]),
+                        "india_market_impact": analysis.get("india_market_impact", india_hint),
+                        "market_relevant": analysis.get("market_relevant", tags.get("market_relevant", False)),
+                        "company_specific": analysis.get("company_specific", True),
                         "keyword_stocks": tags["keyword_stocks"],
                         "watchlist_stocks": wl_stocks,
+                        "sentiment": analysis.get("sentiment", "neutral"),
+                        "impact": analysis.get("impact", "low"),
                         "watchlist_injected_at": time.time(),
+                        "watchlist_full_article": analysis.get("used_full_article", False),
                     })
             except Exception as e:
                 print(f"[WL Search] {symbol} feed error: {e}")
 
-        print(f"[WL Search] {symbol}: {len(results)} items from {len(queries)} queries")
+        print(f"[WL Search] {symbol}: kept {len(results)} of {analyzed} analyzed candidate(s)")
         return results
 
     async def fetch_watchlist_stock_news(self, symbol: str):
@@ -1676,6 +1889,14 @@ class DataEngine:
                             existing["keyword_stocks"].append(sym)
                     existing["company_specific"] = bool(existing.get("company_specific") or item.get("company_specific"))
                     existing["market_relevant"] = bool(existing.get("market_relevant") or item.get("market_relevant"))
+                    existing["sentiment"] = item.get("sentiment", existing.get("sentiment", "neutral"))
+                    existing["impact"] = item.get("impact", existing.get("impact", "low"))
+                    existing["gold_silver"] = bool(existing.get("gold_silver") or item.get("gold_silver"))
+                    existing["india_market_impact"] = bool(
+                        existing.get("india_market_impact") or item.get("india_market_impact")
+                    )
+                    if item.get("link"):
+                        existing["link"] = item["link"]
                     existing["watchlist_injected_at"] = now_ts
                     changed_items.append(existing)
                     continue
@@ -1800,6 +2021,14 @@ class DataEngine:
     def _resolve_google_news_link(self, url: str) -> Optional[str]:
         """Follow redirects (Google News → publisher). Uses HEAD for speed."""
         try:
+            parsed = urlparse(url)
+            if parsed.netloc.endswith("news.google.com") and "/articles/" in (parsed.path or ""):
+                decoded = self._decode_google_news_article_url(url)
+                if decoded:
+                    return decoded
+        except Exception:
+            pass
+        try:
             r = requests.head(
                 url,
                 timeout=8,
@@ -1815,6 +2044,69 @@ class DataEngine:
             return r2.url if r2.url and len(r2.url) > 12 else None
         except Exception:
             return None
+
+    def _decode_google_news_article_url(self, url: str) -> Optional[str]:
+        """Decode Google News RSS article wrappers into the publisher URL."""
+        try:
+            parsed = urlparse(url)
+            article_id = (parsed.path or "").rstrip("/").split("/")[-1]
+            if not article_id:
+                return None
+            page = requests.get(
+                f"https://news.google.com/rss/articles/{article_id}",
+                timeout=10,
+                headers={"User-Agent": random.choice(_USER_AGENTS)},
+                allow_redirects=True,
+            )
+            if page.status_code != 200:
+                return None
+            soup = BeautifulSoup(page.text, "html.parser")
+            params_el = soup.select_one("c-wiz > div[data-n-a-sg][data-n-a-ts]")
+            if not params_el:
+                return None
+            sig = params_el.get("data-n-a-sg")
+            ts = params_el.get("data-n-a-ts")
+            if not sig or not ts:
+                return None
+            rpc = [[
+                "Fbv4je",
+                (
+                    '["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,'
+                    'null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],'
+                    f'"{article_id}",{ts},"{sig}"]'
+                ),
+            ]]
+            payload = "f.req=" + quote(json.dumps([rpc]))
+            resp = requests.post(
+                "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                timeout=10,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "User-Agent": random.choice(_USER_AGENTS),
+                },
+                data=payload,
+            )
+            if resp.status_code != 200:
+                return None
+            parts = resp.text.split("\n\n", 1)
+            if len(parts) != 2:
+                return None
+            rows = json.loads(parts[1])
+            for row in rows:
+                if not isinstance(row, list) or len(row) < 3 or row[1] != "Fbv4je":
+                    continue
+                decoded = json.loads(row[2])
+                if (
+                    isinstance(decoded, list)
+                    and len(decoded) >= 2
+                    and decoded[0] == "garturlres"
+                    and isinstance(decoded[1], str)
+                    and decoded[1].startswith("http")
+                ):
+                    return decoded[1]
+        except Exception:
+            return None
+        return None
 
     def _discover_live_pages_from_rss(self):
         """Refresh candidate live URLs from generic RSS searches (any major breaking story, any topic)."""
@@ -1860,7 +2152,7 @@ class DataEngine:
         if added:
             print(f"[Live] discovery: +{added} URL(s); tracking {len(self._discovered_live_urls)} live page(s)")
 
-    def _http_get_html(self, url: str) -> Optional[str]:
+    def _http_get_html(self, url: str, timeout: int = 28) -> Optional[str]:
         headers = {
             "User-Agent": random.choice(_USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -1872,7 +2164,7 @@ class DataEngine:
         if ck:
             headers["Cookie"] = ck
         try:
-            r = requests.get(url, timeout=28, headers=headers, allow_redirects=True)
+            r = requests.get(url, timeout=timeout, headers=headers, allow_redirects=True)
             if r.status_code != 200:
                 return None
             if len(r.text) < 4000:
