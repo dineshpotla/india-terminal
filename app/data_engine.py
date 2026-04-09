@@ -15,7 +15,7 @@ import random
 import re
 import time
 import traceback
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timedelta
 import threading
 from typing import Dict, List, Optional, Set
@@ -80,8 +80,9 @@ TRACKED_INDICES = {"NIFTY 50", "NIFTY BANK", "NIFTY NEXT 50", "NIFTY IT",
 # Futures availability (Yahoo): CME/ICE roots (ES, NQ, CL, 6E, BTC=F, …) work. Probed chart/=F
 # symbols for FTSE/DAX/CAC/Euro Stoxx/Hang Seng/KOSPI/Taiwan/etc. futures return 404 — contracts
 # exist on exchanges but Yahoo does not list them as continuous =F. For those rows we keep Yahoo
-# **cash indices** and optionally fall back to Twelve Data spot quotes (TWELVE_DATA_API_KEY) if
-# Yahoo returns no price. USD/JPY uses CME **6J=F** (inverse tick → USD/JPY display below).
+# **cash indices** and optionally fall back to Twelve Data (TWELVE_DATA_API_KEY) if Yahoo returns
+# no price. Twelve is also used for Indian index/ equity quotes when NSE or Yahoo omit data.
+# USD/JPY uses CME **6J=F** (inverse tick → USD/JPY display below).
 GLOBAL_FUTURES = [
     # US Markets (CME equity index + RTY E-mini)
     ("S&P 500", "ES=F", "US MARKETS"),
@@ -150,6 +151,16 @@ YF_INDEX_MAP = {
     "NIFTY FINANCIAL SERVICES": "^CNXFIN",
     "NIFTY IT": "^CNXIT",
     "INDIA VIX": "^INDIAVIX",
+}
+
+# Yahoo index ticker -> Twelve Data (symbol, exchange) when Yahoo/NSE omit prices.
+INDIA_YF_INDEX_TO_TWELVE: Dict[str, tuple] = {
+    "^NSEI": ("NIFTY", "NSE"),
+    "^NSEBANK": ("BANKNIFTY", "NSE"),
+    "^NSEMDCP50": ("NIFTY_MIDCAP_50", "NSE"),
+    "^CNXFIN": ("FINNIFTY", "NSE"),
+    "^CNXIT": ("NIFTY_IT", "NSE"),
+    "^INDIAVIX": ("INDIAVIX", "NSE"),
 }
 
 YF_STOCK_SYMBOLS = [
@@ -422,6 +433,29 @@ NV_API_URL = os.getenv("NV_API_URL", "https://integrate.api.nvidia.com/v1/chat/c
 # spot indices (not exchange-traded futures). EU/Asia equity index futures (Eurex/ICE/HKFE) are not
 # exposed as Yahoo `=F` roots (chart API 404) — see module comment on GLOBAL_FUTURES.
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
+# Basic (free) plan: 8 API credits/min & 800/day. Throttle + cache to avoid 429s.
+_TWELVE_FREE = os.getenv("TWELVE_DATA_FREE_TIER", "1").strip().lower() in (
+    "1", "true", "yes", "basic", "free", "on",
+)
+TWELVE_DATA_MAX_PER_MINUTE = max(
+    1,
+    min(
+        120,
+        int(os.getenv("TWELVE_DATA_MAX_PER_MINUTE", "6" if _TWELVE_FREE else "55")),
+    ),
+)
+TWELVE_DATA_QUOTE_CACHE_SECS = max(
+    5,
+    min(
+        900,
+        int(os.getenv("TWELVE_DATA_QUOTE_CACHE_SECS", "120" if _TWELVE_FREE else "20")),
+    ),
+)
+TWELVE_DATA_STOCK_FALLBACK_CAP = max(
+    0,
+    int(os.getenv("TWELVE_DATA_STOCK_FALLBACK_CAP", "3" if _TWELVE_FREE else "50")),
+)
+TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
 NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "moonshotai/kimi-k2.5")
 NV_FAST_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1"
 LLM_CACHE_SIZE = 500
@@ -767,6 +801,11 @@ class DataEngine:
         self._equity_catalog: List[dict] = []
         self._equity_catalog_loaded_at = 0.0
         self._equity_catalog_ttl = 12 * 60 * 60
+        # Twelve Data rate limits (Basic plan: 8 credits/min); see TWELVE_DATA_* env vars.
+        self._twelve_lock = threading.Lock()
+        self._twelve_call_times: deque = deque()
+        self._twelve_quote_cache: OrderedDict = OrderedDict()
+        self._twelve_log_throttle = 0.0
 
     @property
     def market_status(self) -> str:
@@ -1876,30 +1915,77 @@ class DataEngine:
             return 0.0
         return 1.0 / p
 
-    def _twelve_data_index_quote(self, td_symbol: str, td_exchange: str) -> Optional[dict]:
-        """Spot index quote from Twelve Data (fallback when Yahoo has no price)."""
+    def _twelve_stale_or_none(self, key: tuple) -> Optional[dict]:
+        """Return last cached quote if any (used when rate-limited or offline)."""
+        with self._twelve_lock:
+            ent = self._twelve_quote_cache.get(key)
+            if ent and isinstance(ent[1], dict):
+                return dict(ent[1])
+        return None
+
+    def _twelve_data_quote(self, td_symbol: str, td_exchange: str) -> Optional[dict]:
+        """Quote from Twelve Data `/quote` (indices, NSE equities, mapped globals).
+
+        Respects Basic-plan limits via TWELVE_DATA_MAX_PER_MINUTE + response caching.
+        """
         if not TWELVE_DATA_API_KEY:
             return None
+        sym_k = (td_symbol or "").strip().upper()
+        ex_k = (td_exchange or "").strip().upper()
+        key = (sym_k, ex_k)
+        now = time.time()
+        with self._twelve_lock:
+            ent = self._twelve_quote_cache.get(key)
+            if ent and now - ent[0] < TWELVE_DATA_QUOTE_CACHE_SECS:
+                return dict(ent[1]) if isinstance(ent[1], dict) else None
+            while self._twelve_call_times and now - self._twelve_call_times[0] > 60.0:
+                self._twelve_call_times.popleft()
+            if len(self._twelve_call_times) >= TWELVE_DATA_MAX_PER_MINUTE:
+                if now - self._twelve_log_throttle > 60.0:
+                    self._twelve_log_throttle = now
+                    print(
+                        "[Twelve] Per-minute API budget exhausted "
+                        f"({TWELVE_DATA_MAX_PER_MINUTE}/min); serving cache or skipping."
+                    )
+                if ent and isinstance(ent[1], dict):
+                    return dict(ent[1])
+                return None
+            self._twelve_call_times.append(now)
+
         try:
-            params: Dict[str, str] = {"symbol": td_symbol, "apikey": TWELVE_DATA_API_KEY}
-            if td_exchange:
-                params["exchange"] = td_exchange
+            params: Dict[str, str] = {"symbol": sym_k, "apikey": TWELVE_DATA_API_KEY}
+            if ex_k:
+                params["exchange"] = ex_k
             r = requests.get(
                 TWELVE_DATA_QUOTE_URL,
                 params=params,
                 headers={"User-Agent": random.choice(_USER_AGENTS)},
                 timeout=12,
             )
+            if r.status_code == 429:
+                stale = self._twelve_stale_or_none(key)
+                if stale:
+                    return stale
+                return None
             if r.status_code != 200:
+                stale = self._twelve_stale_or_none(key)
+                if stale:
+                    return stale
                 return None
             j = r.json()
             if j.get("status") == "error" or j.get("code"):
+                stale = self._twelve_stale_or_none(key)
+                if stale:
+                    return stale
                 return None
             price = self._to_float(j.get("close"), 0.0)
             if not price:
                 price = self._to_float(j.get("open"), 0.0)
             prev = self._to_float(j.get("previous_close"), 0.0)
             if not price:
+                stale = self._twelve_stale_or_none(key)
+                if stale:
+                    return stale
                 return None
             chg = self._to_float(j.get("change"), 0.0)
             pct = self._to_float(j.get("percent_change"), 0.0)
@@ -1907,9 +1993,51 @@ class DataEngine:
                 chg = price - prev
             if not pct and prev > 0:
                 pct = (chg / prev) * 100.0
-            return {"price": price, "prev": prev, "chg": chg, "pct": pct}
+            name = (j.get("name") or "").strip()
+            payload = {
+                "price": price,
+                "prev": prev,
+                "chg": chg,
+                "pct": pct,
+                "name": name,
+                "open": self._to_float(j.get("open"), 0.0),
+                "high": self._to_float(j.get("high"), 0.0),
+                "low": self._to_float(j.get("low"), 0.0),
+                "volume": int(self._to_float(j.get("volume"), 0)),
+            }
+            with self._twelve_lock:
+                self._twelve_quote_cache[key] = (time.time(), payload)
+                while len(self._twelve_quote_cache) > TWELVE_DATA_CACHE_MAX_KEYS:
+                    self._twelve_quote_cache.popitem(last=False)
+            return dict(payload)
         except Exception:
+            stale = self._twelve_stale_or_none(key)
+            if stale:
+                return stale
             return None
+
+    def _try_twelve_global_futures_row(
+        self, label: str, yahoo_sym: str, region: str
+    ) -> Optional[dict]:
+        spec = _GLOBAL_TD_FALLBACK.get(yahoo_sym)
+        if not spec:
+            return None
+        td_sym, td_ex = spec[0], spec[1]
+        tdq = self._twelve_data_quote(td_sym, td_ex)
+        if not tdq or not tdq.get("price"):
+            return None
+        p = tdq["price"]
+        c = tdq["chg"]
+        if tdq.get("prev", 0) > 0:
+            self._global_prev_close[yahoo_sym] = tdq["prev"]
+        return {
+            "name": label,
+            "symbol": yahoo_sym,
+            "region": region,
+            "price": round(p, 2 if p >= 10 else 4),
+            "change": round(c, 2 if abs(c) >= 1 else 4),
+            "change_pct": round(float(tdq["pct"]), 2),
+        }
 
     def _build_global_futures_row(
         self,
@@ -1969,28 +2097,61 @@ class DataEngine:
     def _fetch_yf_indices(self):
         results = []
         for name, yf_symbol in YF_INDEX_MAP.items():
+            row = None
             try:
                 info = yf.Ticker(yf_symbol).fast_info
                 price = self._to_float(info.get("lastPrice"))
                 prev = self._to_float(info.get("previousClose"))
-                if not price or not prev:
-                    continue
-                change = price - prev
-                pct = (change / prev * 100) if prev else 0
-                results.append({
-                    "symbol": name,
-                    "name": name,
-                    "price": round(price, 2),
-                    "change": round(change, 2),
-                    "change_pct": round(pct, 2),
-                    "open": round(self._to_float(info.get("open"), price), 2),
-                    "high": round(self._to_float(info.get("dayHigh"), price), 2),
-                    "low": round(self._to_float(info.get("dayLow"), price), 2),
-                    "advances": None,
-                    "declines": None,
-                })
+                if price and prev:
+                    change = price - prev
+                    pct = (change / prev * 100) if prev else 0
+                    row = {
+                        "symbol": name,
+                        "name": name,
+                        "price": round(price, 2),
+                        "change": round(change, 2),
+                        "change_pct": round(pct, 2),
+                        "open": round(self._to_float(info.get("open"), price), 2),
+                        "high": round(self._to_float(info.get("dayHigh"), price), 2),
+                        "low": round(self._to_float(info.get("dayLow"), price), 2),
+                        "advances": None,
+                        "declines": None,
+                    }
             except Exception as e:
                 print(f"[YF Index] {name}: {e}")
+            if not row and TWELVE_DATA_API_KEY:
+                td_spec = INDIA_YF_INDEX_TO_TWELVE.get(yf_symbol)
+                if td_spec:
+                    td_sym, td_ex = td_spec[0], td_spec[1]
+                    tdq = self._twelve_data_quote(td_sym, td_ex)
+                    if tdq and tdq.get("price"):
+                        p = tdq["price"]
+                        prev = tdq.get("prev") or 0.0
+                        if not prev:
+                            prev = p
+                        chg = float(tdq["chg"])
+                        pct = float(tdq["pct"])
+                        if not chg and prev:
+                            chg = p - prev
+                        if not pct and prev:
+                            pct = (chg / prev) * 100
+                        o = tdq.get("open") or p
+                        hi = tdq.get("high") or p
+                        lo = tdq.get("low") or p
+                        row = {
+                            "symbol": name,
+                            "name": name,
+                            "price": round(p, 2),
+                            "change": round(chg, 2),
+                            "change_pct": round(pct, 2),
+                            "open": round(o, 2),
+                            "high": round(hi, 2),
+                            "low": round(lo, 2),
+                            "advances": None,
+                            "declines": None,
+                        }
+            if row:
+                results.append(row)
         if results:
             self._indices = results
 
@@ -2046,6 +2207,17 @@ class DataEngine:
                 "year_high": round(high, 2),
                 "year_low": round(low, 2),
             }
+        if TWELVE_DATA_API_KEY and TWELVE_DATA_STOCK_FALLBACK_CAP:
+            filled = 0
+            for sym in YF_STOCK_SYMBOLS:
+                if sym in stocks:
+                    continue
+                if filled >= TWELVE_DATA_STOCK_FALLBACK_CAP:
+                    break
+                tq = self._fetch_twelve_equity_quote(sym)
+                if tq:
+                    stocks[sym] = tq
+                    filled += 1
         if stocks:
             self._stocks = stocks
 
@@ -2116,6 +2288,7 @@ class DataEngine:
             tickers = yf.Tickers(" ".join(symbols))
             results = []
             for label, sym, region in yf_entries:
+                row = None
                 try:
                     price = 0.0
                     prev = 0.0
@@ -2155,28 +2328,14 @@ class DataEngine:
                             if not prev:
                                 prev = self._to_float(snap.get("prev_close"), 0.0)
                     row = self._build_global_futures_row(label, sym, region, price, prev, inf)
-                    if row:
-                        results.append(row)
-                    else:
-                        td_spec = _GLOBAL_TD_FALLBACK.get(sym)
-                        if td_spec:
-                            td_sym, td_ex = td_spec[0], td_spec[1]
-                            tdq = self._twelve_data_index_quote(td_sym, td_ex)
-                            if tdq and tdq.get("price"):
-                                p = tdq["price"]
-                                c = tdq["chg"]
-                                if tdq.get("prev", 0) > 0:
-                                    self._global_prev_close[sym] = tdq["prev"]
-                                results.append({
-                                    "name": label,
-                                    "symbol": sym,
-                                    "region": region,
-                                    "price": round(p, 2 if p >= 10 else 4),
-                                    "change": round(c, 2 if abs(c) >= 1 else 4),
-                                    "change_pct": round(float(tdq["pct"]), 2),
-                                })
                 except Exception:
                     pass
+                if row:
+                    results.append(row)
+                else:
+                    trow = self._try_twelve_global_futures_row(label, sym, region)
+                    if trow:
+                        results.append(trow)
             if self._gift_nifty:
                 gn = self._gift_nifty
                 results.append({
@@ -2813,6 +2972,52 @@ class DataEngine:
             year_low=year_low,
         )
 
+    def _fetch_twelve_equity_quote(self, symbol: str) -> Optional[dict]:
+        """NSE equity quote via Twelve Data when NSE API and Yahoo fail or omit rows."""
+        if not TWELVE_DATA_API_KEY:
+            return None
+        sym = symbol.upper().strip()
+        tdq = self._twelve_data_quote(sym, "NSE")
+        if not tdq or not tdq.get("price"):
+            return None
+        p = tdq["price"]
+        prev = tdq.get("prev") or 0.0
+        if not prev:
+            prev = p
+        chg = float(tdq["chg"])
+        pct = float(tdq["pct"])
+        if not chg and prev:
+            chg = p - prev
+        if not pct and prev:
+            pct = (chg / prev) * 100
+        name = (tdq.get("name") or "").strip() or YF_COMPANY_NAMES.get(sym, sym)
+        sector = SECTOR_MAP.get(sym, "Other")
+        catalog_match = next(
+            (item for item in self._load_equity_catalog() if item["symbol"] == sym),
+            None,
+        )
+        if catalog_match and name == sym:
+            name = catalog_match["name"]
+        open_p = tdq.get("open") or p
+        high = tdq.get("high") or p
+        low = tdq.get("low") or p
+        vol = int(tdq.get("volume") or 0)
+        return self._build_stock_payload(
+            symbol=sym,
+            name=name,
+            sector=sector,
+            price=p,
+            change=chg,
+            change_pct=pct,
+            open_price=open_p,
+            high=high,
+            low=low,
+            volume=vol,
+            prev_close=prev,
+            year_high=high,
+            year_low=low,
+        )
+
     def _fetch_yf_equity_quote(self, symbol: str) -> Optional[dict]:
         try:
             ticker = yf.Ticker(f"{symbol}.NS")
@@ -2884,7 +3089,11 @@ class DataEngine:
         stock = self._stocks.get(sym)
         if stock:
             return stock
-        return self._fetch_nse_equity_quote(sym) or self._fetch_yf_equity_quote(sym)
+        return (
+            self._fetch_nse_equity_quote(sym)
+            or self._fetch_yf_equity_quote(sym)
+            or self._fetch_twelve_equity_quote(sym)
+        )
 
     def search(self, query: str) -> list:
         q = query.upper().strip()
@@ -2905,7 +3114,7 @@ class DataEngine:
             if len(results) >= 12:
                 break
         if not results and re.fullmatch(r"[A-Z0-9&.-]{1,20}", q):
-            stock = self._fetch_yf_equity_quote(q)
+            stock = self._fetch_yf_equity_quote(q) or self._fetch_twelve_equity_quote(q)
             if stock:
                 results.append({
                     "symbol": stock["symbol"],
