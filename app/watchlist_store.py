@@ -42,11 +42,25 @@ class WatchlistStore:
             self._ensure_postgres_ready()
         else:
             self._mode = "sqlite"
-            self._sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-            self._sqlite = sqlite3.connect(self._sqlite_path, check_same_thread=False)
+            self._sqlite = self._open_sqlite()
             self._sqlite.row_factory = sqlite3.Row
             self._init_sqlite()
         self._seed_if_empty()
+
+    def _open_sqlite(self) -> sqlite3.Connection:
+        """Open a writable SQLite connection, falling back to /tmp on read-only fs."""
+        primary = self._sqlite_path
+        try:
+            primary.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(primary, check_same_thread=False)
+            conn.execute("CREATE TABLE IF NOT EXISTS _write_test (x INTEGER)")
+            conn.execute("DROP TABLE _write_test")
+            return conn
+        except (OSError, sqlite3.OperationalError):
+            pass
+        fallback = Path("/tmp") / "watchlist.db"
+        self._sqlite_path = fallback
+        return sqlite3.connect(str(fallback), check_same_thread=False)
 
     @staticmethod
     def _parse_seed_symbols(raw: str) -> List[str]:

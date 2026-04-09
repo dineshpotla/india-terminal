@@ -2827,6 +2827,35 @@ class DataEngine:
 
     # ── public API ──────────────────────────────────────────────────────
 
+    def ensure_data_ready(self):
+        """One-shot sync fetch when background loops haven't populated data yet (serverless)."""
+        if self._stocks and self._indices and self._news:
+            return
+        if not self._stocks or not self._indices:
+            try:
+                self._fetch_nse_data()
+            except Exception:
+                traceback.print_exc()
+        if not self._gift_nifty:
+            try:
+                self._fetch_gift_nifty()
+            except Exception:
+                traceback.print_exc()
+        if not self._global_futures:
+            try:
+                self._fetch_global_futures()
+            except Exception:
+                traceback.print_exc()
+        if not self._news:
+            try:
+                self._fetch_all_news()
+            except Exception:
+                traceback.print_exc()
+        if not self._last_update:
+            self._compute_movers()
+            self._compute_sectors()
+            self._last_update = datetime.now(IST).strftime("%H:%M:%S")
+
     def get_dashboard(self) -> dict:
         adv = dec = 0
         for idx in self._indices:

@@ -62,8 +62,14 @@ def _watchlist_response() -> dict:
 
 def _refresh_watchlist_symbol(symbol: str):
     fetcher = getattr(engine, "fetch_watchlist_stock_news", None)
-    if callable(fetcher):
-        asyncio.create_task(fetcher(symbol))
+    if not callable(fetcher):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            asyncio.create_task(fetcher(symbol))
+    except RuntimeError:
+        pass
 
 
 @asynccontextmanager
@@ -104,6 +110,7 @@ async def health_head():
 
 @app.get("/api/dashboard")
 async def dashboard():
+    await asyncio.to_thread(engine.ensure_data_ready)
     return JSONResponse(engine.get_dashboard())
 
 
@@ -134,7 +141,11 @@ async def get_watchlist():
 @app.post("/api/watchlist/sync")
 async def sync_watchlist(payload: WatchlistPayload):
     symbols = _normalize_symbols(payload.symbols)
-    await asyncio.to_thread(watchlist_store.merge_symbols, symbols)
+    try:
+        await asyncio.to_thread(watchlist_store.merge_symbols, symbols)
+    except Exception as exc:
+        print(f"[Watchlist] merge_symbols failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
     for sym in symbols:
         _refresh_watchlist_symbol(sym)
     return JSONResponse(_watchlist_response())
@@ -145,7 +156,11 @@ async def add_watchlist_symbol(symbol: str):
     sym = _normalize_symbol(symbol)
     if not _known_symbol(sym):
         raise HTTPException(status_code=404, detail="Unknown symbol")
-    await asyncio.to_thread(watchlist_store.add_symbol, sym)
+    try:
+        await asyncio.to_thread(watchlist_store.add_symbol, sym)
+    except Exception as exc:
+        print(f"[Watchlist] add_symbol failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
     _refresh_watchlist_symbol(sym)
     return JSONResponse(_watchlist_response())
 
@@ -153,7 +168,11 @@ async def add_watchlist_symbol(symbol: str):
 @app.delete("/api/watchlist/{symbol}")
 async def delete_watchlist_symbol(symbol: str):
     sym = _normalize_symbol(symbol)
-    await asyncio.to_thread(watchlist_store.remove_symbol, sym)
+    try:
+        await asyncio.to_thread(watchlist_store.remove_symbol, sym)
+    except Exception as exc:
+        print(f"[Watchlist] remove_symbol failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
     return JSONResponse(_watchlist_response())
 
 
