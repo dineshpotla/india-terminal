@@ -1930,6 +1930,132 @@ class DataEngine:
         return out
 
     @staticmethod
+    def _extract_live_candidates_from_jsonld(
+        soup: BeautifulSoup,
+        seen_titles: Set[str],
+        base_url: str,
+    ) -> List[dict]:
+        """Prefer explicit LiveBlogPosting schema updates over page-level summary headlines."""
+        out: List[dict] = []
+
+        def maybe_add(title: str, link: Optional[str], t_raw: Optional[str]):
+            title = (title or "").strip()
+            if not _live_title_ok(title) or title in seen_titles:
+                return
+            seen_titles.add(title)
+            if link and link.startswith("/"):
+                link = urljoin(base_url, link)
+            elif not link or not link.startswith("http"):
+                link = base_url
+            out.append({"title": title, "link": link, "t_raw": t_raw})
+
+        def extract_updates(node):
+            updates = node.get("liveBlogUpdate") or node.get("blogPost") or node.get("hasPart") or []
+            if isinstance(updates, dict):
+                updates = [updates]
+            if not isinstance(updates, list):
+                return
+            for update in updates:
+                if not isinstance(update, dict):
+                    continue
+                title = update.get("headline") or update.get("name") or update.get("title")
+                link = update.get("url")
+                main_page = update.get("mainEntityOfPage")
+                if isinstance(main_page, dict):
+                    link = link or main_page.get("@id") or main_page.get("url")
+                elif isinstance(main_page, str):
+                    link = link or main_page
+                t_raw = (
+                    update.get("datePublished")
+                    or update.get("dateModified")
+                    or update.get("uploadDate")
+                    or update.get("timestamp")
+                )
+                if isinstance(title, str):
+                    maybe_add(title, link, str(t_raw) if t_raw is not None else None)
+
+        def walk(node):
+            if isinstance(node, dict):
+                raw_type = node.get("@type")
+                types: Set[str] = set()
+                if isinstance(raw_type, str):
+                    types.add(raw_type)
+                elif isinstance(raw_type, list):
+                    types.update(t for t in raw_type if isinstance(t, str))
+                if "LiveBlogPosting" in types:
+                    extract_updates(node)
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        for script in soup.select('script[type="application/ld+json"]'):
+            raw = script.string or script.get_text()
+            if not raw or ("LiveBlogPosting" not in raw and "liveBlogUpdate" not in raw):
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            walk(payload)
+
+        return out
+
+    @staticmethod
+    def _extract_live_candidates_from_dom(
+        soup: BeautifulSoup,
+        seen_titles: Set[str],
+        base_url: str,
+    ) -> List[dict]:
+        """Fallback for live pages that render update cards directly in the HTML."""
+        out: List[dict] = []
+        seen_nodes: Set[int] = set()
+        selectors = (
+            ".LiveBlogWrapper .entry",
+            '[class*="LiveBlog"] .entry',
+            '[data-testid*="LiveBlog"] .entry',
+            '[itemprop="liveBlogUpdate"]',
+            ".entry",
+        )
+
+        def maybe_add(title: str, link: Optional[str], t_raw: Optional[str]):
+            title = (title or "").strip()
+            if not _live_title_ok(title) or title in seen_titles:
+                return
+            seen_titles.add(title)
+            if link and link.startswith("/"):
+                link = urljoin(base_url, link)
+            elif not link or not link.startswith("http"):
+                link = base_url
+            out.append({"title": title, "link": link, "t_raw": t_raw})
+
+        for selector in selectors:
+            for node in soup.select(selector):
+                node_id = id(node)
+                if node_id in seen_nodes:
+                    continue
+                seen_nodes.add(node_id)
+                heading = node.select_one("h1, h2, h3, h4, [data-testid='Heading']")
+                if not heading:
+                    continue
+                title = heading.get_text(" ", strip=True)
+                if not _live_title_ok(title):
+                    continue
+                link = None
+                anchor = heading.find("a", href=True) or node.find("a", href=True)
+                if anchor:
+                    link = anchor.get("href")
+                time_el = node.find("time")
+                t_raw = None
+                if time_el:
+                    t_raw = time_el.get("datetime") or time_el.get_text(" ", strip=True) or None
+                maybe_add(title, link, t_raw)
+
+        return out
+
+    @staticmethod
     def _extract_body_text(html: str) -> str:
         """Extract clean readable text from article HTML (paragraphs, headings, list items)."""
         soup = BeautifulSoup(html, "html.parser")
@@ -1999,7 +2125,17 @@ class DataEngine:
             return []
 
     def _parse_live_page_items(self, html: str, page_url: str) -> List[dict]:
-        items_from_structure: List[dict] = []
+        soup = BeautifulSoup(html, "html.parser")
+        seen_titles: Set[str] = set()
+
+        items_from_structure = self._extract_live_candidates_from_jsonld(soup, seen_titles, page_url)
+        if not items_from_structure:
+            items_from_structure = self._extract_live_candidates_from_dom(soup, seen_titles, page_url)
+
+        if items_from_structure:
+            return items_from_structure[:40]
+
+        items_from_structure = []
         m = re.search(
             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
             html,
@@ -2008,28 +2144,26 @@ class DataEngine:
         if m:
             try:
                 data = json.loads(m.group(1))
-                items_from_structure = self._extract_live_candidates_from_json(data, set(), page_url)[:30]
+                items_from_structure = self._extract_live_candidates_from_json(data, seen_titles, page_url)[:30]
             except json.JSONDecodeError:
                 pass
 
         if not items_from_structure:
-            soup = BeautifulSoup(html, "html.parser")
-            seen: Set[str] = set()
             for h in soup.select('article h2, article h3, [data-testid="Heading"]'):
                 t = h.get_text(" ", strip=True)
-                if _live_title_ok(t) and t not in seen:
-                    seen.add(t)
+                if _live_title_ok(t) and t not in seen_titles:
+                    seen_titles.add(t)
                     items_from_structure.append({"title": t, "link": page_url, "t_raw": None})
 
         body_text = self._extract_body_text(html)
         brand = _live_brand_from_url(page_url)
         llm_headlines = self._llm_extract_developments(body_text, brand)
 
-        seen_titles: Set[str] = {it["title"].lower()[:50] for it in items_from_structure}
+        seen_keys: Set[str] = {it["title"].lower()[:50] for it in items_from_structure}
         for headline in llm_headlines:
             k = headline.lower()[:50]
-            if k not in seen_titles:
-                seen_titles.add(k)
+            if k not in seen_keys:
+                seen_keys.add(k)
                 items_from_structure.append({"title": headline, "link": page_url, "t_raw": None})
 
         return items_from_structure[:40]
