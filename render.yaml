@@ -18,6 +18,32 @@ services:
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: DASHBOARD_READY_TIMEOUT_SECS
+        value: "4"
+      - key: NEWS_FEED_TIMEOUT_SECS
+        value: "4"
+      - key: NEWS_FEED_WORKERS
+        value: "4"
+      - key: NEWS_REFRESH_SECS
+        value: "90"
+      - key: RENDER_GIFT_BOOT_DELAY_SECS
+        value: "6"
+      - key: RENDER_GLOBAL_BOOT_DELAY_SECS
+        value: "12"
+      - key: RENDER_LLM_BOOT_DELAY_SECS
+        value: "10"
+      - key: RENDER_NEWS_BOOT_DELAY_SECS
+        value: "20"
+      - key: RENDER_LIVE_BOOT_DELAY_SECS
+        value: "45"
+      - key: LIVE_STORY_POLL_SECS
+        value: "180"
+      - key: LIVE_STORY_DISCOVER_SECS
+        value: "600"
+      - key: NV_NEWS_MODEL
+        value: "moonshotai/kimi-k2.5"
+      - key: NV_FAST_MODEL
+        value: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
       - key: DATABASE_URL
         fromDatabase:
           name: india-market-terminal-db

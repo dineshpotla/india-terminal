@@ -431,6 +431,7 @@ def _live_title_ok(title: str) -> bool:
 
 NV_API_KEY = os.getenv("NV_API_KEY") or os.getenv("NVIDIA_API_KEY", "")
 NV_API_URL = os.getenv("NV_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
+IS_RENDER = os.getenv("RENDER", "").strip().lower() == "true"
 # Optional backup for global **index** rows Yahoo sometimes throttles or omits. Twelve Data returns
 # spot indices (not exchange-traded futures). EU/Asia equity index futures (Eurex/ICE/HKFE) are not
 # exposed as Yahoo `=F` roots (chart API 404) — see module comment on GLOBAL_FUTURES.
@@ -458,8 +459,20 @@ TWELVE_DATA_STOCK_FALLBACK_CAP = max(
     int(os.getenv("TWELVE_DATA_STOCK_FALLBACK_CAP", "3" if _TWELVE_FREE else "50")),
 )
 TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
-NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "nvidia/nemotron-3-super-120b-a12b")
-NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", NV_API_MODEL)
+NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "moonshotai/kimi-k2.5")
+NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", "nvidia/llama-3.3-nemotron-super-49b-v1.5")
+NEWS_FEED_TIMEOUT_SECS = max(2, min(12, int(os.getenv("NEWS_FEED_TIMEOUT_SECS", "4" if IS_RENDER else "6"))))
+NEWS_FEED_WORKERS = max(2, min(12, int(os.getenv("NEWS_FEED_WORKERS", "4" if IS_RENDER else "8"))))
+NEWS_REFRESH_SECS = max(60, min(600, int(os.getenv("NEWS_REFRESH_SECS", "90" if IS_RENDER else "60"))))
+LIVE_STORY_POLL_SECS = max(30, min(900, int(os.getenv("LIVE_STORY_POLL_SECS", "180" if IS_RENDER else "90"))))
+LIVE_STORY_DISCOVER_SECS = max(120, min(1800, int(os.getenv("LIVE_STORY_DISCOVER_SECS", "600" if IS_RENDER else "300"))))
+RENDER_GLOBAL_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_GLOBAL_BOOT_DELAY_SECS", "12" if IS_RENDER else "0")))
+RENDER_GIFT_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_GIFT_BOOT_DELAY_SECS", "6" if IS_RENDER else "0")))
+RENDER_NEWS_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_NEWS_BOOT_DELAY_SECS", "20" if IS_RENDER else "0")))
+RENDER_LIVE_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_LIVE_BOOT_DELAY_SECS", "45" if IS_RENDER else "0")))
+RENDER_LLM_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_LLM_BOOT_DELAY_SECS", "10" if IS_RENDER else "0")))
+LLM_BATCH_THRESHOLD = max(2, min(64, int(os.getenv("LLM_BATCH_THRESHOLD", "8"))))
+LLM_BATCH_SIZE = max(2, min(16, int(os.getenv("LLM_BATCH_SIZE", "6"))))
 LLM_CACHE_SIZE = 500
 
 _LLM_SYSTEM = (
@@ -801,6 +814,7 @@ class DataEngine:
         self._equity_catalog: List[dict] = []
         self._equity_catalog_loaded_at = 0.0
         self._equity_catalog_ttl = 12 * 60 * 60
+        self._ensure_ready_lock = threading.Lock()
         # Twelve Data rate limits (Basic plan: 8 credits/min); see TWELVE_DATA_* env vars.
         self._twelve_lock = threading.Lock()
         self._twelve_call_times: deque = deque()
@@ -825,17 +839,36 @@ class DataEngine:
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
+    async def _start_loop_after(self, label: str, delay_secs: int, loop_coro):
+        try:
+            if delay_secs > 0:
+                print(f"[Startup] delaying {label} loop by {delay_secs}s")
+                await asyncio.sleep(delay_secs)
+            await loop_coro()
+        except asyncio.CancelledError:
+            return
+
     async def start(self):
         if self._running:
             return
         self._running = True
         self._asyncio_loop = asyncio.get_running_loop()
         self._market_task = asyncio.create_task(self._market_loop())
-        self._global_task = asyncio.create_task(self._global_stream_loop())
-        self._gift_task = asyncio.create_task(self._gift_nifty_loop())
-        self._news_task = asyncio.create_task(self._news_loop())
-        self._llm_task = asyncio.create_task(self._llm_loop())
-        self._live_task = asyncio.create_task(self._live_stories_loop())
+        self._gift_task = asyncio.create_task(
+            self._start_loop_after("gift", RENDER_GIFT_BOOT_DELAY_SECS, self._gift_nifty_loop)
+        )
+        self._global_task = asyncio.create_task(
+            self._start_loop_after("global", RENDER_GLOBAL_BOOT_DELAY_SECS, self._global_stream_loop)
+        )
+        self._news_task = asyncio.create_task(
+            self._start_loop_after("news", RENDER_NEWS_BOOT_DELAY_SECS, self._news_loop)
+        )
+        self._llm_task = asyncio.create_task(
+            self._start_loop_after("llm", RENDER_LLM_BOOT_DELAY_SECS, self._llm_loop)
+        )
+        self._live_task = asyncio.create_task(
+            self._start_loop_after("live", RENDER_LIVE_BOOT_DELAY_SECS, self._live_stories_loop)
+        )
 
     async def stop(self):
         self._running = False
@@ -900,6 +933,17 @@ class DataEngine:
                 return None
             return self._llm_stack.pop()
 
+    def _pop_llm_stack_batch(self, limit: int) -> List[dict]:
+        """Pop up to `limit` items from the LLM stack (LIFO). Thread-safe."""
+        with self._llm_lock:
+            if not self._llm_stack:
+                return []
+            count = max(1, min(limit, len(self._llm_stack)))
+            jobs = self._llm_stack[-count:]
+            del self._llm_stack[-count:]
+            jobs.reverse()
+            return jobs
+
     def _mark_llm_done(self, cache_key: str):
         with self._llm_lock:
             self._llm_pending.discard(cache_key)
@@ -926,83 +970,125 @@ class DataEngine:
                 brk = False
             item["breaking"] = brk
 
+    @staticmethod
+    def _prepare_nv_messages(model: str, messages: List[dict]) -> List[dict]:
+        if "nemotron" not in model.lower():
+            return messages
+        patched: List[dict] = []
+        added_prefix = False
+        for msg in messages:
+            if msg.get("role") == "system" and isinstance(msg.get("content"), str):
+                content = msg["content"]
+                if not content.lstrip().startswith("/no_think"):
+                    content = "/no_think\n" + content
+                patched.append({**msg, "content": content})
+                added_prefix = True
+            else:
+                patched.append(msg)
+        if not added_prefix:
+            patched.insert(0, {"role": "system", "content": "/no_think"})
+        return patched
+
+    @classmethod
+    def _build_nv_payload(cls, model: str, messages: List[dict], temperature: float, max_tokens: int) -> dict:
+        payload = {
+            "model": model,
+            "messages": cls._prepare_nv_messages(model, messages),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if model.startswith("moonshotai/kimi-k2.5"):
+            payload["thinking"] = {"type": "disabled"}
+        return payload
+
+    @staticmethod
+    def _extract_json_array_text(text: str) -> str:
+        text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end != -1:
+            return text[start:end + 1]
+        if text.startswith("{"):
+            return "[" + text + "]"
+        return text
+
+    @staticmethod
+    def _normalize_llm_entry(job: dict, entry: Optional[dict], valid_syms: Set[str]) -> dict:
+        if not entry or not isinstance(entry, dict):
+            return {
+                "stocks": [],
+                "sentiment": "neutral",
+                "impact": "low",
+                "breaking": False,
+                "gold_silver": False,
+                "india_market_impact": False,
+                "market_relevant": False,
+                "company_specific": True,
+            }
+        stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
+        sentiment = entry.get("sentiment", "neutral")
+        if sentiment not in ("bullish", "bearish", "neutral"):
+            sentiment = "neutral"
+        impact = entry.get("impact", "low")
+        if impact not in ("high", "medium", "low"):
+            impact = "low"
+        is_gs = bool(entry.get("gold_silver", False))
+        is_india = bool(entry.get("india_market_impact", False))
+        if "market_relevant" in entry:
+            is_market_rel = bool(entry.get("market_relevant"))
+        else:
+            is_market_rel = bool(is_india or is_gs or entry.get("breaking", False))
+        if "company_specific" in entry:
+            is_comp = bool(entry.get("company_specific"))
+        else:
+            is_comp = bool(job.get("company_specific", False))
+        is_brk = is_india
+        if job.get("stock_event") or is_comp or job.get("company_specific"):
+            is_brk = False
+        return {
+            "stocks": stocks,
+            "sentiment": sentiment,
+            "impact": impact,
+            "breaking": is_brk,
+            "gold_silver": is_gs,
+            "india_market_impact": is_india,
+            "market_relevant": is_market_rel,
+            "company_specific": is_comp,
+        }
+
     async def _llm_loop(self):
-        """Background LLM worker: pops headlines from stack and classifies one at a time."""
+        """Background LLM worker: drains headline stack with bounded mini-batches."""
         try:
             while self._running:
-                job = self._pop_llm_stack()
-                if not job:
+                with self._llm_lock:
+                    backlog = len(self._llm_stack)
+                batch_size = min(LLM_BATCH_SIZE, backlog) if backlog >= LLM_BATCH_THRESHOLD else 1
+                jobs = self._pop_llm_stack_batch(batch_size)
+                if not jobs:
                     await asyncio.sleep(0.25)
                     continue
                 await self._broadcast("llm_queue")
-                cache_key = job["cache_key"]
-                title = job["title"]
+                titles = [job["title"] for job in jobs]
+                model = NV_FAST_MODEL if len(jobs) > 1 or backlog > LLM_BATCH_THRESHOLD else NV_API_MODEL
                 try:
-                    # Choose model based on current backlog (cold start => faster model).
-                    with self._llm_lock:
-                        backlog = len(self._llm_stack)
-                    model = NV_FAST_MODEL if backlog > 10 else NV_API_MODEL
-
-                    entry = await asyncio.to_thread(self._llm_call_one, title, model)
-                    if not entry or not isinstance(entry, dict):
-                        # Fail closed for breaking/India impact.
-                        result = {
-                            "stocks": [],
-                            "sentiment": "neutral",
-                            "impact": "low",
-                            "breaking": False,
-                            "gold_silver": False,
-                            "india_market_impact": False,
-                            "market_relevant": False,
-                            "company_specific": True,
-                        }
+                    if len(jobs) == 1:
+                        entries = [await asyncio.to_thread(self._llm_call_one, titles[0], model)]
                     else:
-                        valid_syms = self._valid_equity_symbols()
-                        stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
-                        sentiment = entry.get("sentiment", "neutral")
-                        if sentiment not in ("bullish", "bearish", "neutral"):
-                            sentiment = "neutral"
-                        impact = entry.get("impact", "low")
-                        if impact not in ("high", "medium", "low"):
-                            impact = "low"
-                        is_gs = bool(entry.get("gold_silver", False))
-                        is_india = bool(entry.get("india_market_impact", False))
-                        if "market_relevant" in entry:
-                            is_market_rel = bool(entry.get("market_relevant"))
-                        else:
-                            # Backward compatibility with older cached/model outputs.
-                            # If it can impact India or is precious-metals related, treat as market-relevant.
-                            is_market_rel = bool(is_india or is_gs or entry.get("breaking", False))
-
-                        if "company_specific" in entry:
-                            is_comp = bool(entry.get("company_specific"))
-                        else:
-                            is_comp = bool(job.get("company_specific", False))
-                        # BREAKING tab is India-impact-only (LLM-gated), and must not include company/stock-specific items.
-                        is_brk = is_india
-                        if job.get("stock_event") or is_comp or job.get("company_specific"):
-                            is_brk = False
-                        result = {
-                            "stocks": stocks,
-                            "sentiment": sentiment,
-                            "impact": impact,
-                            "breaking": is_brk,
-                            "gold_silver": is_gs,
-                            "india_market_impact": is_india,
-                            "market_relevant": is_market_rel,
-                            "company_specific": is_comp,
-                        }
-
-                    # Cache + apply to live news
-                    self._llm_cache[cache_key] = result
-                    while len(self._llm_cache) > LLM_CACHE_SIZE:
-                        self._llm_cache.popitem(last=False)
-                    self._apply_llm_result_to_news(cache_key, result)
+                        entries = await asyncio.to_thread(self._llm_call_many, titles, model)
+                    valid_syms = self._valid_equity_symbols()
+                    for job, entry in zip(jobs, entries):
+                        cache_key = job["cache_key"]
+                        result = self._normalize_llm_entry(job, entry, valid_syms)
+                        self._llm_cache[cache_key] = result
+                        while len(self._llm_cache) > LLM_CACHE_SIZE:
+                            self._llm_cache.popitem(last=False)
+                        self._apply_llm_result_to_news(cache_key, result)
                     await self._broadcast("news")
                 except Exception:
                     traceback.print_exc()
                 finally:
-                    self._mark_llm_done(cache_key)
+                    for job in jobs:
+                        self._mark_llm_done(job["cache_key"])
         except asyncio.CancelledError:
             return
 
@@ -1458,15 +1544,15 @@ class DataEngine:
                     await self._broadcast("news")
                 except Exception:
                     traceback.print_exc()
-                await asyncio.sleep(60)
+                await asyncio.sleep(NEWS_REFRESH_SECS)
         except asyncio.CancelledError:
             return
 
     async def _live_stories_loop(self):
         """Poll live pages + deep-read breaking articles. Discovery runs in background, never blocks polling."""
         try:
-            interval = max(30, int(os.getenv("LIVE_STORY_POLL_SECS", "90")))
-            discover_secs = max(120, int(os.getenv("LIVE_STORY_DISCOVER_SECS", "300")))
+            interval = LIVE_STORY_POLL_SECS
+            discover_secs = LIVE_STORY_DISCOVER_SECS
             last_discover = 0.0
             cycle = 0
             while self._running:
@@ -1680,21 +1766,21 @@ class DataEngine:
             r = requests.post(
                 NV_API_URL,
                 headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": NV_FAST_MODEL,
-                    "messages": [
+                json=self._build_nv_payload(
+                    NV_FAST_MODEL,
+                    [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_msg},
                     ],
-                    "temperature": 0.15,
-                    "max_tokens": 1024,
-                },
+                    0.15,
+                    1024,
+                ),
                 timeout=30,
             )
             if r.status_code != 200:
                 return []
             text = r.json()["choices"][0]["message"]["content"].strip()
-            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            text = self._extract_json_array_text(text)
             start = text.find("[")
             end = text.rfind("]")
             if start == -1 or end == -1:
@@ -2596,31 +2682,69 @@ class DataEngine:
             r = requests.post(
                 NV_API_URL,
                 headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [
+                json=DataEngine._build_nv_payload(
+                    model,
+                    [
                         {"role": "system", "content": _LLM_SYSTEM},
                         {"role": "user", "content": user_msg},
                     ],
-                    "temperature": 0.1,
-                    "max_tokens": 512,
-                },
+                    0.1,
+                    512,
+                ),
                 timeout=30,
             )
             if r.status_code != 200:
                 return None
-            text = r.json()["choices"][0]["message"]["content"].strip()
-            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            start = text.find("[")
-            end = text.rfind("]")
-            if start != -1 and end != -1:
-                text = text[start:end + 1]
-            elif text.startswith("{"):
-                text = "[" + text + "]"
+            text = DataEngine._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
             arr = json.loads(text)
             return arr[0] if arr else None
         except Exception:
             return None
+
+    @staticmethod
+    def _llm_call_many(headlines: List[str], model: str) -> List[Optional[dict]]:
+        """Classify multiple headlines in one request. Returns results aligned with input order."""
+        if not headlines:
+            return []
+        user_msg = _LLM_PROMPT_PREFIX + "\n".join(
+            f'{idx + 1}. "{headline}"' for idx, headline in enumerate(headlines)
+        )
+        try:
+            r = requests.post(
+                NV_API_URL,
+                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
+                json=DataEngine._build_nv_payload(
+                    model,
+                    [
+                        {"role": "system", "content": _LLM_SYSTEM},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    0.1,
+                    min(2048, max(640, 220 * len(headlines))),
+                ),
+                timeout=max(30, min(60, 12 + 5 * len(headlines))),
+            )
+            if r.status_code != 200:
+                return [None] * len(headlines)
+            text = DataEngine._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
+            arr = json.loads(text)
+            out: List[Optional[dict]] = [None] * len(headlines)
+            if isinstance(arr, dict):
+                arr = [arr]
+            if not isinstance(arr, list):
+                return out
+            for entry in arr:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    pos = int(entry.get("idx", 0)) - 1
+                except Exception:
+                    continue
+                if 0 <= pos < len(out):
+                    out[pos] = entry
+            return out
+        except Exception:
+            return [None] * len(headlines)
 
     def _llm_classify_all(self, items: List[dict]):
         """Classify headlines: apply cache, then LLM for each new one."""
@@ -2703,12 +2827,11 @@ class DataEngine:
 
     def _load_feed(self, url: str):
         """Fetch and parse one RSS feed with an explicit network timeout."""
-        timeout = max(2, min(12, int(os.getenv("NEWS_FEED_TIMEOUT_SECS", "6"))))
         headers = {
             "User-Agent": random.choice(_USER_AGENTS),
             "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
         }
-        r = requests.get(url, timeout=timeout, headers=headers, allow_redirects=True)
+        r = requests.get(url, timeout=NEWS_FEED_TIMEOUT_SECS, headers=headers, allow_redirects=True)
         if r.status_code >= 400:
             raise requests.HTTPError(f"HTTP {r.status_code}", response=r)
         return feedparser.parse(r.content)
@@ -2721,8 +2844,7 @@ class DataEngine:
         gold_cutoff = now - timedelta(hours=24)
         raw: List[dict] = []
 
-        workers = max(4, min(12, int(os.getenv("NEWS_FEED_WORKERS", "8"))))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with ThreadPoolExecutor(max_workers=NEWS_FEED_WORKERS) as pool:
             future_to_url = {pool.submit(self._load_feed, url): url for url in NEWS_FEEDS}
             for future in as_completed(future_to_url):
                 url = future_to_url[future]
@@ -2935,29 +3057,38 @@ class DataEngine:
         If `force_quotes` is True, always refresh indices/stocks from source so % changes
         reflect the latest snapshot instead of an in-memory cache.
         """
-        if force_quotes or (not self._stocks or not self._indices):
-            try:
-                self._fetch_nse_data()
-            except Exception:
-                traceback.print_exc()
-        if force_quotes or not self._gift_nifty:
-            try:
-                self._fetch_gift_nifty()
-            except Exception:
-                traceback.print_exc()
-        if force_quotes or not self._global_futures:
-            try:
-                self._fetch_global_futures()
-            except Exception:
-                traceback.print_exc()
-        if not self._news:
-            try:
-                self._fetch_all_news()
-            except Exception:
-                traceback.print_exc()
-        self._compute_movers()
-        self._compute_sectors()
-        self._last_update = datetime.now(IST).strftime("%H:%M:%S")
+        if not self._ensure_ready_lock.acquire(blocking=False):
+            return
+        try:
+            if force_quotes or (not self._stocks or not self._indices):
+                try:
+                    self._fetch_nse_data()
+                except Exception:
+                    traceback.print_exc()
+            if force_quotes or not self._gift_nifty:
+                try:
+                    self._fetch_gift_nifty()
+                except Exception:
+                    traceback.print_exc()
+            should_fetch_globals = force_quotes or (
+                not self._global_futures and (not self._running or not self._global_task)
+            )
+            if should_fetch_globals:
+                try:
+                    self._fetch_global_futures()
+                except Exception:
+                    traceback.print_exc()
+            should_fetch_news = not self._news and (not self._running or not self._news_task)
+            if should_fetch_news:
+                try:
+                    self._fetch_all_news()
+                except Exception:
+                    traceback.print_exc()
+            self._compute_movers()
+            self._compute_sectors()
+            self._last_update = datetime.now(IST).strftime("%H:%M:%S")
+        finally:
+            self._ensure_ready_lock.release()
 
     def get_dashboard(self) -> dict:
         adv = dec = 0

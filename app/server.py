@@ -1,6 +1,7 @@
 """FastAPI server — serves the terminal UI and exposes market data APIs."""
 
 import asyncio
+import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -82,6 +83,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="India Market Terminal", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=800)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+DASHBOARD_READY_TIMEOUT_SECS = max(
+    2.0,
+    min(12.0, float(os.getenv("DASHBOARD_READY_TIMEOUT_SECS", "4" if os.getenv("RENDER", "").lower() == "true" else "8"))),
+)
 
 
 # ── Pages ───────────────────────────────────────────────────────────────
@@ -113,7 +118,7 @@ async def dashboard():
     try:
         # Render can cold-start into slow upstream providers. Return the best
         # cached snapshot we have instead of hanging the whole dashboard route.
-        await asyncio.wait_for(asyncio.to_thread(engine.ensure_data_ready), timeout=8)
+        await asyncio.wait_for(asyncio.to_thread(engine.ensure_data_ready), timeout=DASHBOARD_READY_TIMEOUT_SECS)
     except asyncio.TimeoutError:
         print("[Dashboard] ensure_data_ready timed out; serving cached snapshot")
     except Exception as exc:
