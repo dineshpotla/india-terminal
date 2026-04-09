@@ -143,6 +143,17 @@
             : pending + " headline(s) queued for AI classification";
     }
 
+    // Show an immediate placeholder so the badge doesn't look "broken" while the
+    // first dashboard fetch can take time (especially on serverless cold starts).
+    if ($newsLlmStack && $newsLlmCount) {
+        var suffix0 = $newsLlmStack.querySelector(".news-llm-stack-suffix");
+        $newsLlmStack.hidden = false;
+        $newsLlmStack.className = "news-llm-stack news-llm-stack--busy";
+        $newsLlmCount.textContent = "…";
+        if (suffix0) suffix0.textContent = "sync";
+        $newsLlmStack.title = "Syncing with server…";
+    }
+
     // ── Clock ──────────────────────────────────────────────────────────
 
     function tickClock() {
