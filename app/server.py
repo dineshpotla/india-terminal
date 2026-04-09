@@ -87,6 +87,10 @@ DASHBOARD_READY_TIMEOUT_SECS = max(
     2.0,
     min(12.0, float(os.getenv("DASHBOARD_READY_TIMEOUT_SECS", "4" if os.getenv("RENDER", "").lower() == "true" else "8"))),
 )
+PREWARM_TIMEOUT_SECS = max(
+    20.0,
+    min(90.0, float(os.getenv("PREWARM_TIMEOUT_SECS", "75"))),
+)
 
 
 # ── Pages ───────────────────────────────────────────────────────────────
@@ -115,6 +119,8 @@ async def health_head():
 
 @app.get("/api/dashboard")
 async def dashboard():
+    if not engine.background_enabled:
+        return JSONResponse(engine.get_dashboard())
     try:
         # Render can cold-start into slow upstream providers. Return the best
         # cached snapshot we have instead of hanging the whole dashboard route.
@@ -124,6 +130,41 @@ async def dashboard():
     except Exception as exc:
         print(f"[Dashboard] ensure_data_ready failed: {exc}")
     return JSONResponse(engine.get_dashboard())
+
+
+@app.get("/api/prewarm")
+async def prewarm():
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                engine.ensure_data_ready,
+                True,
+                True,
+                True,
+            ),
+            timeout=PREWARM_TIMEOUT_SECS,
+        )
+        backfill = getattr(engine, "_backfill_watchlist_news", None)
+        if callable(backfill):
+            await asyncio.wait_for(backfill(), timeout=min(30.0, PREWARM_TIMEOUT_SECS))
+        await asyncio.to_thread(engine.process_llm_queue_sync, 24)
+        await asyncio.to_thread(engine.persist_dashboard_snapshot, True)
+    except asyncio.TimeoutError:
+        print("[Prewarm] ensure_data_ready timed out")
+    except Exception as exc:
+        print(f"[Prewarm] refresh failed: {exc}")
+    data = engine.get_dashboard()
+    return JSONResponse(
+        {
+            "status": "ok",
+            "background_enabled": engine.background_enabled,
+            "indices": len(data.get("indices", [])),
+            "stocks": len(data.get("stocks", [])),
+            "news": len(data.get("news", [])),
+            "global_futures": len(data.get("global_futures", [])),
+            "last_update": data.get("last_update"),
+        }
+    )
 
 
 @app.get("/api/stock/{symbol}")

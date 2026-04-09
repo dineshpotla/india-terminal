@@ -1,0 +1,19 @@
+name: Render Keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  prewarm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prewarm Render snapshot
+        env:
+          RENDER_PREWARM_URL: ${{ vars.RENDER_PREWARM_URL }}
+        run: |
+          set -euo pipefail
+          URL="${RENDER_PREWARM_URL:-https://india-market-terminal.onrender.com/api/prewarm}"
+          echo "Prewarming ${URL}"
+          curl --fail --silent --show-error --max-time 180 "$URL"

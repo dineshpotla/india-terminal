@@ -29,6 +29,9 @@ import pytz
 import requests
 import yfinance as yf
 
+from .dashboard_store import DashboardStore
+from .watchlist_store import WatchlistStore
+
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"), override=False)
 
@@ -461,18 +464,40 @@ TWELVE_DATA_STOCK_FALLBACK_CAP = max(
 TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
 NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "moonshotai/kimi-k2.5")
 NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", "nvidia/llama-3.3-nemotron-super-49b-v1.5")
+RENDER_MINIMAL_MODE = os.getenv("RENDER_MINIMAL_MODE", "1" if IS_RENDER else "0").strip().lower() in ("1", "true", "yes", "on")
+BACKGROUND_NEWS_ENABLED = os.getenv("BACKGROUND_NEWS_ENABLED", "0" if RENDER_MINIMAL_MODE else "1").strip().lower() in ("1", "true", "yes", "on")
+BACKGROUND_LLM_ENABLED = os.getenv("BACKGROUND_LLM_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+LIVE_STORIES_ENABLED = os.getenv("LIVE_STORIES_ENABLED", "0" if RENDER_MINIMAL_MODE else "1").strip().lower() in ("1", "true", "yes", "on")
+GLOBAL_STREAM_ENABLED = os.getenv("GLOBAL_STREAM_ENABLED", "0" if RENDER_MINIMAL_MODE else "1").strip().lower() in ("1", "true", "yes", "on")
 NEWS_FEED_TIMEOUT_SECS = max(2, min(12, int(os.getenv("NEWS_FEED_TIMEOUT_SECS", "4" if IS_RENDER else "6"))))
 NEWS_FEED_WORKERS = max(2, min(12, int(os.getenv("NEWS_FEED_WORKERS", "4" if IS_RENDER else "8"))))
-NEWS_REFRESH_SECS = max(60, min(600, int(os.getenv("NEWS_REFRESH_SECS", "90" if IS_RENDER else "60"))))
+MARKET_REFRESH_SECS = max(45, min(600, int(os.getenv("MARKET_REFRESH_SECS", "90" if IS_RENDER else "60"))))
+NEWS_REFRESH_SECS = max(60, min(600, int(os.getenv("NEWS_REFRESH_SECS", "120" if RENDER_MINIMAL_MODE else ("90" if IS_RENDER else "60")))))
+GLOBAL_POLL_SECS = max(30, min(900, int(os.getenv("GLOBAL_POLL_SECS", "300" if RENDER_MINIMAL_MODE else "120"))))
 LIVE_STORY_POLL_SECS = max(30, min(900, int(os.getenv("LIVE_STORY_POLL_SECS", "180" if IS_RENDER else "90"))))
 LIVE_STORY_DISCOVER_SECS = max(120, min(1800, int(os.getenv("LIVE_STORY_DISCOVER_SECS", "600" if IS_RENDER else "300"))))
+RENDER_MARKET_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_MARKET_BOOT_DELAY_SECS", "4" if IS_RENDER else "0")))
 RENDER_GLOBAL_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_GLOBAL_BOOT_DELAY_SECS", "12" if IS_RENDER else "0")))
 RENDER_GIFT_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_GIFT_BOOT_DELAY_SECS", "6" if IS_RENDER else "0")))
 RENDER_NEWS_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_NEWS_BOOT_DELAY_SECS", "20" if IS_RENDER else "0")))
 RENDER_LIVE_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_LIVE_BOOT_DELAY_SECS", "45" if IS_RENDER else "0")))
 RENDER_LLM_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_LLM_BOOT_DELAY_SECS", "10" if IS_RENDER else "0")))
+GLOBAL_STALE_SECS = max(30, min(1800, int(os.getenv("GLOBAL_STALE_SECS", "300" if RENDER_MINIMAL_MODE else "120"))))
+NEWS_STALE_SECS = max(60, min(3600, int(os.getenv("NEWS_STALE_SECS", "600" if RENDER_MINIMAL_MODE else "180"))))
 LLM_BATCH_THRESHOLD = max(2, min(64, int(os.getenv("LLM_BATCH_THRESHOLD", "8"))))
 LLM_BATCH_SIZE = max(2, min(16, int(os.getenv("LLM_BATCH_SIZE", "6"))))
+DASHBOARD_SNAPSHOT_MIN_SECS = max(
+    3,
+    min(60, int(os.getenv("DASHBOARD_SNAPSHOT_MIN_SECS", "15" if IS_RENDER else "5"))),
+)
+WATCHLIST_NEWS_BACKFILL_SECS = max(
+    60,
+    min(1800, int(os.getenv("WATCHLIST_NEWS_BACKFILL_SECS", "300"))),
+)
+WATCHLIST_NEWS_BACKFILL_LIMIT = max(
+    1,
+    min(12, int(os.getenv("WATCHLIST_NEWS_BACKFILL_LIMIT", "4" if IS_RENDER else "6"))),
+)
 LLM_CACHE_SIZE = 500
 
 _LLM_SYSTEM = (
@@ -761,7 +786,12 @@ class DataEngine:
     """Background engine: fetches, caches, and broadcasts market data."""
 
     def __init__(self):
+        self._app_role = (os.getenv("APP_ROLE", "combined") or "combined").strip().lower()
+        if self._app_role not in {"combined", "web", "worker"}:
+            self._app_role = "combined"
         self._nse = NseSession()
+        self._dashboard_store = DashboardStore()
+        self._watchlist_store = WatchlistStore()
         self._indices: List[dict] = []
         self._stocks: Dict[str, dict] = {}
         self._news: List[dict] = []
@@ -804,6 +834,9 @@ class DataEngine:
         self._gift_refresh_secs = max(8, min(300, _gift_secs))
         _bcast_ms = int(os.getenv("GLOBAL_BROADCAST_MS", "1000"))
         self._global_broadcast_interval = max(200, min(10000, _bcast_ms)) / 1000.0
+        self._last_market_refresh_ts = 0.0
+        self._last_news_refresh_ts = 0.0
+        self._last_global_refresh_ts = 0.0
         # LLM classification stack (LIFO). New headlines push here; worker pops one at a time.
         self._llm_stack: List[dict] = []
         self._llm_pending: Set[str] = set()
@@ -815,11 +848,16 @@ class DataEngine:
         self._equity_catalog_loaded_at = 0.0
         self._equity_catalog_ttl = 12 * 60 * 60
         self._ensure_ready_lock = threading.Lock()
+        self._snapshot_lock = threading.Lock()
+        self._last_snapshot_save_ts = 0.0
+        self._snapshot_loaded = False
+        self._watchlist_news_refresh_at: Dict[str, float] = {}
         # Twelve Data rate limits (Basic plan: 8 credits/min); see TWELVE_DATA_* env vars.
         self._twelve_lock = threading.Lock()
         self._twelve_call_times: deque = deque()
         self._twelve_quote_cache: OrderedDict = OrderedDict()
         self._twelve_log_throttle = 0.0
+        self._load_persisted_snapshot()
 
     @property
     def market_status(self) -> str:
@@ -837,6 +875,93 @@ class DataEngine:
             return "POST-CLOSE"
         return "CLOSED"
 
+    @property
+    def background_enabled(self) -> bool:
+        return self._app_role in {"combined", "worker"}
+
+    def _has_dashboard_state(self) -> bool:
+        return bool(
+            self._indices
+            or self._stocks
+            or self._news
+            or self._global_futures
+            or self._gift_nifty
+            or self._sectors
+        )
+
+    def _apply_dashboard_snapshot(self, snapshot: dict):
+        self._indices = list(snapshot.get("indices") or [])
+        stock_rows = list(snapshot.get("stocks") or [])
+        self._stocks = {
+            item["symbol"]: item
+            for item in stock_rows
+            if isinstance(item, dict) and item.get("symbol")
+        }
+        self._movers = snapshot.get("movers") or {"gainers": [], "losers": []}
+        self._news = list(snapshot.get("news") or [])
+        self._sectors = list(snapshot.get("sectors") or [])
+        self._gift_nifty = snapshot.get("gift_nifty")
+        self._global_futures = list(snapshot.get("global_futures") or [])
+        self._last_global_update = snapshot.get("last_global_update")
+        self._global_stream_connected = bool(snapshot.get("global_streaming", False)) and self.background_enabled
+        self._last_update = snapshot.get("last_update")
+        self._snapshot_loaded = True
+
+    def _load_persisted_snapshot(self) -> bool:
+        try:
+            snapshot = self._dashboard_store.load_snapshot()
+        except Exception as exc:
+            print(f"[DashboardStore] load failed: {exc}")
+            return False
+        if not snapshot:
+            return False
+        self._apply_dashboard_snapshot(snapshot)
+        return True
+
+    def _dashboard_payload(self) -> dict:
+        adv = dec = 0
+        for idx in self._indices:
+            if idx.get("advances"):
+                adv = idx["advances"]
+                dec = idx.get("declines", 0)
+                break
+        if not adv and self._stocks:
+            adv = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) > 0)
+            dec = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) < 0)
+        return {
+            "indices": self._indices,
+            "stocks": list(self._stocks.values()),
+            "movers": self._movers,
+            "news": self._news,
+            "sectors": self._sectors,
+            "sector_map": SECTOR_MAP,
+            "gift_nifty": self._gift_nifty,
+            "global_futures": self._global_futures,
+            "last_global_update": self._last_global_update,
+            "global_streaming": self._global_stream_connected,
+            "market_status": self.market_status,
+            "last_update": self._last_update,
+            "time": datetime.now(IST).strftime("%H:%M:%S"),
+            "breadth": {"advances": adv, "declines": dec},
+            "news_llm_pending": self._llm_stack_pending_count(),
+            "news_llm_enabled": bool(NV_API_KEY),
+        }
+
+    def persist_dashboard_snapshot(self, force: bool = False):
+        if not self._has_dashboard_state():
+            return False
+        now = time.time()
+        with self._snapshot_lock:
+            if not force and now - self._last_snapshot_save_ts < DASHBOARD_SNAPSHOT_MIN_SECS:
+                return False
+            try:
+                self._dashboard_store.save_snapshot(self._dashboard_payload())
+                self._last_snapshot_save_ts = now
+                return True
+            except Exception as exc:
+                print(f"[DashboardStore] save failed: {exc}")
+                return False
+
     # ── lifecycle ───────────────────────────────────────────────────────
 
     async def _start_loop_after(self, label: str, delay_secs: int, loop_coro):
@@ -850,6 +975,10 @@ class DataEngine:
 
     async def start(self):
         if self._running:
+            return
+        self._load_persisted_snapshot()
+        if not self.background_enabled:
+            print(f"[Startup] APP_ROLE={self._app_role} — serving cached dashboard only")
             return
         self._running = True
         self._asyncio_loop = asyncio.get_running_loop()
@@ -871,6 +1000,8 @@ class DataEngine:
         )
 
     async def stop(self):
+        if not self.background_enabled:
+            return
         self._running = False
         tasks = [t for t in (self._market_task, self._global_task, self._gift_task,
                               self._news_task, self._llm_task, self._live_task) if t]
@@ -1092,6 +1223,41 @@ class DataEngine:
         except asyncio.CancelledError:
             return
 
+    def process_llm_queue_sync(self, max_items: int = 24) -> int:
+        """Drain some or all queued LLM jobs synchronously for prewarm-only flows."""
+        processed = 0
+        while processed < max_items:
+            with self._llm_lock:
+                backlog = len(self._llm_stack)
+            if backlog <= 0:
+                break
+            batch_size = min(LLM_BATCH_SIZE, backlog, max_items - processed) if backlog >= LLM_BATCH_THRESHOLD else 1
+            jobs = self._pop_llm_stack_batch(batch_size)
+            if not jobs:
+                break
+            titles = [job["title"] for job in jobs]
+            model = NV_FAST_MODEL if len(jobs) > 1 or backlog > LLM_BATCH_THRESHOLD else NV_API_MODEL
+            try:
+                if len(jobs) == 1:
+                    entries = [self._llm_call_one(titles[0], model)]
+                else:
+                    entries = self._llm_call_many(titles, model)
+                valid_syms = self._valid_equity_symbols()
+                for job, entry in zip(jobs, entries):
+                    cache_key = job["cache_key"]
+                    result = self._normalize_llm_entry(job, entry, valid_syms)
+                    self._llm_cache[cache_key] = result
+                    while len(self._llm_cache) > LLM_CACHE_SIZE:
+                        self._llm_cache.popitem(last=False)
+                    self._apply_llm_result_to_news(cache_key, result)
+                    self._mark_llm_done(cache_key)
+                    processed += 1
+            except Exception:
+                traceback.print_exc()
+                for job in jobs:
+                    self._mark_llm_done(job["cache_key"])
+        return processed
+
     async def _market_loop(self):
         """Fetch NSE indices + stocks + GIFT Nifty every 60 s."""
         try:
@@ -1105,6 +1271,7 @@ class DataEngine:
                     self._compute_movers()
                     self._compute_sectors()
                     self._last_update = datetime.now(IST).strftime("%H:%M:%S")
+                    await asyncio.to_thread(self.persist_dashboard_snapshot, True)
                     self._refresh_count += 1
                     elapsed = round(time.time() - t0, 1)
                     print(f"[Market] #{self._refresh_count} in {elapsed}s "
@@ -1141,6 +1308,7 @@ class DataEngine:
                     try:
                         await asyncio.to_thread(self._fetch_global_futures)
                         self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+                        await asyncio.to_thread(self.persist_dashboard_snapshot, False)
                         await self._broadcast("global_tick")
                     except Exception:
                         traceback.print_exc()
@@ -1188,6 +1356,7 @@ class DataEngine:
                     self._global_dirty = False
                     self._rebuild_global_futures()
                     self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+                    await asyncio.to_thread(self.persist_dashboard_snapshot, False)
                     await self._broadcast("global_tick")
             except asyncio.CancelledError:
                 return
@@ -1202,6 +1371,7 @@ class DataEngine:
             # Also do one REST fetch so the UI has data before first WS tick.
             await asyncio.to_thread(self._fetch_global_futures)
             self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+            await asyncio.to_thread(self.persist_dashboard_snapshot, True)
             await self._broadcast("global_tick")
 
             while self._running:
@@ -1319,6 +1489,7 @@ class DataEngine:
                         try:
                             await asyncio.to_thread(self._fetch_global_futures)
                             self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+                            await asyncio.to_thread(self.persist_dashboard_snapshot, False)
                             await self._broadcast("global_tick")
                         except Exception:
                             pass
@@ -1516,7 +1687,38 @@ class DataEngine:
                 changed_items.extend(new_items)
         if changed_items:
             self._push_llm_stack(changed_items)
+            await asyncio.to_thread(self.persist_dashboard_snapshot, False)
             await self._broadcast("news")
+
+    async def _backfill_watchlist_news(self):
+        symbols = self._watchlist_store.list_symbols()
+        if not symbols:
+            return
+        now_ts = time.time()
+        stale_cutoff = now_ts - WATCHLIST_NEWS_BACKFILL_SECS
+        with self._news_lock:
+            fresh_symbols = set()
+            for item in self._news:
+                if item.get("watchlist_injected_at", 0) <= stale_cutoff:
+                    continue
+                for sym in item.get("watchlist_stocks", []) or []:
+                    fresh_symbols.add(sym)
+        ranked = sorted(
+            symbols,
+            key=lambda sym: (
+                1 if sym in fresh_symbols else 0,
+                self._watchlist_news_refresh_at.get(sym, 0),
+            ),
+        )
+        for sym in ranked[:WATCHLIST_NEWS_BACKFILL_LIMIT]:
+            last_refresh = self._watchlist_news_refresh_at.get(sym, 0)
+            if last_refresh and now_ts - last_refresh < WATCHLIST_NEWS_BACKFILL_SECS:
+                continue
+            self._watchlist_news_refresh_at[sym] = now_ts
+            try:
+                await self.fetch_watchlist_stock_news(sym)
+            except Exception:
+                traceback.print_exc()
 
     async def _gift_nifty_loop(self):
         """Poll GIFT Nifty price on its own short interval (scrape source doesn't have a WS)."""
@@ -3051,7 +3253,12 @@ class DataEngine:
 
     # ── public API ──────────────────────────────────────────────────────
 
-    def ensure_data_ready(self, force_quotes: bool = False):
+    def ensure_data_ready(
+        self,
+        force_quotes: bool = False,
+        refresh_news: bool = False,
+        refresh_globals: bool = False,
+    ):
         """Sync fetch for serverless request lifecycles.
 
         If `force_quotes` is True, always refresh indices/stocks from source so % changes
@@ -3073,12 +3280,16 @@ class DataEngine:
             should_fetch_globals = force_quotes or (
                 not self._global_futures and (not self._running or not self._global_task)
             )
+            if refresh_globals and (not self._global_task):
+                should_fetch_globals = True
             if should_fetch_globals:
                 try:
                     self._fetch_global_futures()
                 except Exception:
                     traceback.print_exc()
             should_fetch_news = not self._news and (not self._running or not self._news_task)
+            if refresh_news and (not self._news_task):
+                should_fetch_news = True
             if should_fetch_news:
                 try:
                     self._fetch_all_news()

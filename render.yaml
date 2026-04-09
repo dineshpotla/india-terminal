@@ -18,8 +18,12 @@ services:
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: APP_ROLE
+        value: "web"
       - key: DASHBOARD_READY_TIMEOUT_SECS
         value: "4"
+      - key: PREWARM_TIMEOUT_SECS
+        value: "75"
       - key: NEWS_FEED_TIMEOUT_SECS
         value: "4"
       - key: NEWS_FEED_WORKERS
