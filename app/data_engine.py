@@ -2177,57 +2177,101 @@ class DataEngine:
             self._indices = results
 
     def _fetch_yf_stocks(self):
-        yf_symbols = [f"{sym}.NS" for sym in YF_STOCK_SYMBOLS]
+        stocks: Dict[str, dict] = {}
         try:
-            data = yf.download(
-                yf_symbols,
-                period="5d",
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-                group_by="ticker",
-                threads=True,
-            )
+            batch = yf.Tickers(" ".join(f"{s}.NS" for s in YF_STOCK_SYMBOLS))
         except Exception as e:
-            print(f"[YF Stocks] download failed: {e}")
+            print(f"[YF Stocks] tickers failed: {e}")
             return
 
-        columns = set(data.columns.get_level_values(0))
-        stocks: Dict[str, dict] = {}
         for sym in YF_STOCK_SYMBOLS:
             yf_symbol = f"{sym}.NS"
-            if yf_symbol not in columns:
+            try:
+                t = batch.tickers[yf_symbol]
+            except Exception:
                 continue
-            frame = data[yf_symbol][["Open", "High", "Low", "Close", "Volume"]]
-            closes = frame["Close"].dropna()
-            if closes.empty:
-                continue
-            row = frame.loc[closes.index[-1]]
-            price = self._to_float(row.get("Close"))
+
+            price = prev_close = open_price = high = low = 0.0
+            volume = 0
+
+            try:
+                fi = t.fast_info
+                price = self._to_float(getattr(fi, "last_price", None) or fi.get("lastPrice"), 0.0)
+                prev_close = self._to_float(getattr(fi, "previous_close", None) or fi.get("previousClose"), 0.0)
+                open_price = self._to_float(getattr(fi, "open", None) or fi.get("open"), price)
+                high = self._to_float(getattr(fi, "day_high", None) or fi.get("dayHigh"), price)
+                low = self._to_float(getattr(fi, "day_low", None) or fi.get("dayLow"), price)
+                volume = int(self._to_float(getattr(fi, "last_volume", None) or fi.get("lastVolume"), 0))
+            except Exception:
+                pass
+
+            inf: dict = {}
+            if not price or not prev_close:
+                try:
+                    raw = t.info
+                    if isinstance(raw, dict):
+                        inf = raw
+                except Exception:
+                    pass
+
+            if not price and inf:
+                price = self._to_float(inf.get("regularMarketPrice") or inf.get("currentPrice"), 0.0)
+            if not prev_close and inf:
+                prev_close = self._to_float(inf.get("regularMarketPreviousClose") or inf.get("previousClose"), 0.0)
+            if not open_price and inf:
+                open_price = self._to_float(inf.get("regularMarketOpen") or inf.get("open"), price)
+            if not high and inf:
+                high = self._to_float(inf.get("regularMarketDayHigh") or inf.get("dayHigh"), price)
+            if not low and inf:
+                low = self._to_float(inf.get("regularMarketDayLow") or inf.get("dayLow"), price)
+            if not volume and inf:
+                volume = int(self._to_float(inf.get("regularMarketVolume") or inf.get("volume"), 0))
+
+            if not price:
+                snap = self._fetch_yahoo_chart_snapshot(yf_symbol)
+                if snap:
+                    price = self._to_float(snap.get("price"), 0.0)
+                    prev_close = prev_close or self._to_float(snap.get("prev_close"), 0.0)
+
             if not price:
                 continue
-            prev_close = self._to_float(closes.iloc[-2] if len(closes) > 1 else price, price)
-            change = price - prev_close if prev_close else 0
-            pct = (change / prev_close * 100) if prev_close else 0
-            open_price = self._to_float(row.get("Open"), price)
-            high = self._to_float(row.get("High"), price)
-            low = self._to_float(row.get("Low"), price)
-            volume = int(self._to_float(row.get("Volume"), 0))
-            stocks[sym] = {
-                "symbol": sym,
-                "name": YF_COMPANY_NAMES.get(sym, sym),
-                "sector": SECTOR_MAP.get(sym, "Other"),
-                "price": round(price, 2),
-                "change": round(change, 2),
-                "change_pct": round(pct, 2),
-                "open": round(open_price, 2),
-                "high": round(high, 2),
-                "low": round(low, 2),
-                "volume": volume,
-                "prev_close": round(prev_close, 2),
-                "year_high": round(high, 2),
-                "year_low": round(low, 2),
-            }
+            if not prev_close:
+                prev_close = price
+            change = price - prev_close
+            pct = (change / prev_close * 100) if prev_close else 0.0
+
+            name = YF_COMPANY_NAMES.get(sym, sym)
+            sector = SECTOR_MAP.get(sym, "Other")
+            try:
+                if inf:
+                    name = inf.get("longName") or inf.get("shortName") or name
+                    if sector == "Other":
+                        sector = inf.get("sector") or inf.get("industry") or sector
+            except Exception:
+                pass
+
+            if not high:
+                high = price
+            if not low:
+                low = price
+            if not open_price:
+                open_price = price
+
+            stocks[sym] = self._build_stock_payload(
+                symbol=sym,
+                name=name,
+                sector=sector,
+                price=price,
+                change=change,
+                change_pct=pct,
+                open_price=open_price,
+                high=high,
+                low=low,
+                volume=volume,
+                prev_close=prev_close,
+                year_high=high,
+                year_low=low,
+            )
         if TWELVE_DATA_API_KEY and TWELVE_DATA_STOCK_FALLBACK_CAP:
             filled = 0
             for sym in YF_STOCK_SYMBOLS:
@@ -2827,21 +2871,23 @@ class DataEngine:
 
     # ── public API ──────────────────────────────────────────────────────
 
-    def ensure_data_ready(self):
-        """One-shot sync fetch when background loops haven't populated data yet (serverless)."""
-        if self._stocks and self._indices and self._news:
-            return
-        if not self._stocks or not self._indices:
+    def ensure_data_ready(self, force_quotes: bool = False):
+        """Sync fetch for serverless request lifecycles.
+
+        If `force_quotes` is True, always refresh indices/stocks from source so % changes
+        reflect the latest snapshot instead of an in-memory cache.
+        """
+        if force_quotes or (not self._stocks or not self._indices):
             try:
                 self._fetch_nse_data()
             except Exception:
                 traceback.print_exc()
-        if not self._gift_nifty:
+        if force_quotes or not self._gift_nifty:
             try:
                 self._fetch_gift_nifty()
             except Exception:
                 traceback.print_exc()
-        if not self._global_futures:
+        if force_quotes or not self._global_futures:
             try:
                 self._fetch_global_futures()
             except Exception:
@@ -2851,10 +2897,9 @@ class DataEngine:
                 self._fetch_all_news()
             except Exception:
                 traceback.print_exc()
-        if not self._last_update:
-            self._compute_movers()
-            self._compute_sectors()
-            self._last_update = datetime.now(IST).strftime("%H:%M:%S")
+        self._compute_movers()
+        self._compute_sectors()
+        self._last_update = datetime.now(IST).strftime("%H:%M:%S")
 
     def get_dashboard(self) -> dict:
         adv = dec = 0
@@ -3069,26 +3114,72 @@ class DataEngine:
         )
 
     def _fetch_yf_equity_quote(self, symbol: str) -> Optional[dict]:
+        ticker = yf.Ticker(f"{symbol}.NS")
+        price = prev_close = open_price = high = low = 0.0
+        volume = 0
+        inf: dict = {}
         try:
-            ticker = yf.Ticker(f"{symbol}.NS")
-            hist = ticker.history(period="5d", interval="1d")
-        except Exception as e:
-            print(f"[YF Quote] {symbol}: {e}")
-            return None
-        closes = hist["Close"].dropna() if "Close" in hist else []
-        if len(closes) == 0:
-            return None
-        row = hist.loc[closes.index[-1]]
-        price = self._to_float(row.get("Close"))
+            fi = ticker.fast_info
+            price = self._to_float(getattr(fi, "last_price", None) or fi.get("lastPrice"), 0.0)
+            prev_close = self._to_float(getattr(fi, "previous_close", None) or fi.get("previousClose"), 0.0)
+            open_price = self._to_float(getattr(fi, "open", None) or fi.get("open"), price)
+            high = self._to_float(getattr(fi, "day_high", None) or fi.get("dayHigh"), price)
+            low = self._to_float(getattr(fi, "day_low", None) or fi.get("dayLow"), price)
+            volume = int(self._to_float(getattr(fi, "last_volume", None) or fi.get("lastVolume"), 0))
+        except Exception:
+            pass
+
+        if not price or not prev_close:
+            try:
+                raw = ticker.info
+                if isinstance(raw, dict):
+                    inf = raw
+            except Exception:
+                pass
+        if not price and inf:
+            price = self._to_float(inf.get("regularMarketPrice") or inf.get("currentPrice"), 0.0)
+        if not prev_close and inf:
+            prev_close = self._to_float(inf.get("regularMarketPreviousClose") or inf.get("previousClose"), 0.0)
+        if not open_price and inf:
+            open_price = self._to_float(inf.get("regularMarketOpen") or inf.get("open"), price)
+        if not high and inf:
+            high = self._to_float(inf.get("regularMarketDayHigh") or inf.get("dayHigh"), price)
+        if not low and inf:
+            low = self._to_float(inf.get("regularMarketDayLow") or inf.get("dayLow"), price)
+        if not volume and inf:
+            volume = int(self._to_float(inf.get("regularMarketVolume") or inf.get("volume"), 0))
+
         if not price:
-            return None
-        prev_close = self._to_float(closes.iloc[-2] if len(closes) > 1 else price, price)
-        change = price - prev_close if prev_close else 0
-        pct = (change / prev_close * 100) if prev_close else 0
+            snap = self._fetch_yahoo_chart_snapshot(f"{symbol}.NS")
+            if snap:
+                price = self._to_float(snap.get("price"), 0.0)
+                prev_close = prev_close or self._to_float(snap.get("prev_close"), 0.0)
+
+        # Worst-case fallback: daily close-to-close (less accurate intraday).
+        if not price:
+            try:
+                hist = ticker.history(period="5d", interval="1d")
+                closes = hist["Close"].dropna() if "Close" in hist else []
+                if len(closes) == 0:
+                    return None
+                row = hist.loc[closes.index[-1]]
+                price = self._to_float(row.get("Close"), 0.0)
+                prev_close = self._to_float(closes.iloc[-2] if len(closes) > 1 else price, price)
+                open_price = self._to_float(row.get("Open"), price)
+                high = self._to_float(row.get("High"), price)
+                low = self._to_float(row.get("Low"), price)
+                volume = int(self._to_float(row.get("Volume"), 0))
+            except Exception as e:
+                print(f"[YF Quote] {symbol}: {e}")
+                return None
+
+        if not prev_close:
+            prev_close = price
+        change = price - prev_close
+        pct = (change / prev_close * 100) if prev_close else 0.0
         name = YF_COMPANY_NAMES.get(symbol, symbol)
         sector = SECTOR_MAP.get(symbol, "")
         try:
-            inf = ticker.info
             if isinstance(inf, dict):
                 name = inf.get("longName") or inf.get("shortName") or name
                 if not sector:
@@ -3111,13 +3202,13 @@ class DataEngine:
             price=price,
             change=change,
             change_pct=pct,
-            open_price=self._to_float(row.get("Open"), price),
-            high=self._to_float(row.get("High"), price),
-            low=self._to_float(row.get("Low"), price),
-            volume=int(self._to_float(row.get("Volume"), 0)),
+            open_price=open_price or price,
+            high=high or price,
+            low=low or price,
+            volume=int(volume or 0),
             prev_close=prev_close,
-            year_high=self._to_float(hist["High"].max() if "High" in hist else price, price),
-            year_low=self._to_float(hist["Low"].min() if "Low" in hist else price, price),
+            year_high=high or price,
+            year_low=low or price,
         )
 
     def is_known_equity(self, symbol: str) -> bool:

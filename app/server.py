@@ -110,7 +110,7 @@ async def health_head():
 
 @app.get("/api/dashboard")
 async def dashboard():
-    await asyncio.to_thread(engine.ensure_data_ready)
+    await asyncio.to_thread(engine.ensure_data_ready, True)
     return JSONResponse(engine.get_dashboard())
 
 
