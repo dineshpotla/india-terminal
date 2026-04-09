@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Iterable, List
 
@@ -32,11 +33,13 @@ class WatchlistStore:
         self._seed_symbols = self._parse_seed_symbols(
             os.getenv("WATCHLIST_SEED_SYMBOLS", "")
         )
+        self._postgres_ready = False
+        self._postgres_log_at = 0.0
 
         if self._db_url and psycopg is not None:
             self._mode = "postgres"
             self._sqlite = None
-            self._init_postgres()
+            self._ensure_postgres_ready()
         else:
             self._mode = "sqlite"
             self._sqlite_path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +71,9 @@ class WatchlistStore:
     @property
     def initialized(self) -> bool:
         if self._mode == "postgres":
-            with psycopg.connect(self._db_url) as conn:
+            if not self._ensure_postgres_ready():
+                return False
+            with self._postgres_connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -110,7 +115,7 @@ class WatchlistStore:
             )
 
     def _init_postgres(self):
-        with psycopg.connect(self._db_url) as conn:
+        with self._postgres_connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -130,9 +135,38 @@ class WatchlistStore:
                 )
             conn.commit()
 
+    def _postgres_connect(self):
+        return psycopg.connect(self._db_url, connect_timeout=5)
+
+    def _log_postgres_error(self, exc: Exception, prefix: str):
+        now = time.time()
+        if now - self._postgres_log_at < 30:
+            return
+        self._postgres_log_at = now
+        print(f"{prefix}: {exc}")
+
+    def _ensure_postgres_ready(self) -> bool:
+        if self._mode != "postgres":
+            return False
+        if self._postgres_ready:
+            return True
+        with self._lock:
+            if self._postgres_ready:
+                return True
+            try:
+                self._init_postgres()
+                self._postgres_ready = True
+                return True
+            except Exception as exc:
+                self._postgres_ready = False
+                self._log_postgres_error(exc, "[Watchlist] Postgres unavailable")
+                return False
+
     def _mark_initialized(self):
         if self._mode == "postgres":
-            with psycopg.connect(self._db_url) as conn:
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -160,7 +194,9 @@ class WatchlistStore:
 
     def list_symbols(self) -> List[str]:
         if self._mode == "postgres":
-            with psycopg.connect(self._db_url) as conn:
+            if not self._ensure_postgres_ready():
+                return list(self._seed_symbols)
+            with self._postgres_connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -183,7 +219,9 @@ class WatchlistStore:
 
     def add_symbol(self, symbol: str):
         if self._mode == "postgres":
-            with psycopg.connect(self._db_url) as conn:
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -225,7 +263,9 @@ class WatchlistStore:
             return
 
         if self._mode == "postgres":
-            with psycopg.connect(self._db_url) as conn:
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
                 with conn.cursor() as cur:
                     cur.executemany(
                         """
@@ -263,7 +303,9 @@ class WatchlistStore:
 
     def remove_symbol(self, symbol: str):
         if self._mode == "postgres":
-            with psycopg.connect(self._db_url) as conn:
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "DELETE FROM watchlist_items WHERE symbol = %s",
