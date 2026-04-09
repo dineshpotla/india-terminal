@@ -1,15 +1,23 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
-# After pushing to GitHub: Dashboard → New → Blueprint → connect repo → apply.
+# Dashboard → New → Blueprint → connect repo → apply.
+#
+# Python version: uses repo [.python-version](.python-version) (see Render native Python).
+# Optional secrets (set in dashboard): NV_API_KEY, TWELVE_DATA_API_KEY, WATCHLIST_SEED_SYMBOLS, etc.
 
 services:
   - type: web
     name: india-market-terminal
     runtime: python
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn app.server:app --host 0.0.0.0 --port $PORT
+    region: oregon
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install --no-cache-dir -r requirements.txt
+    # --proxy-headers: correct client scheme/host behind Render TLS termination (helps WS + redirects)
+    # --timeout-keep-alive: reduce idle disconnects on long-lived connections (under Render ~100s limit)
+    startCommand: uvicorn app.server:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*' --timeout-keep-alive 75 --log-level info
     healthCheckPath: /health
     envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: DATABASE_URL
         fromDatabase:
           name: india-market-terminal-db

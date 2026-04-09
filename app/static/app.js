@@ -42,6 +42,8 @@
     const $giftPrice   = $("gift-price");
     const $giftPts     = $("gift-pts");
     const $giftPct     = $("gift-pct");
+    const $newsLlmStack = $("news-llm-stack");
+    const $newsLlmCount = $("news-llm-stack-count");
 
     // ── Price change tracking (orderbook-style flash) ──────────────────
 
@@ -112,6 +114,33 @@
 
     function clearChildren(node) {
         while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    /** Bottom-right badge: headlines waiting for server-side LLM classification. */
+    function renderNewsLlmStack(data) {
+        if (!$newsLlmStack || !$newsLlmCount) return;
+        if (!data || (data.news_llm_pending === undefined && data.news_llm_enabled === undefined)) {
+            $newsLlmStack.hidden = true;
+            return;
+        }
+        var pending = Number(data.news_llm_pending);
+        if (isNaN(pending) || pending < 0) pending = 0;
+        var enabled = data.news_llm_enabled !== false;
+        var suffix = $newsLlmStack.querySelector(".news-llm-stack-suffix");
+        $newsLlmStack.hidden = false;
+        if (!enabled) {
+            $newsLlmStack.className = "news-llm-stack news-llm-stack--off";
+            $newsLlmCount.textContent = "\u2014";
+            if (suffix) suffix.textContent = "AI off";
+            $newsLlmStack.title = "Headline AI classification is not enabled on this server";
+            return;
+        }
+        $newsLlmStack.className = "news-llm-stack" + (pending > 0 ? " news-llm-stack--busy" : "");
+        $newsLlmCount.textContent = String(pending);
+        if (suffix) suffix.textContent = "queued";
+        $newsLlmStack.title = pending === 0
+            ? "No headlines waiting for AI classification"
+            : pending + " headline(s) queued for AI classification";
     }
 
     // ── Clock ──────────────────────────────────────────────────────────
@@ -623,7 +652,9 @@
     async function hydrateWatchlistStocks() {
         var missing = watchlist.filter(function (sym) { return !findKnownStock(sym); });
         if (!missing.length) return;
-        await Promise.all(missing.slice(0, 6).map(fetchStockDetail));
+        for (var i = 0; i < missing.length; i += 8) {
+            await Promise.all(missing.slice(i, i + 8).map(fetchStockDetail));
+        }
         renderWatchlistTable();
     }
 
@@ -735,6 +766,11 @@
         });
     }
 
+    /** Union of two symbol lists (remote + local) so refresh does not drop browser-only rows. */
+    function mergeWatchlistSymbols(remoteList, localList) {
+        return normalizeWatchlist((remoteList || []).concat(localList || []));
+    }
+
     function loadWatchlistLocal() {
         try {
             var saved = localStorage.getItem("imt_watchlist");
@@ -746,11 +782,14 @@
         try { localStorage.setItem("imt_watchlist", JSON.stringify(watchlist)); } catch (e) {}
     }
 
-    function applyWatchlist(symbols) {
+    function applyWatchlist(symbols, opts) {
+        opts = opts || {};
         watchlist = normalizeWatchlist(symbols);
         saveWatchlist();
         renderWatchlistTable();
-        hydrateWatchlistStocks();
+        if (!opts.deferHydrate) {
+            hydrateWatchlistStocks();
+        }
         if (currentNewsTab === "watchlist" && dashboardData) renderNews(dashboardData.news);
         if (ws && ws.readyState === WebSocket.OPEN && watchlist.length) {
             watchlist.forEach(function (sym) { ws.send("watchlist:" + sym); });
@@ -783,10 +822,20 @@
             if (!initialized && local.length) {
                 remote = await syncWatchlistRemote(local);
             }
-            applyWatchlist(initialized ? remote : (remote.length ? remote : local));
+            var merged = mergeWatchlistSymbols(remote, local);
+            if (initialized && merged.length > remote.length) {
+                try {
+                    remote = await syncWatchlistRemote(merged);
+                    merged = normalizeWatchlist(remote);
+                } catch (syncErr) {
+                    console.warn("[Watchlist] Could not sync merged list:", syncErr);
+                }
+            }
+            var useList = initialized ? merged : (remote.length ? remote : local);
+            applyWatchlist(useList, { deferHydrate: true });
         } catch (err) {
             console.warn("[Watchlist] Falling back to local storage:", err);
-            applyWatchlist(local);
+            applyWatchlist(local, { deferHydrate: true });
         }
     }
 
@@ -946,9 +995,11 @@
         renderGlobalMarkets(data.global_futures);
         updateGlobalStatus(data.global_streaming, data.last_global_update);
         renderWatchlistTable();
+        renderNewsLlmStack(data);
 
-        if (selectedStock && data.stocks) {
-            var stock = data.stocks.find(function (s) { return s.symbol === selectedStock; });
+        if (selectedStock) {
+            var stock = (data.stocks || []).find(function (s) { return s.symbol === selectedStock; })
+                || findKnownStock(selectedStock);
             if (stock) renderStockDetail(stock);
         }
 
@@ -983,8 +1034,37 @@
                     updateGlobalStatus(msg.global_streaming, msg.last_global_update);
                     if (currentView === "global") renderGlobalMarkets(msg.global_futures);
                 } else if (msg.type === "news" && msg.news) {
-                    if (dashboardData) dashboardData.news = msg.news;
+                    if (dashboardData) {
+                        dashboardData.news = msg.news;
+                        if (msg.news_llm_pending !== undefined) {
+                            dashboardData.news_llm_pending = msg.news_llm_pending;
+                        }
+                        if (msg.news_llm_enabled !== undefined) {
+                            dashboardData.news_llm_enabled = msg.news_llm_enabled;
+                        }
+                    }
                     renderNews(msg.news, true);
+                    renderNewsLlmStack({
+                        news_llm_pending: msg.news_llm_pending !== undefined
+                            ? msg.news_llm_pending
+                            : (dashboardData && dashboardData.news_llm_pending),
+                        news_llm_enabled: msg.news_llm_enabled !== undefined
+                            ? msg.news_llm_enabled
+                            : (dashboardData && dashboardData.news_llm_enabled),
+                    });
+                } else if (msg.type === "llm_queue") {
+                    if (dashboardData) {
+                        if (msg.news_llm_pending !== undefined) {
+                            dashboardData.news_llm_pending = msg.news_llm_pending;
+                        }
+                        if (msg.news_llm_enabled !== undefined) {
+                            dashboardData.news_llm_enabled = msg.news_llm_enabled;
+                        }
+                    }
+                    renderNewsLlmStack({
+                        news_llm_pending: msg.news_llm_pending,
+                        news_llm_enabled: msg.news_llm_enabled,
+                    });
                 }
             } catch (err) { console.error("[WS] Parse error:", err); }
         };
@@ -1005,6 +1085,7 @@
             var res = await fetch("/api/dashboard");
             var data = await res.json();
             renderDashboard(data);
+            await hydrateWatchlistStocks();
         } catch (err) { console.error("Initial load error:", err); }
     }
 

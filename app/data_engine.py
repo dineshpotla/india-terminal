@@ -74,20 +74,28 @@ SECTOR_MAP = {
 TRACKED_INDICES = {"NIFTY 50", "NIFTY BANK", "NIFTY NEXT 50", "NIFTY IT",
                    "NIFTY MIDCAP 50", "NIFTY FINANCIAL SERVICES", "INDIA VIX"}
 
+# Global markets: prefer Yahoo "ROOT=F" futures where available. Those tickers track the
+# **front contract**; Yahoo retargets them at rollover, so we do not maintain a local expiry calendar.
+#
+# Futures availability (Yahoo): CME/ICE roots (ES, NQ, CL, 6E, BTC=F, …) work. Probed chart/=F
+# symbols for FTSE/DAX/CAC/Euro Stoxx/Hang Seng/KOSPI/Taiwan/etc. futures return 404 — contracts
+# exist on exchanges but Yahoo does not list them as continuous =F. For those rows we keep Yahoo
+# **cash indices** and optionally fall back to Twelve Data spot quotes (TWELVE_DATA_API_KEY) if
+# Yahoo returns no price. USD/JPY uses CME **6J=F** (inverse tick → USD/JPY display below).
 GLOBAL_FUTURES = [
-    # US Markets
+    # US Markets (CME equity index + RTY E-mini)
     ("S&P 500", "ES=F", "US MARKETS"),
     ("NASDAQ", "NQ=F", "US MARKETS"),
     ("DOW JONES", "YM=F", "US MARKETS"),
-    ("RUSSELL 2000", "^RUT", "US MARKETS"),
-    # European Markets
+    ("RUSSELL 2000", "RTY=F", "US MARKETS"),
+    # European Markets — Yahoo has no reliable broad equity-index =F for these; keep cash indices
     ("FTSE 100", "^FTSE", "EUROPEAN MARKETS"),
     ("DAX", "^GDAXI", "EUROPEAN MARKETS"),
     ("CAC 40", "^FCHI", "EUROPEAN MARKETS"),
     ("EURO STOXX 50", "^STOXX50E", "EUROPEAN MARKETS"),
     # Asian Markets
     ("GIFT NIFTY", None, "ASIAN MARKETS"),
-    ("NIKKEI 225", "^N225", "ASIAN MARKETS"),
+    ("NIKKEI 225", "NIY=F", "ASIAN MARKETS"),  # CBOT Nikkei future (JPY); trades nearly 24h vs ^N225 cash
     ("HANG SENG", "^HSI", "ASIAN MARKETS"),
     ("SHANGHAI", "000001.SS", "ASIAN MARKETS"),
     ("KOSPI", "^KS11", "ASIAN MARKETS"),
@@ -95,28 +103,45 @@ GLOBAL_FUTURES = [
     ("STRAITS TIMES", "^STI", "ASIAN MARKETS"),
     ("SET COMPOSITE", "^SET.BK", "ASIAN MARKETS"),
     ("JAKARTA", "^JKSE", "ASIAN MARKETS"),
-    # Commodities
+    # Commodities (all =F; monthly/quarterly rolls handled by Yahoo)
     ("CRUDE OIL (WTI)", "CL=F", "COMMODITIES"),
     ("BRENT CRUDE", "BZ=F", "COMMODITIES"),
     ("NATURAL GAS", "NG=F", "COMMODITIES"),
     ("GOLD", "GC=F", "COMMODITIES"),
     ("SILVER", "SI=F", "COMMODITIES"),
     ("COPPER", "HG=F", "COMMODITIES"),
-    # Currencies
-    ("EUR/USD", "EURUSD=X", "CURRENCIES"),
-    ("GBP/USD", "GBPUSD=X", "CURRENCIES"),
-    ("USD/JPY", "JPY=X", "CURRENCIES"),
+    # Currencies — CME FX futures for extended hours; 6J=F shown as USD/JPY via inverse quote
+    ("EUR/USD", "6E=F", "CURRENCIES"),
+    ("GBP/USD", "6B=F", "CURRENCIES"),
+    ("USD/JPY", "6J=F", "CURRENCIES"),
     ("USD/INR", "INR=X", "CURRENCIES"),
     ("DXY (Dollar Index)", "DX-Y.NYB", "CURRENCIES"),
-    # Crypto
-    ("BITCOIN", "BTC-USD", "CRYPTO"),
-    ("ETHEREUM", "ETH-USD", "CRYPTO"),
-    # Bonds
-    ("US 10Y YIELD", "^TNX", "BONDS"),
-    ("US 2Y YIELD", "^IRX", "BONDS"),
+    # Crypto — CME Bitcoin / Ether futures (nearly 24h); Yahoo rolls front month via =F
+    ("BITCOIN", "BTC=F", "CRYPTO"),
+    ("ETHEREUM", "ETH=F", "CRYPTO"),
+    # Bonds — CME yield futures (10Y / 2Y); replaces ^TNX/^IRX (IRX is 13W bill, not 2Y)
+    ("US 10Y YIELD", "10Y=F", "BONDS"),
+    ("US 2Y YIELD", "2YY=F", "BONDS"),
 ]
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+# Yahoo symbol -> Twelve Data `symbol`[, exchange] for REST fallback (spot index), same display scale.
+_GLOBAL_TD_FALLBACK: Dict[str, tuple] = {
+    "^FTSE": ("FTSE", ""),
+    "^GDAXI": ("DAX", ""),
+    "^FCHI": ("FCHI", ""),
+    "^STOXX50E": ("STOXX50E", ""),
+    "^HSI": ("HSI", ""),
+    "000001.SS": ("000001", "SSE"),
+    "^KS11": ("KS11", ""),
+    "^TWII": ("TWII", ""),
+    "^STI": ("STI", ""),
+    "^SET.BK": ("SET", "SET"),
+    "^JKSE": ("JKSE", ""),
+}
+
+TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
 
 YF_INDEX_MAP = {
     "NIFTY 50": "^NSEI",
@@ -393,6 +418,10 @@ def _live_title_ok(title: str) -> bool:
 
 NV_API_KEY = os.getenv("NV_API_KEY", "")
 NV_API_URL = os.getenv("NV_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
+# Optional backup for global **index** rows Yahoo sometimes throttles or omits. Twelve Data returns
+# spot indices (not exchange-traded futures). EU/Asia equity index futures (Eurex/ICE/HKFE) are not
+# exposed as Yahoo `=F` roots (chart API 404) — see module comment on GLOBAL_FUTURES.
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
 NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "moonshotai/kimi-k2.5")
 NV_FAST_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1"
 LLM_CACHE_SIZE = 500
@@ -785,10 +814,24 @@ class DataEngine:
         self._live_task = None
         self._asyncio_loop = None
 
+    def _llm_stack_pending_count(self) -> int:
+        with self._llm_lock:
+            return len(self._llm_stack)
+
+    def _schedule_llm_stack_broadcast(self):
+        loop = getattr(self, "_asyncio_loop", None)
+        if not loop or not loop.is_running():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._broadcast("llm_queue"), loop)
+        except Exception:
+            pass
+
     def _push_llm_stack(self, items: List[dict]):
         """Push uncached items onto the LLM stack (LIFO). Thread-safe."""
         if not NV_API_KEY or not items:
             return
+        added = False
         with self._llm_lock:
             for it in items:
                 title = (it.get("title") or "").strip()
@@ -799,6 +842,9 @@ class DataEngine:
                     continue
                 self._llm_stack.append({"cache_key": cache_key, "title": title})
                 self._llm_pending.add(cache_key)
+                added = True
+        if added:
+            self._schedule_llm_stack_broadcast()
 
     def _pop_llm_stack(self) -> Optional[dict]:
         """Pop one item from LLM stack (LIFO). Thread-safe."""
@@ -841,6 +887,7 @@ class DataEngine:
                 if not job:
                     await asyncio.sleep(0.25)
                     continue
+                await self._broadcast("llm_queue")
                 cache_key = job["cache_key"]
                 title = job["title"]
                 try:
@@ -979,10 +1026,18 @@ class DataEngine:
             def _fetch():
                 try:
                     ok = 0
+                    batch = yf.Tickers(" ".join(symbols))
                     for sym in symbols:
-                        snap = self._fetch_yahoo_chart_snapshot(sym)
-                        pc = self._to_float((snap or {}).get("prev_close"), 0.0)
-                        if pc:
+                        pc = 0.0
+                        try:
+                            fi = batch.tickers[sym].fast_info
+                            pc = float(fi.previous_close)
+                        except Exception:
+                            pass
+                        if pc <= 0:
+                            snap = self._fetch_yahoo_chart_snapshot(sym)
+                            pc = self._to_float((snap or {}).get("prev_close"), 0.0)
+                        if pc and pc > 0:
                             self._global_prev_close[sym] = pc
                             ok += 1
                     print(f"[Global WS] Seeded previous_close for {ok}/{len(symbols)} symbols")
@@ -1032,7 +1087,7 @@ class DataEngine:
 
                         resub_interval = 30
                         last_resub = time.time()
-                        refresh_prev_interval = 3600
+                        refresh_prev_interval = 900
                         last_prev_refresh = time.time()
 
                         async for raw in ws:
@@ -1051,20 +1106,59 @@ class DataEngine:
                                 price = d.get("price")
                                 if not sym or not price:
                                     continue
-                                prev = d.get("previous_close") or self._global_prev_close.get(sym)
-                                if prev:
-                                    self._global_prev_close[sym] = prev
-                                    chg = price - prev
-                                    chg_pct = (chg / prev * 100) if prev else 0
+                                ws_prev = d.get("previous_close")
+                                if ws_prev and ws_prev > 0:
+                                    self._global_prev_close[sym] = ws_prev
+                                if sym == "6J=F":
+                                    fr = float(price)
+                                    pr = float(ws_prev) if ws_prev else 0.0
+                                    if not pr:
+                                        pr = float(self._global_prev_close.get(sym, 0) or 0)
+                                    if fr > 0 and fr < 0.35 and pr > 0 and pr < 0.35:
+                                        dp = 1.0 / fr
+                                        dprev = 1.0 / pr
+                                        chg = dp - dprev
+                                        chg_pct = (chg / dprev * 100.0) if dprev else 0.0
+                                        fp = dp
+                                        fc = float(chg)
+                                        self._global_live[sym] = {
+                                            "name": sym_to_label.get(sym, sym),
+                                            "symbol": sym,
+                                            "region": sym_to_region.get(sym, "OTHER"),
+                                            "price": round(fp, 2 if fp >= 10 else 4),
+                                            "change": round(fc, 2 if abs(fc) >= 1 else 4),
+                                            "change_pct": round(float(chg_pct), 2),
+                                        }
+                                        self._global_dirty = True
+                                        self._global_tick_count += 1
+                                        continue
+                                ws_chg = d.get("change")
+                                ws_pct = d.get("change_percent")
+                                prev = ws_prev or self._global_prev_close.get(sym)
+                                prev_f = float(prev) if prev and prev > 0 else 0.0
+                                if ws_chg is not None and ws_pct is not None:
+                                    chg = ws_chg
+                                    chg_pct = ws_pct
+                                elif ws_pct is not None and prev_f > 0:
+                                    chg_pct = ws_pct
+                                    chg = prev_f * (float(ws_pct) / 100.0)
+                                elif ws_chg is not None and prev_f > 0:
+                                    chg = ws_chg
+                                    chg_pct = (float(ws_chg) / prev_f) * 100.0
+                                elif prev_f > 0:
+                                    chg = float(price) - prev_f
+                                    chg_pct = (chg / prev_f) * 100.0
                                 else:
-                                    chg = d.get("change", 0)
-                                    chg_pct = d.get("change_percent", 0)
+                                    chg = float(ws_chg or 0)
+                                    chg_pct = float(ws_pct or 0)
+                                fp = float(price)
+                                fc = float(chg)
                                 self._global_live[sym] = {
                                     "name": sym_to_label.get(sym, sym),
                                     "symbol": sym,
                                     "region": sym_to_region.get(sym, "OTHER"),
-                                    "price": round(float(price), 2 if float(price) >= 10 else 4),
-                                    "change": round(float(chg), 2),
+                                    "price": round(fp, 2 if fp >= 10 else 4),
+                                    "change": round(fc, 2 if abs(fc) >= 1 else 4),
                                     "change_pct": round(float(chg_pct), 2),
                                 }
                                 self._global_dirty = True
@@ -1077,7 +1171,7 @@ class DataEngine:
                                 await ws.send(_json.dumps({"subscribe": symbols}))
                                 last_resub = now
                             if now - last_prev_refresh >= refresh_prev_interval:
-                                asyncio.create_task(asyncio.to_thread(lambda: _seed_prev_close()))
+                                asyncio.create_task(_seed_prev_close())
                                 last_prev_refresh = now
 
                 except asyncio.CancelledError:
@@ -1183,6 +1277,10 @@ class DataEngine:
         Returns formatted news items ready to merge into self._news.
         """
         company_name = YF_COMPANY_NAMES.get(symbol, "")
+        if not company_name:
+            cat = next((item for item in self._load_equity_catalog() if item["symbol"] == symbol), None)
+            if cat:
+                company_name = cat.get("name", "")
         short_name = company_name.replace(" Limited", "").replace(" Ltd", "").strip() if company_name else ""
 
         queries = []
@@ -1249,7 +1347,7 @@ class DataEngine:
     async def fetch_watchlist_stock_news(self, symbol: str):
         """Async entry point: search for stock news, merge into live feed, broadcast."""
         symbol = symbol.upper().strip()
-        if symbol not in SECTOR_MAP and symbol not in YF_COMPANY_NAMES:
+        if not self.is_known_equity(symbol):
             return
         items = await asyncio.to_thread(self._search_stock_news, symbol)
         if not items:
@@ -1734,6 +1832,129 @@ class DataEngine:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _yahoo_change_for_display(
+        info: Optional[dict],
+        price: float,
+        prev_close: float,
+    ) -> tuple[float, float]:
+        """Use Yahoo quote-summary change fields when present; else price vs previous close."""
+        inf: dict = info if isinstance(info, dict) else {}
+        base_prev = DataEngine._to_float(
+            inf.get("regularMarketPreviousClose") or inf.get("previousClose"),
+            0.0,
+        )
+        if base_prev <= 0 and prev_close > 0:
+            base_prev = prev_close
+
+        rmc = inf.get("regularMarketChange")
+        rmcp = inf.get("regularMarketChangePercent")
+        has_c = rmc is not None
+        has_p = rmcp is not None
+        if has_c and has_p:
+            return float(rmc), float(rmcp)
+        if has_p and base_prev > 0:
+            pct = float(rmcp)
+            return base_prev * (pct / 100.0), pct
+        if has_c and base_prev > 0:
+            c = float(rmc)
+            return c, (c / base_prev) * 100.0
+        pc = prev_close if prev_close > 0 else base_prev
+        if pc > 0:
+            chg = price - pc
+            return chg, (chg / pc) * 100.0
+        return 0.0, 0.0
+
+    @staticmethod
+    def _invert_cme_jpy_future_to_usdjpy(px: float) -> float:
+        """CME yen future on Yahoo is quoted as a small USD-per-JPY fraction; invert to USD/JPY."""
+        try:
+            p = float(px)
+        except (TypeError, ValueError):
+            return 0.0
+        if p <= 0 or p >= 0.35:
+            return 0.0
+        return 1.0 / p
+
+    def _twelve_data_index_quote(self, td_symbol: str, td_exchange: str) -> Optional[dict]:
+        """Spot index quote from Twelve Data (fallback when Yahoo has no price)."""
+        if not TWELVE_DATA_API_KEY:
+            return None
+        try:
+            params: Dict[str, str] = {"symbol": td_symbol, "apikey": TWELVE_DATA_API_KEY}
+            if td_exchange:
+                params["exchange"] = td_exchange
+            r = requests.get(
+                TWELVE_DATA_QUOTE_URL,
+                params=params,
+                headers={"User-Agent": random.choice(_USER_AGENTS)},
+                timeout=12,
+            )
+            if r.status_code != 200:
+                return None
+            j = r.json()
+            if j.get("status") == "error" or j.get("code"):
+                return None
+            price = self._to_float(j.get("close"), 0.0)
+            if not price:
+                price = self._to_float(j.get("open"), 0.0)
+            prev = self._to_float(j.get("previous_close"), 0.0)
+            if not price:
+                return None
+            chg = self._to_float(j.get("change"), 0.0)
+            pct = self._to_float(j.get("percent_change"), 0.0)
+            if not chg and prev > 0:
+                chg = price - prev
+            if not pct and prev > 0:
+                pct = (chg / prev) * 100.0
+            return {"price": price, "prev": prev, "chg": chg, "pct": pct}
+        except Exception:
+            return None
+
+    def _build_global_futures_row(
+        self,
+        label: str,
+        yahoo_sym: str,
+        region: str,
+        price: float,
+        prev: float,
+        inf: dict,
+    ) -> Optional[dict]:
+        """One global row from Yahoo prices; seeds _global_prev_close for the stream."""
+        inf = inf if isinstance(inf, dict) else {}
+        if yahoo_sym == "6J=F":
+            raw_p = self._to_float(price, 0.0)
+            raw_prev = self._to_float(prev, 0.0)
+            if raw_prev <= 0:
+                raw_prev = self._to_float(
+                    inf.get("regularMarketPreviousClose") or inf.get("previousClose"),
+                    0.0,
+                )
+            display_p = self._invert_cme_jpy_future_to_usdjpy(raw_p)
+            display_prev = self._invert_cme_jpy_future_to_usdjpy(raw_prev)
+            if not display_p:
+                return None
+            if raw_prev > 0:
+                self._global_prev_close[yahoo_sym] = raw_prev
+            chg = display_p - display_prev if display_prev else 0.0
+            chg_pct = (chg / display_prev * 100.0) if display_prev else 0.0
+            fp, fc = display_p, chg
+        else:
+            if not price:
+                return None
+            if prev > 0:
+                self._global_prev_close[yahoo_sym] = prev
+            chg, chg_pct = self._yahoo_change_for_display(inf, price, prev)
+            fp, fc = price, chg
+        return {
+            "name": label,
+            "symbol": yahoo_sym,
+            "region": region,
+            "price": round(fp, 2 if fp >= 10 else 4),
+            "change": round(fc, 2 if abs(fc) >= 1 else 4),
+            "change_pct": round(float(chg_pct), 2),
+        }
+
     def _fetch_nse_data(self):
         self._fetch_nse_stocks()
         time.sleep(1)
@@ -1888,30 +2109,74 @@ class DataEngine:
             print(f"[GIFT Nifty] {e}")
 
     def _fetch_global_futures(self):
-        """Fetch global markets via Yahoo chart endpoint (used for initial seed + polling fallback)."""
+        """Fetch global markets via yfinance batch (used for initial seed + polling fallback)."""
         try:
             yf_entries = [(lbl, sym, reg) for lbl, sym, reg in GLOBAL_FUTURES if sym]
+            symbols = [sym for _, sym, _ in yf_entries]
+            tickers = yf.Tickers(" ".join(symbols))
             results = []
             for label, sym, region in yf_entries:
-                snap = self._fetch_yahoo_chart_snapshot(sym)
-                if not snap:
-                    continue
-                price = self._to_float(snap.get("price"), 0.0)
-                prev = self._to_float(snap.get("prev_close"), 0.0)
-                if not price:
-                    continue
-                if prev:
-                    self._global_prev_close[sym] = prev
-                chg = price - prev if prev else 0.0
-                chg_pct = (chg / prev * 100) if prev else 0.0
-                results.append({
-                    "name": label,
-                    "symbol": sym,
-                    "region": region,
-                    "price": round(price, 2 if price >= 10 else 4),
-                    "change": round(chg, 2 if abs(chg) >= 1 else 4),
-                    "change_pct": round(chg_pct, 2),
-                })
+                try:
+                    price = 0.0
+                    prev = 0.0
+                    inf: dict = {}
+                    try:
+                        t = tickers.tickers[sym]
+                        try:
+                            fi = t.fast_info
+                            price = self._to_float(fi.last_price, 0.0)
+                            prev = self._to_float(fi.previous_close, 0.0)
+                        except Exception:
+                            pass
+                        if not price or not prev:
+                            try:
+                                raw = t.info
+                                if isinstance(raw, dict):
+                                    inf = raw
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    if not price and inf:
+                        price = self._to_float(
+                            inf.get("regularMarketPrice") or inf.get("currentPrice"),
+                            0.0,
+                        )
+                    if not prev and inf:
+                        prev = self._to_float(
+                            inf.get("regularMarketPreviousClose") or inf.get("previousClose"),
+                            0.0,
+                        )
+                    if not price or not prev:
+                        snap = self._fetch_yahoo_chart_snapshot(sym)
+                        if snap:
+                            if not price:
+                                price = self._to_float(snap.get("price"), 0.0)
+                            if not prev:
+                                prev = self._to_float(snap.get("prev_close"), 0.0)
+                    row = self._build_global_futures_row(label, sym, region, price, prev, inf)
+                    if row:
+                        results.append(row)
+                    else:
+                        td_spec = _GLOBAL_TD_FALLBACK.get(sym)
+                        if td_spec:
+                            td_sym, td_ex = td_spec[0], td_spec[1]
+                            tdq = self._twelve_data_index_quote(td_sym, td_ex)
+                            if tdq and tdq.get("price"):
+                                p = tdq["price"]
+                                c = tdq["chg"]
+                                if tdq.get("prev", 0) > 0:
+                                    self._global_prev_close[sym] = tdq["prev"]
+                                results.append({
+                                    "name": label,
+                                    "symbol": sym,
+                                    "region": region,
+                                    "price": round(p, 2 if p >= 10 else 4),
+                                    "change": round(c, 2 if abs(c) >= 1 else 4),
+                                    "change_pct": round(float(tdq["pct"]), 2),
+                                })
+                except Exception:
+                    pass
             if self._gift_nifty:
                 gn = self._gift_nifty
                 results.append({
@@ -2407,6 +2672,8 @@ class DataEngine:
             "last_update": self._last_update,
             "time": datetime.now(IST).strftime("%H:%M:%S"),
             "breadth": {"advances": adv, "declines": dec},
+            "news_llm_pending": self._llm_stack_pending_count(),
+            "news_llm_enabled": bool(NV_API_KEY),
         }
 
     def _cache_search_results(self, query: str, results: list):
@@ -2548,7 +2815,8 @@ class DataEngine:
 
     def _fetch_yf_equity_quote(self, symbol: str) -> Optional[dict]:
         try:
-            hist = yf.Ticker(f"{symbol}.NS").history(period="5d", interval="1d")
+            ticker = yf.Ticker(f"{symbol}.NS")
+            hist = ticker.history(period="5d", interval="1d")
         except Exception as e:
             print(f"[YF Quote] {symbol}: {e}")
             return None
@@ -2563,13 +2831,28 @@ class DataEngine:
         change = price - prev_close if prev_close else 0
         pct = (change / prev_close * 100) if prev_close else 0
         name = YF_COMPANY_NAMES.get(symbol, symbol)
-        catalog_match = next((item for item in self._load_equity_catalog() if item["symbol"] == symbol), None)
-        if catalog_match:
-            name = catalog_match["name"]
+        sector = SECTOR_MAP.get(symbol, "")
+        try:
+            inf = ticker.info
+            if isinstance(inf, dict):
+                name = inf.get("longName") or inf.get("shortName") or name
+                if not sector:
+                    sector = inf.get("sector") or inf.get("industry") or ""
+        except Exception:
+            pass
+        if not sector:
+            catalog_match = next(
+                (item for item in self._load_equity_catalog() if item["symbol"] == symbol),
+                None,
+            )
+            if catalog_match and name == symbol:
+                name = catalog_match["name"]
+        if not sector:
+            sector = "Other"
         return self._build_stock_payload(
             symbol=symbol,
             name=name,
-            sector=SECTOR_MAP.get(symbol, "Other"),
+            sector=sector,
             price=price,
             change=change,
             change_pct=pct,
@@ -2581,6 +2864,20 @@ class DataEngine:
             year_high=self._to_float(hist["High"].max() if "High" in hist else price, price),
             year_low=self._to_float(hist["Low"].min() if "Low" in hist else price, price),
         )
+
+    def is_known_equity(self, symbol: str) -> bool:
+        """Fast check: valid NSE-style ticker we allow on the watchlist.
+
+        Uses the equity catalog when loaded; if the CSV is unavailable (e.g. blocked CDN),
+        falls back to the same ticker shape as the API/search so refresh/sync still work.
+        """
+        sym = symbol.upper()
+        if sym in self._stocks or sym in SECTOR_MAP or sym in YF_COMPANY_NAMES:
+            return True
+        catalog = self._load_equity_catalog()
+        if any(item["symbol"] == sym for item in catalog):
+            return True
+        return bool(re.fullmatch(r"[A-Z0-9&.-]{1,20}", sym))
 
     def get_stock(self, symbol: str) -> Optional[dict]:
         sym = symbol.upper()
@@ -2734,7 +3031,18 @@ class DataEngine:
         if not self._ws_clients:
             return
         if msg_type == "news":
-            payload = json.dumps({"type": "news", "news": self._news})
+            payload = json.dumps({
+                "type": "news",
+                "news": self._news,
+                "news_llm_pending": self._llm_stack_pending_count(),
+                "news_llm_enabled": bool(NV_API_KEY),
+            })
+        elif msg_type == "llm_queue":
+            payload = json.dumps({
+                "type": "llm_queue",
+                "news_llm_pending": self._llm_stack_pending_count(),
+                "news_llm_enabled": bool(NV_API_KEY),
+            })
         elif msg_type == "global_tick":
             payload = json.dumps({
                 "type": "global_tick",

@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 from .data_engine import DataEngine, SECTOR_MAP, YF_COMPANY_NAMES
 from .watchlist_store import WatchlistStore
@@ -32,11 +33,7 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 def _known_symbol(symbol: str) -> bool:
-    return (
-        symbol in SECTOR_MAP
-        or symbol in YF_COMPANY_NAMES
-        or engine.get_stock(symbol) is not None
-    )
+    return engine.is_known_equity(symbol)
 
 
 def _normalize_symbols(symbols: list[str]) -> list[str]:
@@ -77,6 +74,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="India Market Terminal", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=800)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

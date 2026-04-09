@@ -14,17 +14,19 @@ Open `http://localhost:8000`.
 
 ## Render deployment
 
-This repo is already configured for Render with [`render.yaml`](render.yaml).
+This repo is configured for Render with [`render.yaml`](render.yaml) (Blueprint). [`.python-version`](.python-version) pins Python for Render’s native runtime (override with `PYTHON_VERSION` in the dashboard if needed).
 
 1. Push the project to GitHub.
-2. In Render, create a new Blueprint and connect the repo.
-3. If this app lives inside a larger monorepo, set the Blueprint path or root directory to `india-terminal`.
-4. Render will use:
-   - Build: `pip install --upgrade pip && pip install -r requirements.txt`
-   - Start: `uvicorn app.server:app --host 0.0.0.0 --port $PORT`
-   - Health check: `/health`
+2. In Render: **New → Blueprint** → connect the repo → apply.
+3. Monorepo: set the service **root directory** to `india-terminal` (or the folder containing `render.yaml`).
+4. The blueprint provisions **Web (Oregon)** + **Postgres 16 (Oregon)** and wires `DATABASE_URL`.
+5. Build / start / health:
+   - Build: upgraded `pip` + `setuptools` + `wheel`, then `pip install --no-cache-dir -r requirements.txt`
+   - Start: `uvicorn` with `--proxy-headers` and `--forwarded-allow-ips='*'` (TLS termination–friendly), `--timeout-keep-alive 75`
+   - Health: `GET /health`
+6. Logs: `PYTHONUNBUFFERED=1` is set so stdout/stderr appear immediately in the Render log stream.
 
-The repo includes [`.python-version`](.python-version) to keep Render on Python `3.9` instead of inheriting Render's moving default interpreter version.
+Optional env vars (set in the service **Environment** tab): `NV_API_KEY`, `TWELVE_DATA_API_KEY`, `WATCHLIST_SEED_SYMBOLS`, `WATCHLIST_DB_PATH` (SQLite only; Postgres uses `DATABASE_URL`).
 
 ## Watchlist persistence
 
