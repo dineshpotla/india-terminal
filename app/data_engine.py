@@ -16,6 +16,7 @@ import re
 import time
 import traceback
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import threading
 from typing import Dict, List, Optional, Set
@@ -2700,6 +2701,18 @@ class DataEngine:
         print(f"[LLM] {ok}/{len(uncached)} new via {model.split('/')[-1]}, "
               f"{len(items)-len(uncached)} cached")
 
+    def _load_feed(self, url: str):
+        """Fetch and parse one RSS feed with an explicit network timeout."""
+        timeout = max(2, min(12, int(os.getenv("NEWS_FEED_TIMEOUT_SECS", "6"))))
+        headers = {
+            "User-Agent": random.choice(_USER_AGENTS),
+            "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+        }
+        r = requests.get(url, timeout=timeout, headers=headers, allow_redirects=True)
+        if r.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {r.status_code}", response=r)
+        return feedparser.parse(r.content)
+
     def _fetch_all_news(self):
         """Fetch RSS feeds + Tradient API, merge, sort by recency."""
         now = datetime.now(IST)
@@ -2708,9 +2721,16 @@ class DataEngine:
         gold_cutoff = now - timedelta(hours=24)
         raw: List[dict] = []
 
-        for url in NEWS_FEEDS:
-            try:
-                feed = feedparser.parse(url)
+        workers = max(4, min(12, int(os.getenv("NEWS_FEED_WORKERS", "8"))))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_url = {pool.submit(self._load_feed, url): url for url in NEWS_FEEDS}
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    feed = future.result()
+                except Exception as e:
+                    print(f"[News] RSS error for {url}: {e}")
+                    continue
                 is_global_feed = url in _GLOBAL_FEEDS_SET
                 is_gold_feed = url in _GOLD_FEEDS_SET
                 is_india_feed = url in _INDIA_FEEDS_SET
@@ -2765,8 +2785,6 @@ class DataEngine:
                         "keyword_stocks": tags["keyword_stocks"],
                         "watchlist_stocks": [],
                     })
-            except Exception as e:
-                print(f"[News] RSS error: {e}")
 
         self._fetch_tradient_news(raw, now, cutoff)
 
