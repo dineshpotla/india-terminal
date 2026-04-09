@@ -85,11 +85,21 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
+@app.head("/")
+async def index_head():
+    return JSONResponse({})
+
+
 # ── REST API ────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok"})
+
+
+@app.head("/health")
+async def health_head():
+    return JSONResponse({})
 
 
 @app.get("/api/dashboard")
