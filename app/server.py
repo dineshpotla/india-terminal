@@ -110,7 +110,14 @@ async def health_head():
 
 @app.get("/api/dashboard")
 async def dashboard():
-    await asyncio.to_thread(engine.ensure_data_ready)
+    try:
+        # Render can cold-start into slow upstream providers. Return the best
+        # cached snapshot we have instead of hanging the whole dashboard route.
+        await asyncio.wait_for(asyncio.to_thread(engine.ensure_data_ready), timeout=8)
+    except asyncio.TimeoutError:
+        print("[Dashboard] ensure_data_ready timed out; serving cached snapshot")
+    except Exception as exc:
+        print(f"[Dashboard] ensure_data_ready failed: {exc}")
     return JSONResponse(engine.get_dashboard())
 
 
