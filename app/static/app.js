@@ -16,6 +16,7 @@
     let watchlist = [];
     let stockCache = {};
     const stockFetchInflight = {};
+    let watchlistLoadPromise = null;
 
     const $ = (id) => document.getElementById(id);
     const $clock       = $("clock");
@@ -120,7 +121,6 @@
     function renderNewsLlmStack(data) {
         if (!$newsLlmStack || !$newsLlmCount) return;
         if (!data || (data.news_llm_pending === undefined && data.news_llm_enabled === undefined)) {
-            $newsLlmStack.hidden = true;
             return;
         }
         var pending = Number(data.news_llm_pending);
@@ -130,8 +130,8 @@
         $newsLlmStack.hidden = false;
         if (!enabled) {
             $newsLlmStack.className = "news-llm-stack news-llm-stack--off";
-            $newsLlmCount.textContent = "\u2014";
-            if (suffix) suffix.textContent = "AI off";
+            $newsLlmCount.textContent = "OFF";
+            if (suffix) suffix.textContent = "disabled";
             $newsLlmStack.title = "Headline AI classification is not enabled on this server";
             return;
         }
@@ -777,9 +777,14 @@
         });
     }
 
-    /** Union of two symbol lists (remote + local) so refresh does not drop browser-only rows. */
-    function mergeWatchlistSymbols(remoteList, localList) {
-        return normalizeWatchlist((remoteList || []).concat(localList || []));
+    function sameWatchlist(a, b) {
+        a = normalizeWatchlist(a);
+        b = normalizeWatchlist(b);
+        if (a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) return false;
+        }
+        return true;
     }
 
     function loadWatchlistLocal() {
@@ -824,30 +829,37 @@
         return normalizeWatchlist(data.symbols || []);
     }
 
-    async function loadWatchlist() {
-        var local = loadWatchlistLocal();
-        try {
-            var remoteState = await fetchWatchlistRemote();
-            var remote = normalizeWatchlist(remoteState.symbols || []);
-            var initialized = !!remoteState.initialized;
-            if (!initialized && local.length) {
-                remote = await syncWatchlistRemote(local);
-            }
-            var merged = mergeWatchlistSymbols(remote, local);
-            if (initialized && merged.length > remote.length) {
-                try {
-                    remote = await syncWatchlistRemote(merged);
-                    merged = normalizeWatchlist(remote);
-                } catch (syncErr) {
-                    console.warn("[Watchlist] Could not sync merged list:", syncErr);
+    async function loadWatchlist(opts) {
+        opts = opts || {};
+        if (watchlistLoadPromise) return watchlistLoadPromise;
+        watchlistLoadPromise = (async function () {
+            var local = loadWatchlistLocal();
+            try {
+                var remoteState = await fetchWatchlistRemote();
+                var remote = normalizeWatchlist(remoteState.symbols || []);
+                var initialized = !!remoteState.initialized;
+
+                // Seed a brand-new shared watchlist once from the first browser's cache,
+                // then switch to the server list as the only source of truth.
+                if (!initialized && local.length) {
+                    remote = await syncWatchlistRemote(local);
                 }
+
+                if (!sameWatchlist(remote, watchlist) || opts.forceRender) {
+                    applyWatchlist(remote, { deferHydrate: true });
+                }
+                return remote;
+            } catch (err) {
+                console.warn("[Watchlist] Remote fetch failed:", err);
+                if (!watchlist.length && local.length) {
+                    applyWatchlist(local, { deferHydrate: true });
+                }
+                return watchlist;
+            } finally {
+                watchlistLoadPromise = null;
             }
-            var useList = initialized ? merged : (remote.length ? remote : local);
-            applyWatchlist(useList, { deferHydrate: true });
-        } catch (err) {
-            console.warn("[Watchlist] Falling back to local storage:", err);
-            applyWatchlist(local, { deferHydrate: true });
-        }
+        })();
+        return watchlistLoadPromise;
     }
 
     async function addToWatchlist(sym) {
@@ -1289,6 +1301,18 @@
 
     isMobile.addEventListener("change", handleMobileInit);
     handleMobileInit();
+
+    // Pull the shared watchlist again when the tab becomes active so other
+    // browsers/devices stay in sync without a full reload.
+    window.addEventListener("focus", function () {
+        loadWatchlist();
+    });
+    document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) loadWatchlist();
+    });
+    setInterval(function () {
+        if (!document.hidden) loadWatchlist();
+    }, 30000);
 
     // ── Boot ───────────────────────────────────────────────────────────
 
