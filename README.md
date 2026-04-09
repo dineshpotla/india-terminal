@@ -28,6 +28,8 @@ This repo is configured for Render with [`render.yaml`](render.yaml) (Blueprint)
 
 Optional env vars (set in the service **Environment** tab): `NV_API_KEY`, `TWELVE_DATA_API_KEY`, `WATCHLIST_SEED_SYMBOLS`, `WATCHLIST_DB_PATH` (SQLite only; Postgres uses `DATABASE_URL`).
 
+Optional LLM tuning vars: `NV_FAST_MODEL`, `NV_BATCH_THRESHOLD`, `NV_BATCH_SIZE`, `NV_BATCH_MAX_TOKENS`.
+
 ## Watchlist persistence
 
 The app stores the shared watchlist in a database when `DATABASE_URL` is set.
@@ -37,3 +39,12 @@ The app stores the shared watchlist in a database when `DATABASE_URL` is set.
   Examples: a paid Render Postgres instance, or any external hosted Postgres.
 - Free Render Postgres expires after 30 days, so it is not a permanent store.
 - You can also set `WATCHLIST_SEED_SYMBOLS=RELIANCE,TCS,INFY` to repopulate a default watchlist if the database is ever replaced or reset.
+
+## Free Render idle workaround
+
+Render free web services still spin down after roughly 15 minutes without inbound traffic. WebSocket messages now count, but if your laptop sleeps there is no client traffic, so the service can still go cold.
+
+- This repo includes [`.github/workflows/render-keepalive.yml`](.github/workflows/render-keepalive.yml), which pings the deployed app every 5 minutes from GitHub Actions.
+- By default it hits `https://india-market-terminal.onrender.com/health`.
+- To reuse the workflow for a different deploy URL, add a GitHub repository variable named `RENDER_KEEPALIVE_URL`.
+- GitHub cron is best-effort, not a hard uptime SLA, but it is the practical workaround for free Render without upgrading the service plan.

@@ -1,0 +1,30 @@
+name: Render Keepalive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: render-keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Ping Render health endpoint
+        env:
+          KEEPALIVE_URL: ${{ vars.RENDER_KEEPALIVE_URL }}
+        run: |
+          url="${KEEPALIVE_URL:-https://india-market-terminal.onrender.com/health}"
+          echo "Pinging $url"
+          curl --fail --show-error --silent \
+            --retry 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 120 \
+            --user-agent "github-actions-render-keepalive" \
+            "$url" >/tmp/render-keepalive-response.txt
+          wc -c /tmp/render-keepalive-response.txt
