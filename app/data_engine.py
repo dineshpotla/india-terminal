@@ -2117,6 +2117,7 @@ class DataEngine:
                         "low": round(self._to_float(info.get("dayLow"), price), 2),
                         "advances": None,
                         "declines": None,
+                        "source": "yahoo",
                     }
             except Exception as e:
                 print(f"[YF Index] {name}: {e}")
@@ -2139,6 +2140,7 @@ class DataEngine:
                             "low": round(price, 2),
                             "advances": None,
                             "declines": None,
+                            "source": "yahoo_chart",
                         }
             if not row and TWELVE_DATA_API_KEY:
                 td_spec = INDIA_YF_INDEX_TO_TWELVE.get(yf_symbol)
@@ -2170,6 +2172,7 @@ class DataEngine:
                             "low": round(lo, 2),
                             "advances": None,
                             "declines": None,
+                            "source": "twelve",
                         }
             if row:
                 results.append(row)
@@ -2271,6 +2274,7 @@ class DataEngine:
                 prev_close=prev_close,
                 year_high=high,
                 year_low=low,
+                source="yahoo",
             )
         if TWELVE_DATA_API_KEY and TWELVE_DATA_STOCK_FALLBACK_CAP:
             filled = 0
@@ -2311,6 +2315,7 @@ class DataEngine:
                     "low": round(float(idx.get("low", 0)), 2),
                     "advances": idx.get("advances"),
                     "declines": idx.get("declines"),
+                    "source": "nse",
                 })
             except (ValueError, TypeError):
                 pass
@@ -2449,6 +2454,7 @@ class DataEngine:
                     "prev_close": round(prev, 2),
                     "year_high": round(float(item.get("yearHigh", 0)), 2),
                     "year_low": round(float(item.get("yearLow", 0)), 2),
+                    "source": "nse",
                 }
             except (ValueError, TypeError):
                 pass
@@ -3009,6 +3015,7 @@ class DataEngine:
         prev_close: float,
         year_high: float,
         year_low: float,
+        source: str = "",
     ) -> dict:
         return {
             "symbol": symbol,
@@ -3024,6 +3031,7 @@ class DataEngine:
             "prev_close": round(prev_close, 2),
             "year_high": round(year_high, 2),
             "year_low": round(year_low, 2),
+            "source": source,
         }
 
     def _fetch_nse_equity_quote(self, symbol: str) -> Optional[dict]:
@@ -3065,6 +3073,7 @@ class DataEngine:
             prev_close=prev_close,
             year_high=year_high,
             year_low=year_low,
+            source="nse",
         )
 
     def _fetch_twelve_equity_quote(self, symbol: str) -> Optional[dict]:
@@ -3111,6 +3120,7 @@ class DataEngine:
             prev_close=prev,
             year_high=high,
             year_low=low,
+            source="twelve",
         )
 
     def _fetch_yf_equity_quote(self, symbol: str) -> Optional[dict]:
@@ -3209,6 +3219,7 @@ class DataEngine:
             prev_close=prev_close,
             year_high=high or price,
             year_low=low or price,
+            source="yahoo",
         )
 
     def is_known_equity(self, symbol: str) -> bool:
