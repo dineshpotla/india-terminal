@@ -992,21 +992,24 @@
         dashboardData = data;
         rememberStocks(data.stocks);
 
+        // Render this first so the bottom badge never appears "stuck"
+        // even if a downstream render function throws.
+        try { renderNewsLlmStack(data); } catch (e) { console.error("LLM badge render error:", e); }
+
         var st = data.market_status || "CLOSED";
         $status.textContent = st;
         $status.className = "market-badge" + (st === "LIVE" ? " live" : "");
 
         if (data.last_update) $lastUpdate.textContent = "Updated " + data.last_update;
 
-        renderGiftNifty(data.gift_nifty);
-        renderIndices(data.indices);
-        renderMovers(data.movers);
-        renderNews(data.news, isLive);
-        renderSectors(data.sectors);
-        renderGlobalMarkets(data.global_futures);
-        updateGlobalStatus(data.global_streaming, data.last_global_update);
-        renderWatchlistTable();
-        renderNewsLlmStack(data);
+        try { renderGiftNifty(data.gift_nifty); } catch (e) { console.error("Gift render error:", e); }
+        try { renderIndices(data.indices); } catch (e) { console.error("Indices render error:", e); }
+        try { renderMovers(data.movers); } catch (e) { console.error("Movers render error:", e); }
+        try { renderNews(data.news, isLive); } catch (e) { console.error("News render error:", e); }
+        try { renderSectors(data.sectors); } catch (e) { console.error("Sectors render error:", e); }
+        try { renderGlobalMarkets(data.global_futures); } catch (e) { console.error("Global render error:", e); }
+        try { updateGlobalStatus(data.global_streaming, data.last_global_update); } catch (e) { console.error("Global status error:", e); }
+        try { renderWatchlistTable(); } catch (e) { console.error("Watchlist render error:", e); }
 
         if (selectedStock) {
             var stock = (data.stocks || []).find(function (s) { return s.symbol === selectedStock; })
