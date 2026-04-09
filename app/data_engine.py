@@ -428,7 +428,7 @@ def _live_title_ok(title: str) -> bool:
         return False
     return not any(b in tl for b in _LIVE_TITLE_BAD)
 
-NV_API_KEY = os.getenv("NV_API_KEY", "")
+NV_API_KEY = os.getenv("NV_API_KEY") or os.getenv("NVIDIA_API_KEY", "")
 NV_API_URL = os.getenv("NV_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
 # Optional backup for global **index** rows Yahoo sometimes throttles or omits. Twelve Data returns
 # spot indices (not exchange-traded futures). EU/Asia equity index futures (Eurex/ICE/HKFE) are not
@@ -3415,7 +3415,9 @@ class DataEngine:
         else:
             payload = json.dumps({"type": "update", "data": self.get_dashboard()})
         dead = set()
-        for ws in self._ws_clients:
+        # Iterate over a snapshot so connect/disconnect during a broadcast
+        # does not raise "Set changed size during iteration".
+        for ws in tuple(self._ws_clients):
             try:
                 await ws.send_text(payload)
             except Exception:
