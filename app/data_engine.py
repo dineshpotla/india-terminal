@@ -457,11 +457,10 @@ TWELVE_DATA_STOCK_FALLBACK_CAP = max(
     int(os.getenv("TWELVE_DATA_STOCK_FALLBACK_CAP", "3" if _TWELVE_FREE else "50")),
 )
 TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
-NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "moonshotai/kimi-k2.5")
-NV_FAST_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1"
+NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", NV_API_MODEL)
 LLM_CACHE_SIZE = 500
 
-_NIFTY50_SYMBOLS_STR = ", ".join(sorted(SECTOR_MAP.keys()))
 _LLM_SYSTEM = (
     "You output ONLY a raw JSON array. No markdown, no explanation, no text before or after. "
     "Each element: "
@@ -471,9 +470,8 @@ _LLM_SYSTEM = (
     '"market_relevant":true|false,"company_specific":true|false}'
 )
 _LLM_PROMPT_PREFIX = (
-    f"NIFTY 50 symbols: {_NIFTY50_SYMBOLS_STR}.\n"
     "Rules:\n"
-    "- stocks: relevant NIFTY50 symbols, [] if none\n"
+    "- stocks: relevant NSE equity symbols only when the company/ticker is clearly identifiable, [] if none\n"
     "- breaking: true ONLY for macro/market-wide news (war, central bank, oil/gold shock, "
     "market crash/rally, FII/FPI, sanctions, geopolitics). "
     "false for stock results, SEBI filings, dividends, company-specific events.\n"
@@ -858,6 +856,14 @@ class DataEngine:
         with self._llm_lock:
             return len(self._llm_stack)
 
+    def _valid_equity_symbols(self) -> Set[str]:
+        symbols = set(SECTOR_MAP.keys()) | set(YF_COMPANY_NAMES.keys()) | set(self._stocks.keys())
+        try:
+            symbols.update(item["symbol"] for item in self._load_equity_catalog())
+        except Exception:
+            pass
+        return symbols
+
     def _schedule_llm_stack_broadcast(self):
         loop = getattr(self, "_asyncio_loop", None)
         if not loop or not loop.is_running():
@@ -950,7 +956,7 @@ class DataEngine:
                             "company_specific": True,
                         }
                     else:
-                        valid_syms = set(SECTOR_MAP.keys())
+                        valid_syms = self._valid_equity_symbols()
                         stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
                         sentiment = entry.get("sentiment", "neutral")
                         if sentiment not in ("bullish", "bearish", "neutral"):
@@ -1377,6 +1383,7 @@ class DataEngine:
                         "company_specific": True,
                         "keyword_stocks": tags["keyword_stocks"],
                         "watchlist_stocks": wl_stocks,
+                        "watchlist_injected_at": time.time(),
                     })
             except Exception as e:
                 print(f"[WL Search] {symbol} feed error: {e}")
@@ -1392,14 +1399,36 @@ class DataEngine:
         items = await asyncio.to_thread(self._search_stock_news, symbol)
         if not items:
             return
+        changed_items: List[dict] = []
         with self._news_lock:
-            existing_titles = {n["title"].lower()[:50] for n in self._news}
-            new_items = [it for it in items if it["title"].lower()[:50] not in existing_titles]
+            existing_by_title = {n["title"].lower()[:50]: n for n in self._news}
+            new_items: List[dict] = []
+            now_ts = time.time()
+            for item in items:
+                key = item["title"].lower()[:50]
+                existing = existing_by_title.get(key)
+                if existing:
+                    existing.setdefault("watchlist_stocks", [])
+                    existing.setdefault("keyword_stocks", [])
+                    for sym in item.get("watchlist_stocks", []) or [symbol]:
+                        if sym not in existing["watchlist_stocks"]:
+                            existing["watchlist_stocks"].append(sym)
+                    for sym in item.get("keyword_stocks", []) or []:
+                        if sym not in existing["keyword_stocks"]:
+                            existing["keyword_stocks"].append(sym)
+                    existing["company_specific"] = bool(existing.get("company_specific") or item.get("company_specific"))
+                    existing["market_relevant"] = bool(existing.get("market_relevant") or item.get("market_relevant"))
+                    existing["watchlist_injected_at"] = now_ts
+                    changed_items.append(existing)
+                    continue
+                item["watchlist_injected_at"] = now_ts
+                new_items.append(item)
             if new_items:
                 self._news.extend(new_items)
                 self._news.sort(key=lambda x: x.get("age_secs", 999999))
-        if new_items:
-            self._push_llm_stack(new_items)
+                changed_items.extend(new_items)
+        if changed_items:
+            self._push_llm_stack(changed_items)
             await self._broadcast("news")
 
     async def _gift_nifty_loop(self):
@@ -2597,7 +2626,7 @@ class DataEngine:
         if not NV_API_KEY or not items:
             return
 
-        valid_syms = set(SECTOR_MAP.keys())
+        valid_syms = self._valid_equity_symbols()
         uncached = []
         for item in items:
             cache_key = item["title"][:80].lower()
@@ -2767,7 +2796,12 @@ class DataEngine:
                 n for n in self._news
                 if n.get("live_story") and n.get("age_secs", 999999) < 12 * 3600
             ]
-        if not unique and not prior_live:
+            prior_watchlist = [
+                n for n in self._news
+                if n.get("watchlist_stocks")
+                and n.get("watchlist_injected_at", 0) > time.time() - 12 * 3600
+            ]
+        if not unique and not prior_live and not prior_watchlist:
             return
         # Reserve slots for gold/silver items so they don't get crowded out
         gold_items = [u for u in unique if u.get("gold_silver")]
@@ -2777,7 +2811,7 @@ class DataEngine:
         capped_live = prior_live[:live_cap]
         combined: List[dict] = []
         seen_k: Set[str] = set()
-        for item in capped_live + unique_trim:
+        for item in capped_live + prior_watchlist[:40] + unique_trim:
             k = item["title"][:50].lower()
             if k in seen_k:
                 continue

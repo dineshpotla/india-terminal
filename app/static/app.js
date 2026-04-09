@@ -17,6 +17,7 @@
     let stockCache = {};
     const stockFetchInflight = {};
     let watchlistLoadPromise = null;
+    let lastWatchlistQuoteRefreshAt = 0;
 
     const $ = (id) => document.getElementById(id);
     const $clock       = $("clock");
@@ -277,10 +278,10 @@
             var wlSet = {};
             watchlist.forEach(function (s) { wlSet[s] = true; });
             return news.filter(function (n) {
-                if (n.watchlist_stocks && n.watchlist_stocks.length) {
-                    if (n.watchlist_stocks.some(function (s) { return wlSet[s]; })) return true;
-                }
-                return false;
+                var linked = (n.watchlist_stocks && n.watchlist_stocks.length)
+                    ? n.watchlist_stocks
+                    : (n.keyword_stocks || []);
+                return linked.some(function (s) { return wlSet[s]; });
             });
         }
         return news;
@@ -626,11 +627,21 @@
     function rememberStock(stock) {
         if (!stock || !stock.symbol) return;
         var sym = String(stock.symbol).toUpperCase();
-        stockCache[sym] = Object.assign({}, stockCache[sym] || {}, stock, { symbol: sym });
+        stockCache[sym] = Object.assign({}, stockCache[sym] || {}, stock, {
+            symbol: sym,
+            _fetchedAt: Date.now(),
+        });
     }
 
     function rememberStocks(stocks) {
         (stocks || []).forEach(rememberStock);
+    }
+
+    function isDashboardStock(symbol) {
+        var sym = String(symbol || "").toUpperCase();
+        return !!(dashboardData && dashboardData.stocks && dashboardData.stocks.some(function (s) {
+            return s.symbol === sym;
+        }));
     }
 
     function findKnownStock(symbol) {
@@ -653,6 +664,9 @@
                 var stock = await res.json();
                 rememberStock(stock);
                 return stock;
+            } catch (err) {
+                console.error("Stock detail fetch error:", sym, err);
+                return null;
             } finally {
                 delete stockFetchInflight[sym];
             }
@@ -660,11 +674,23 @@
         return stockFetchInflight[sym];
     }
 
-    async function hydrateWatchlistStocks() {
-        var missing = watchlist.filter(function (sym) { return !findKnownStock(sym); });
-        if (!missing.length) return;
-        for (var i = 0; i < missing.length; i += 8) {
-            await Promise.all(missing.slice(i, i + 8).map(fetchStockDetail));
+    async function hydrateWatchlistStocks(opts) {
+        opts = opts || {};
+        var now = Date.now();
+        var staleMs = opts.staleMs == null ? 90000 : opts.staleMs;
+        var pending = watchlist.filter(function (sym) {
+            if (isDashboardStock(sym)) return false;
+            var cached = stockCache[String(sym).toUpperCase()];
+            if (!cached) return true;
+            if (opts.force) return true;
+            if (!cached._fetchedAt) return true;
+            return now - cached._fetchedAt > staleMs;
+        });
+        if (!pending.length) return;
+        if (!opts.force && now - lastWatchlistQuoteRefreshAt < 5000) return;
+        lastWatchlistQuoteRefreshAt = now;
+        for (var i = 0; i < pending.length; i += 8) {
+            await Promise.all(pending.slice(i, i + 8).map(fetchStockDetail));
         }
         renderWatchlistTable();
     }
@@ -697,6 +723,9 @@
             document.querySelectorAll(".news-tab").forEach(function (t) { t.classList.remove("active"); });
             tab.classList.add("active");
             currentNewsTab = tab.dataset.news;
+            if (currentNewsTab === "watchlist") {
+                requestWatchlistBackfill();
+            }
             if (dashboardData) renderNews(dashboardData.news);
         });
     });
@@ -798,6 +827,11 @@
         try { localStorage.setItem("imt_watchlist", JSON.stringify(watchlist)); } catch (e) {}
     }
 
+    function requestWatchlistBackfill() {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !watchlist.length) return;
+        watchlist.forEach(function (sym) { ws.send("watchlist:" + sym); });
+    }
+
     function applyWatchlist(symbols, opts) {
         opts = opts || {};
         watchlist = normalizeWatchlist(symbols);
@@ -807,9 +841,7 @@
             hydrateWatchlistStocks();
         }
         if (currentNewsTab === "watchlist" && dashboardData) renderNews(dashboardData.news);
-        if (ws && ws.readyState === WebSocket.OPEN && watchlist.length) {
-            watchlist.forEach(function (sym) { ws.send("watchlist:" + sym); });
-        }
+        requestWatchlistBackfill();
     }
 
     async function fetchWatchlistRemote() {
@@ -1019,6 +1051,7 @@
         updateGlobalStatus(data.global_streaming, data.last_global_update);
         renderWatchlistTable();
         renderNewsLlmStack(data);
+        hydrateWatchlistStocks({ staleMs: 60000 });
 
         if (selectedStock) {
             var stock = (data.stocks || []).find(function (s) { return s.symbol === selectedStock; })
@@ -1037,9 +1070,7 @@
 
         ws.onopen = function () {
             console.log("[WS] Connected");
-            if (watchlist.length) {
-                watchlist.forEach(function (sym) { ws.send("watchlist:" + sym); });
-            }
+            requestWatchlistBackfill();
         };
 
         ws.onmessage = function (evt) {
@@ -1306,13 +1337,25 @@
     // browsers/devices stay in sync without a full reload.
     window.addEventListener("focus", function () {
         loadWatchlist();
+        hydrateWatchlistStocks({ staleMs: 30000 });
+        requestWatchlistBackfill();
     });
     document.addEventListener("visibilitychange", function () {
-        if (!document.hidden) loadWatchlist();
+        if (!document.hidden) {
+            loadWatchlist();
+            hydrateWatchlistStocks({ staleMs: 30000 });
+            requestWatchlistBackfill();
+        }
     });
     setInterval(function () {
-        if (!document.hidden) loadWatchlist();
+        if (!document.hidden) {
+            loadWatchlist();
+            hydrateWatchlistStocks({ staleMs: 60000 });
+        }
     }, 30000);
+    setInterval(function () {
+        if (!document.hidden && currentNewsTab === "watchlist") requestWatchlistBackfill();
+    }, 120000);
 
     // ── Boot ───────────────────────────────────────────────────────────
 
