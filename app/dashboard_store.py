@@ -174,3 +174,28 @@ class DashboardStore:
                 """,
                 (key, payload_text),
             )
+
+    def delete_snapshot(self, key: str = "dashboard"):
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        DELETE FROM dashboard_snapshots
+                        WHERE key = %s
+                        """,
+                        (key,),
+                    )
+                conn.commit()
+            return
+
+        with self._lock, self._sqlite:
+            self._sqlite.execute(
+                """
+                DELETE FROM dashboard_snapshots
+                WHERE key = ?
+                """,
+                (key,),
+            )

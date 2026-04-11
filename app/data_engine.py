@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import threading
 from typing import Dict, List, Optional, Set
-from urllib.parse import quote, quote_plus, urljoin, urlparse
+from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -518,6 +518,10 @@ WATCHLIST_ARTICLE_CACHE_SIZE = max(
     64,
     min(1024, int(os.getenv("WATCHLIST_ARTICLE_CACHE_SIZE", "256"))),
 )
+WATCHLIST_PANEL_REFRESH_SYMBOL_CAP = max(
+    1,
+    min(8, int(os.getenv("WATCHLIST_PANEL_REFRESH_SYMBOL_CAP", "3" if IS_RENDER else "5"))),
+)
 LLM_CACHE_SIZE = 500
 
 _LLM_SYSTEM = (
@@ -884,6 +888,7 @@ class DataEngine:
         self._llm_lock = threading.Lock()
         self._watchlist_article_lock = threading.Lock()
         self._watchlist_article_cache: OrderedDict = OrderedDict()
+        self._watchlist_article_body_cache: OrderedDict = OrderedDict()
         self._search_cache: OrderedDict = OrderedDict()
         self._search_cache_ttl = 300
         self._search_cache_max = 64
@@ -961,7 +966,7 @@ class DataEngine:
         self._apply_dashboard_snapshot(snapshot)
         return True
 
-    def _dashboard_payload(self) -> dict:
+    def _breadth_payload(self) -> dict:
         adv = dec = 0
         for idx in self._indices:
             if idx.get("advances"):
@@ -971,21 +976,30 @@ class DataEngine:
         if not adv and self._stocks:
             adv = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) > 0)
             dec = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) < 0)
+        return {"advances": adv, "declines": dec}
+
+    def _overview_payload(self) -> dict:
         return {
             "indices": self._indices,
-            "stocks": list(self._stocks.values()),
             "movers": self._movers,
-            "news": self._news,
             "sectors": self._sectors,
-            "sector_map": SECTOR_MAP,
             "gift_nifty": self._gift_nifty,
-            "global_futures": self._global_futures,
-            "last_global_update": self._last_global_update,
-            "global_streaming": self._global_stream_connected,
             "market_status": self.market_status,
             "last_update": self._last_update,
             "time": datetime.now(IST).strftime("%H:%M:%S"),
-            "breadth": {"advances": adv, "declines": dec},
+            "breadth": self._breadth_payload(),
+        }
+
+    def _dashboard_payload(self) -> dict:
+        return {
+            **self._overview_payload(),
+            "indices": self._indices,
+            "stocks": list(self._stocks.values()),
+            "news": self._news,
+            "sector_map": SECTOR_MAP,
+            "global_futures": self._global_futures,
+            "last_global_update": self._last_global_update,
+            "global_streaming": self._global_stream_connected,
             "news_llm_pending": self._llm_stack_pending_count(),
             "news_llm_enabled": bool(NV_API_KEY),
         }
@@ -1632,6 +1646,49 @@ class DataEngine:
             while len(self._watchlist_article_cache) > WATCHLIST_ARTICLE_CACHE_SIZE:
                 self._watchlist_article_cache.popitem(last=False)
 
+    def _get_watchlist_article_body_cache(self, cache_key: str) -> Optional[str]:
+        with self._watchlist_article_lock:
+            cached = self._watchlist_article_body_cache.get(cache_key)
+            if cached is not None:
+                self._watchlist_article_body_cache.move_to_end(cache_key)
+            return cached
+
+    def _set_watchlist_article_body_cache(self, cache_key: str, body_text: str):
+        with self._watchlist_article_lock:
+            self._watchlist_article_body_cache[cache_key] = body_text
+            self._watchlist_article_body_cache.move_to_end(cache_key)
+            while len(self._watchlist_article_body_cache) > WATCHLIST_ARTICLE_CACHE_SIZE:
+                self._watchlist_article_body_cache.popitem(last=False)
+
+    @staticmethod
+    def _canonicalize_news_url(raw_url: str) -> str:
+        if not raw_url:
+            return ""
+        try:
+            parsed = urlparse(raw_url)
+        except Exception:
+            return raw_url
+        if not parsed.scheme or not parsed.netloc:
+            return raw_url
+        clean_query = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            lower = key.lower()
+            if lower.startswith("utm_") or lower in {
+                "gclid", "fbclid", "guccounter", "guce_referrer", "guce_referrer_sig",
+            }:
+                continue
+            clean_query.append((key, value))
+        return urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                urlencode(clean_query, doseq=True),
+                "",
+            )
+        )
+
     def _llm_call_watchlist_article(
         self,
         symbol: str,
@@ -1689,20 +1746,25 @@ class DataEngine:
         link: str,
         tags: dict,
     ) -> dict:
-        cache_key = f"{symbol}|{title[:120].lower()}"
+        resolved_link = link or ""
+        if resolved_link and "news.google.com" in resolved_link:
+            resolved_link = self._resolve_google_news_link(resolved_link) or resolved_link
+        canonical_link = self._canonicalize_news_url(resolved_link or link)
+        cache_key = f"{canonical_link or title[:120].lower()}|{symbol}"
         cached = self._get_watchlist_article_cache(cache_key)
         if cached is not None:
             return cached
 
-        resolved_link = link or ""
-        if resolved_link and "news.google.com" in resolved_link:
-            resolved_link = self._resolve_google_news_link(resolved_link) or resolved_link
-
         body_text = ""
-        if resolved_link.startswith("http"):
-            html = self._http_get_html(resolved_link, timeout=WATCHLIST_ARTICLE_TIMEOUT_SECS)
-            if html:
-                body_text = self._extract_body_text(html)
+        fetch_url = canonical_link or resolved_link or link
+        if fetch_url.startswith("http"):
+            body_text = self._get_watchlist_article_body_cache(fetch_url) or ""
+            if not body_text:
+                html = self._http_get_html(fetch_url, timeout=WATCHLIST_ARTICLE_TIMEOUT_SECS)
+                if html:
+                    body_text = self._extract_body_text(html)
+                    if body_text:
+                        self._set_watchlist_article_body_cache(fetch_url, body_text)
 
         if len(body_text) < 120:
             result = {
@@ -1714,7 +1776,7 @@ class DataEngine:
                 "india_market_impact": False,
                 "market_relevant": False,
                 "company_specific": True,
-                "link": resolved_link or link,
+                "link": canonical_link or resolved_link or link,
                 "used_full_article": False,
             }
             self._set_watchlist_article_cache(cache_key, result)
@@ -1757,7 +1819,7 @@ class DataEngine:
             "india_market_impact": india_market_impact,
             "market_relevant": market_relevant,
             "company_specific": company_specific,
-            "link": resolved_link or link,
+            "link": canonical_link or resolved_link or link,
             "used_full_article": bool(body_text),
         }
         self._set_watchlist_article_cache(cache_key, result)
@@ -1862,14 +1924,9 @@ class DataEngine:
         print(f"[WL Search] {symbol}: kept {len(results)} of {analyzed} analyzed candidate(s)")
         return results
 
-    async def fetch_watchlist_stock_news(self, symbol: str):
-        """Async entry point: search for stock news, merge into live feed, broadcast."""
-        symbol = symbol.upper().strip()
-        if not self.is_known_equity(symbol):
-            return
-        items = await asyncio.to_thread(self._search_stock_news, symbol)
+    def _merge_watchlist_news_items(self, symbol: str, items: List[dict]) -> List[dict]:
         if not items:
-            return
+            return []
         changed_items: List[dict] = []
         with self._news_lock:
             existing_by_title = {n["title"].lower()[:50]: n for n in self._news}
@@ -1887,8 +1944,12 @@ class DataEngine:
                     for sym in item.get("keyword_stocks", []) or []:
                         if sym not in existing["keyword_stocks"]:
                             existing["keyword_stocks"].append(sym)
-                    existing["company_specific"] = bool(existing.get("company_specific") or item.get("company_specific"))
-                    existing["market_relevant"] = bool(existing.get("market_relevant") or item.get("market_relevant"))
+                    existing["company_specific"] = bool(
+                        existing.get("company_specific") or item.get("company_specific")
+                    )
+                    existing["market_relevant"] = bool(
+                        existing.get("market_relevant") or item.get("market_relevant")
+                    )
                     existing["sentiment"] = item.get("sentiment", existing.get("sentiment", "neutral"))
                     existing["impact"] = item.get("impact", existing.get("impact", "low"))
                     existing["gold_silver"] = bool(existing.get("gold_silver") or item.get("gold_silver"))
@@ -1906,6 +1967,57 @@ class DataEngine:
                 self._news.extend(new_items)
                 self._news.sort(key=lambda x: x.get("age_secs", 999999))
                 changed_items.extend(new_items)
+        return changed_items
+
+    def _refresh_watchlist_news_sync(self, symbols: List[str]) -> List[dict]:
+        unique_symbols = []
+        seen = set()
+        for raw in symbols:
+            sym = (raw or "").strip().upper()
+            if not sym or sym in seen or not self.is_known_equity(sym):
+                continue
+            seen.add(sym)
+            unique_symbols.append(sym)
+        if not unique_symbols:
+            return []
+        now_ts = time.time()
+        ranked = sorted(
+            unique_symbols,
+            key=lambda sym: self._watchlist_news_refresh_at.get(sym, 0),
+        )
+        changed: List[dict] = []
+        for sym in ranked[:WATCHLIST_PANEL_REFRESH_SYMBOL_CAP]:
+            self._watchlist_news_refresh_at[sym] = now_ts
+            try:
+                items = self._search_stock_news(sym)
+            except Exception:
+                traceback.print_exc()
+                continue
+            changed.extend(self._merge_watchlist_news_items(sym, items))
+        if changed:
+            self._push_llm_stack(changed)
+        return changed
+
+    def _current_watchlist_news_items(self, symbols: List[str]) -> List[dict]:
+        wl_set = {sym.upper() for sym in symbols if sym}
+        if not wl_set:
+            return []
+        with self._news_lock:
+            items = [
+                dict(item)
+                for item in self._news
+                if any(sym in wl_set for sym in (item.get("watchlist_stocks") or item.get("keyword_stocks") or []))
+            ]
+        items.sort(key=lambda item: item.get("age_secs", 999999))
+        return items[:80]
+
+    async def fetch_watchlist_stock_news(self, symbol: str):
+        """Async entry point: search for stock news, merge into live feed, broadcast."""
+        symbol = symbol.upper().strip()
+        if not self.is_known_equity(symbol):
+            return
+        items = await asyncio.to_thread(self._search_stock_news, symbol)
+        changed_items = self._merge_watchlist_news_items(symbol, items)
         if changed_items:
             self._push_llm_stack(changed_items)
             await asyncio.to_thread(self.persist_dashboard_snapshot, False)
@@ -3679,6 +3791,74 @@ class DataEngine:
 
     # ── public API ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def watchlist_hash(symbols: List[str]) -> str:
+        normalized = ",".join(sorted({(sym or "").strip().upper() for sym in symbols if sym}))
+        return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12] if normalized else "empty"
+
+    def build_overview_panel(self) -> dict:
+        self._fetch_nse_data()
+        self._fetch_gift_nifty()
+        self._compute_movers()
+        self._compute_sectors()
+        self._last_update = datetime.now(IST).strftime("%H:%M:%S")
+        return self._overview_payload()
+
+    def build_global_panel(self) -> dict:
+        if not self._gift_nifty:
+            self._fetch_gift_nifty()
+        self._fetch_global_futures()
+        self._last_global_update = datetime.now(IST).strftime("%H:%M:%S")
+        return {
+            "global_futures": self._global_futures,
+            "last_global_update": self._last_global_update,
+            "global_streaming": bool(self._global_stream_connected and self.background_enabled),
+        }
+
+    def build_news_panel(self, tab: str, watchlist_symbols: Optional[List[str]] = None) -> dict:
+        normalized_tab = (tab or "all").strip().lower()
+        if not self._news:
+            self._fetch_all_news()
+        if normalized_tab == "watchlist":
+            symbols = [sym.upper() for sym in (watchlist_symbols or []) if sym]
+            self._refresh_watchlist_news_sync(symbols)
+            return {
+                "items": self._current_watchlist_news_items(symbols),
+                "watchlist_hash": self.watchlist_hash(symbols),
+                "news_llm_pending": self._llm_stack_pending_count(),
+                "news_llm_enabled": bool(NV_API_KEY),
+            }
+        if normalized_tab in {"all", "breaking"} and self._llm_stack_pending_count() and not self.background_enabled:
+            self.process_llm_queue_sync(8)
+        items = list(self._news)
+        if normalized_tab == "breaking":
+            items = [
+                item
+                for item in items
+                if item.get("breaking")
+                and not item.get("stock_event")
+                and not item.get("company_specific")
+                and item.get("india_market_impact")
+            ]
+        return {
+            "items": items,
+            "news_llm_pending": self._llm_stack_pending_count(),
+            "news_llm_enabled": bool(NV_API_KEY),
+        }
+
+    def build_watchlist_quotes_panel(self, symbols: List[str]) -> dict:
+        rows: List[dict] = []
+        ordered_symbols: List[str] = []
+        for raw in symbols:
+            sym = (raw or "").strip().upper()
+            if not sym or sym in ordered_symbols:
+                continue
+            ordered_symbols.append(sym)
+            stock = self.get_stock(sym)
+            if stock:
+                rows.append(stock)
+        return {"symbols": ordered_symbols, "rows": rows}
+
     def ensure_data_ready(
         self,
         force_quotes: bool = False,
@@ -3728,16 +3908,8 @@ class DataEngine:
             self._ensure_ready_lock.release()
 
     def get_dashboard(self) -> dict:
-        adv = dec = 0
-        for idx in self._indices:
-            if idx.get("advances"):
-                adv = idx["advances"]
-                dec = idx.get("declines", 0)
-                break
-        if not adv and self._stocks:
-            adv = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) > 0)
-            dec = sum(1 for stock in self._stocks.values() if stock.get("change_pct", 0) < 0)
         return {
+            **self._overview_payload(),
             "indices": self._indices,
             "stocks": list(self._stocks.values()),
             "movers": self._movers,
@@ -3748,10 +3920,6 @@ class DataEngine:
             "global_futures": self._global_futures,
             "last_global_update": self._last_global_update,
             "global_streaming": self._global_stream_connected,
-            "market_status": self.market_status,
-            "last_update": self._last_update,
-            "time": datetime.now(IST).strftime("%H:%M:%S"),
-            "breadth": {"advances": adv, "declines": dec},
             "news_llm_pending": self._llm_stack_pending_count(),
             "news_llm_enabled": bool(NV_API_KEY),
         }
