@@ -174,7 +174,12 @@ def _compose_cached_dashboard(
         )
     if global_entry:
         payload = global_entry.get("payload") or {}
-        data["global_futures"] = payload.get("global_futures", [])
+        cached_rows = payload.get("global_futures", [])
+        data["global_futures"] = [
+            row
+            for row in (engine._decorate_global_market_row(item) for item in cached_rows)
+            if row
+        ] if cached_rows else data.get("global_futures", [])
         data["last_global_update"] = payload.get("last_global_update")
         data["global_streaming"] = payload.get("global_streaming", False)
     return data
