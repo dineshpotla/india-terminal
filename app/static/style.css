@@ -1120,10 +1120,6 @@ body {
     text-align: left;
 }
 
-.gm-table thead th:nth-child(2) {
-    text-align: left;
-}
-
 .gm-table tbody td {
     padding: 7px 12px;
     text-align: right;
@@ -1136,8 +1132,7 @@ body {
     text-align: left;
 }
 
-.gm-name-cell,
-.gm-session-cell {
+.gm-name-cell {
     text-align: left !important;
 }
 
@@ -1154,53 +1149,105 @@ body {
 }
 
 .gm-name-meta,
-.gm-session-meta,
-.gm-session-next {
+.gm-market-chip-countdown {
     font-size: 9px;
     line-height: 1.35;
     color: var(--text-dim);
 }
 
-.gm-session-cell {
-    min-width: 128px;
-}
-
-.gm-session-badge {
+.gm-market-chip {
     display: inline-flex;
     align-items: center;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
+    gap: 8px;
+    width: fit-content;
+    max-width: 100%;
+    padding: 7px 10px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.14), rgba(255,255,255,0.04)),
+        rgba(15, 23, 42, 0.26);
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.18),
+        inset 0 -1px 0 rgba(255,255,255,0.04),
+        0 8px 20px rgba(0,0,0,0.18);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+.gm-market-chip-state {
     font-family: var(--font-head);
     font-size: 8px;
     font-weight: 700;
-    letter-spacing: 1px;
+    letter-spacing: 1.1px;
     text-transform: uppercase;
-    margin-bottom: 4px;
+    white-space: nowrap;
 }
 
-.gm-session-badge.is-open {
+.gm-market-chip-countdown {
+    font-family: var(--font-data);
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gm-market-chip.is-open {
+    border-color: rgba(0, 230, 118, 0.22);
+    background:
+        linear-gradient(180deg, rgba(16, 185, 129, 0.18), rgba(16, 185, 129, 0.05)),
+        rgba(15, 23, 42, 0.24);
+}
+
+.gm-market-chip.is-open .gm-market-chip-state,
+.gm-market-chip.is-open .gm-market-chip-countdown {
     color: var(--green);
-    border-color: rgba(0, 230, 118, 0.25);
-    background: rgba(0, 230, 118, 0.08);
 }
 
-.gm-session-badge.is-closed {
-    color: var(--amber);
-    border-color: rgba(255, 179, 71, 0.2);
-    background: rgba(255, 179, 71, 0.08);
+.gm-market-chip.is-closed {
+    border-color: rgba(255, 99, 132, 0.2);
+    background:
+        linear-gradient(180deg, rgba(255, 99, 132, 0.16), rgba(255, 99, 132, 0.05)),
+        rgba(15, 23, 42, 0.24);
 }
 
-.gm-session-badge.is-holiday {
-    color: #7dd3fc;
+.gm-market-chip.is-closed .gm-market-chip-state,
+.gm-market-chip.is-closed .gm-market-chip-countdown {
+    color: #ff7b8f;
+}
+
+.gm-market-chip.is-closed .gm-market-chip-countdown {
+    animation: gm-session-pulse 1.8s ease-in-out infinite;
+}
+
+.gm-market-chip.is-holiday {
     border-color: rgba(125, 211, 252, 0.22);
-    background: rgba(56, 189, 248, 0.08);
+    background:
+        linear-gradient(180deg, rgba(56, 189, 248, 0.16), rgba(56, 189, 248, 0.05)),
+        rgba(15, 23, 42, 0.24);
 }
 
-.gm-session-badge.is-unknown {
+.gm-market-chip.is-holiday .gm-market-chip-state,
+.gm-market-chip.is-holiday .gm-market-chip-countdown {
+    color: #7dd3fc;
+}
+
+.gm-market-chip.is-unknown .gm-market-chip-state,
+.gm-market-chip.is-unknown .gm-market-chip-countdown,
+.gm-name-meta {
     color: var(--text-dim);
-    border-color: var(--border);
-    background: rgba(255, 255, 255, 0.04);
+}
+
+@keyframes gm-session-pulse {
+    0%, 100% {
+        opacity: 1;
+        text-shadow: 0 0 0 rgba(255, 123, 143, 0);
+    }
+    50% {
+        opacity: 0.72;
+        text-shadow: 0 0 12px rgba(255, 123, 143, 0.35);
+    }
 }
 
 .gm-table tbody tr {
@@ -1222,13 +1269,7 @@ body {
 
 .gm-chg {
     font-weight: 600;
-}
-
-.gm-pct {
-    font-weight: 700;
-    min-width: 60px;
-    display: inline-block;
-    text-align: right;
+    white-space: nowrap;
 }
 
 /* ── Color Utilities ────────────────────────────────────────────────── */

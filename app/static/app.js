@@ -524,6 +524,17 @@
         return Number(n).toFixed(n < 10 ? 4 : 2);
     }
 
+    function fmtGlobalChange(change, pct) {
+        if (change == null || pct == null) return "\u2014";
+        var sign = change >= 0 ? "+" : "-";
+        var absChange = Math.abs(change);
+        var changeDigits = absChange >= 100 ? 0 : (absChange >= 10 ? 1 : 2);
+        var pctDigits = Math.abs(pct) >= 10 ? 1 : 2;
+        var changeText = sign + absChange.toFixed(changeDigits);
+        var pctText = (pct >= 0 ? "+" : "-") + Math.abs(pct).toFixed(pctDigits) + "%";
+        return changeText + " (" + pctText + ")";
+    }
+
     function summarizeGlobalSessions(futures) {
         var summary = { open: 0, closed: 0, holiday: 0 };
         (futures || []).forEach(function (f) {
@@ -585,7 +596,7 @@
             var table = el("table", "gm-table");
             var thead = el("thead");
             var headerRow = el("tr");
-            ["NAME", "SESSION", "LTP", "CHANGE", "CHG%"].forEach(function (h) {
+            ["NAME", "LTP", "CHANGE"].forEach(function (h) {
                 headerRow.appendChild(el("th", "", h));
             });
             thead.appendChild(headerRow);
@@ -598,37 +609,38 @@
                 var nameTd = el("td", "gm-name-cell");
                 var nameWrap = el("div", "gm-name-wrap");
                 nameWrap.appendChild(el("div", "gm-name", f.name));
-                var metaBits = [];
-                if (f.session_venue) metaBits.push(f.session_venue);
-                if (f.session_local_time) metaBits.push(f.session_local_time);
-                nameWrap.appendChild(el("div", "gm-name-meta", metaBits.join(" \u00b7 ")));
+
+                var chip = el("div", "gm-market-chip");
+                var sessionState = f.session_status || "—";
+                var chipClass = "gm-market-chip";
+                if (sessionState === "OPEN") chipClass += " is-open";
+                else if (sessionState === "HOLIDAY") chipClass += " is-holiday";
+                else if (sessionState === "CLOSED") chipClass += " is-closed";
+                else chipClass += " is-unknown";
+                chip.className = chipClass;
+
+                var chipState = el("span", "gm-market-chip-state", sessionState);
+                chip.appendChild(chipState);
+
+                var chipCountdown = el(
+                    "span",
+                    "gm-market-chip-countdown",
+                    f.session_hint || "Awaiting live session clock"
+                );
+                chip.appendChild(chipCountdown);
+                nameWrap.appendChild(chip);
+
+                if (f.session_local_time) {
+                    nameWrap.appendChild(el("div", "gm-name-meta", f.session_local_time));
+                }
                 nameTd.appendChild(nameWrap);
                 tr.appendChild(nameTd);
-
-                var sessionTd = el("td", "gm-session-cell");
-                var sessionState = f.session_status || "—";
-                var badgeClass = "gm-session-badge ";
-                if (sessionState === "OPEN") badgeClass += "is-open";
-                else if (sessionState === "HOLIDAY") badgeClass += "is-holiday";
-                else if (sessionState === "CLOSED") badgeClass += "is-closed";
-                else badgeClass += "is-unknown";
-                sessionTd.appendChild(el("span", badgeClass, sessionState));
-                sessionTd.appendChild(el("div", "gm-session-meta", f.session_hint || "Awaiting live session clock"));
-                if (f.session_next_change_at) {
-                    sessionTd.appendChild(el("div", "gm-session-next", f.session_next_change_at));
-                }
-                tr.appendChild(sessionTd);
 
                 var priceTd = el("td", "gm-price", fmtGlobalPrice(f.price));
                 tr.appendChild(priceTd);
 
-                var chgSign = f.change >= 0 ? "+" : "";
-                var chgTd = el("td", "gm-chg " + cls(f.change_pct),
-                    chgSign + f.change.toFixed(2));
+                var chgTd = el("td", "gm-chg " + cls(f.change_pct), fmtGlobalChange(f.change, f.change_pct));
                 tr.appendChild(chgTd);
-
-                var pctTd = el("td", "gm-pct " + cls(f.change_pct), fmtPct(f.change_pct));
-                tr.appendChild(pctTd);
 
                 tbody.appendChild(tr);
 
