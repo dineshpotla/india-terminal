@@ -208,8 +208,23 @@
         } catch (err) {}
     }
 
-    async function fetchJson(url) {
-        var res = await fetch(url);
+    async function fetchJson(url, opts) {
+        opts = opts || {};
+        var timeoutMs = Number(opts.timeoutMs || 0);
+        var controller = null;
+        var timer = null;
+        if (timeoutMs > 0 && typeof AbortController !== "undefined") {
+            controller = new AbortController();
+            timer = setTimeout(function () {
+                controller.abort();
+            }, timeoutMs);
+        }
+        var res;
+        try {
+            res = await fetch(url, controller ? { signal: controller.signal } : undefined);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
         if (!res.ok) throw new Error("request failed: " + url);
         return await res.json();
     }
@@ -509,7 +524,17 @@
         return Number(n).toFixed(n < 10 ? 4 : 2);
     }
 
-    function updateGlobalStatus(streaming, lastUpdate) {
+    function summarizeGlobalSessions(futures) {
+        var summary = { open: 0, closed: 0, holiday: 0 };
+        (futures || []).forEach(function (f) {
+            if (f.session_status === "OPEN") summary.open += 1;
+            else if (f.session_status === "HOLIDAY") summary.holiday += 1;
+            else if (f.session_status === "CLOSED") summary.closed += 1;
+        });
+        return summary;
+    }
+
+    function updateGlobalStatus(streaming, lastUpdate, futures) {
         if ($gmStatus) {
             if (streaming) {
                 $gmStatus.textContent = "LIVE STREAMING";
@@ -519,14 +544,25 @@
                 $gmStatus.className = "gm-status polling";
             }
         }
-        if ($gmUpdated && lastUpdate) {
-            $gmUpdated.textContent = "Updated " + lastUpdate;
+        if ($gmUpdated) {
+            var parts = [];
+            if (lastUpdate) parts.push("Updated " + lastUpdate);
+            if (futures && futures.length) {
+                var summary = summarizeGlobalSessions(futures);
+                parts.push(summary.open + " open");
+                parts.push(summary.closed + " closed");
+                if (summary.holiday) parts.push(summary.holiday + " holiday");
+            }
+            $gmUpdated.textContent = parts.join(" \u00b7 ");
         }
     }
 
     function renderGlobalMarkets(futures) {
-        if (!futures || !futures.length) return;
         clearChildren($gmGrid);
+        if (!futures || !futures.length) {
+            $gmGrid.appendChild(el("div", "gm-loading", "Fetching global markets…"));
+            return;
+        }
 
         var regions = [];
         var regionMap = {};
@@ -549,7 +585,7 @@
             var table = el("table", "gm-table");
             var thead = el("thead");
             var headerRow = el("tr");
-            ["NAME", "LTP", "CHANGE", "CHG%"].forEach(function (h) {
+            ["NAME", "SESSION", "LTP", "CHANGE", "CHG%"].forEach(function (h) {
                 headerRow.appendChild(el("th", "", h));
             });
             thead.appendChild(headerRow);
@@ -558,7 +594,31 @@
             var tbody = el("tbody");
             regionMap[region].forEach(function (f) {
                 var tr = el("tr");
-                tr.appendChild(el("td", "", f.name));
+
+                var nameTd = el("td", "gm-name-cell");
+                var nameWrap = el("div", "gm-name-wrap");
+                nameWrap.appendChild(el("div", "gm-name", f.name));
+                var metaBits = [];
+                if (f.session_venue) metaBits.push(f.session_venue);
+                if (f.session_local_time) metaBits.push(f.session_local_time);
+                nameWrap.appendChild(el("div", "gm-name-meta", metaBits.join(" \u00b7 ")));
+                nameTd.appendChild(nameWrap);
+                tr.appendChild(nameTd);
+
+                var sessionTd = el("td", "gm-session-cell");
+                var sessionState = f.session_status || "—";
+                var badgeClass = "gm-session-badge ";
+                if (sessionState === "OPEN") badgeClass += "is-open";
+                else if (sessionState === "HOLIDAY") badgeClass += "is-holiday";
+                else if (sessionState === "CLOSED") badgeClass += "is-closed";
+                else badgeClass += "is-unknown";
+                sessionTd.appendChild(el("span", badgeClass, sessionState));
+                sessionTd.appendChild(el("div", "gm-session-meta", f.session_hint || "Awaiting live session clock"));
+                if (f.session_next_change_at) {
+                    sessionTd.appendChild(el("div", "gm-session-next", f.session_next_change_at));
+                }
+                tr.appendChild(sessionTd);
+
                 var priceTd = el("td", "gm-price", fmtGlobalPrice(f.price));
                 tr.appendChild(priceTd);
 
@@ -628,7 +688,7 @@
         dashboardData.global_futures = data.global_futures || [];
         dashboardData.last_global_update = data.last_global_update || null;
         dashboardData.global_streaming = !!data.global_streaming;
-        updateGlobalStatus(data.global_streaming, data.last_global_update);
+        updateGlobalStatus(data.global_streaming, data.last_global_update, data.global_futures || []);
         if (currentView === "global") renderGlobalMarkets(data.global_futures || []);
         if (!opts.skipCache) savePanelCache("global", data);
     }
@@ -717,7 +777,7 @@
 
     async function loadGlobalPanel() {
         try {
-            var data = await fetchJson("/api/panel/global");
+            var data = await fetchJson("/api/panel/global", { timeoutMs: 10000 });
             applyGlobalPanel(data);
             if ((!data.global_futures || !data.global_futures.length) && data.refreshing) {
                 setTimeout(function () {
@@ -727,6 +787,14 @@
             return data;
         } catch (err) {
             console.error("Global fetch error:", err);
+            if (dashboardData && dashboardData.global_futures && dashboardData.global_futures.length) {
+                applyGlobalPanel({
+                    global_futures: dashboardData.global_futures,
+                    last_global_update: dashboardData.last_global_update || null,
+                    global_streaming: !!dashboardData.global_streaming,
+                }, { skipCache: true });
+                return panelState.global;
+            }
             return panelState.global;
         }
     }
@@ -1336,7 +1404,7 @@
                         if (msg.last_global_update) dashboardData.last_global_update = msg.last_global_update;
                     }
                     if (msg.gift_nifty) renderGiftNifty(msg.gift_nifty);
-                    updateGlobalStatus(msg.global_streaming, msg.last_global_update);
+                    updateGlobalStatus(msg.global_streaming, msg.last_global_update, msg.global_futures || []);
                     if (currentView === "global") renderGlobalMarkets(msg.global_futures);
                 } else if (msg.type === "news" && msg.news) {
                     if (dashboardData) {

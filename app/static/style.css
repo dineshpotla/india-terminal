@@ -1120,18 +1120,87 @@ body {
     text-align: left;
 }
 
+.gm-table thead th:nth-child(2) {
+    text-align: left;
+}
+
 .gm-table tbody td {
     padding: 7px 12px;
     text-align: right;
     border-bottom: 1px solid rgba(30,41,59,.2);
     color: var(--text-secondary);
+    vertical-align: top;
 }
 
 .gm-table tbody td:first-child {
     text-align: left;
+}
+
+.gm-name-cell,
+.gm-session-cell {
+    text-align: left !important;
+}
+
+.gm-name-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.gm-name {
     color: var(--text-primary);
     font-weight: 600;
     font-size: 11px;
+}
+
+.gm-name-meta,
+.gm-session-meta,
+.gm-session-next {
+    font-size: 9px;
+    line-height: 1.35;
+    color: var(--text-dim);
+}
+
+.gm-session-cell {
+    min-width: 128px;
+}
+
+.gm-session-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-family: var(--font-head);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+}
+
+.gm-session-badge.is-open {
+    color: var(--green);
+    border-color: rgba(0, 230, 118, 0.25);
+    background: rgba(0, 230, 118, 0.08);
+}
+
+.gm-session-badge.is-closed {
+    color: var(--amber);
+    border-color: rgba(255, 179, 71, 0.2);
+    background: rgba(255, 179, 71, 0.08);
+}
+
+.gm-session-badge.is-holiday {
+    color: #7dd3fc;
+    border-color: rgba(125, 211, 252, 0.22);
+    background: rgba(56, 189, 248, 0.08);
+}
+
+.gm-session-badge.is-unknown {
+    color: var(--text-dim);
+    border-color: var(--border);
+    background: rgba(255, 255, 255, 0.04);
 }
 
 .gm-table tbody tr {

@@ -17,7 +17,7 @@ import time
 import traceback
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import threading
 from typing import Dict, List, Optional, Set
 from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urljoin, urlparse, urlunparse
@@ -78,14 +78,13 @@ SECTOR_MAP = {
 TRACKED_INDICES = {"NIFTY 50", "NIFTY BANK", "NIFTY NEXT 50", "NIFTY IT",
                    "NIFTY MIDCAP 50", "NIFTY FINANCIAL SERVICES", "INDIA VIX"}
 
-# Global markets: prefer Yahoo "ROOT=F" futures where available. Those tickers track the
-# **front contract**; Yahoo retargets them at rollover, so we do not maintain a local expiry calendar.
+# Global markets: prefer true front-month futures where Yahoo exposes a reliable continuous
+# contract (`ROOT=F`). Those tickers trade around the clock and Yahoo retargets them at rollover.
 #
-# Futures availability (Yahoo): CME/ICE roots (ES, NQ, CL, 6E, BTC=F, …) work. Probed chart/=F
-# symbols for FTSE/DAX/CAC/Euro Stoxx/Hang Seng/KOSPI/Taiwan/etc. futures return 404 — contracts
-# exist on exchanges but Yahoo does not list them as continuous =F. For those rows we keep Yahoo
-# **cash indices** and optionally fall back to Twelve Data (TWELVE_DATA_API_KEY) if Yahoo returns
-# no price. Twelve is also used for Indian index/ equity quotes when NSE or Yahoo omit data.
+# For several Europe/Asia benchmark rows Yahoo has no usable continuous future symbol, and
+# Twelve Data still does not offer futures at all (their support docs list futures as unsupported).
+# For those markets we use verified Twelve Data **spot index** symbols first where available,
+# then fall back to Yahoo cash indices if Twelve Data coverage or plan access is missing.
 # USD/JPY uses CME **6J=F** (inverse tick → USD/JPY display below).
 GLOBAL_FUTURES = [
     # US Markets (CME equity index + RTY E-mini)
@@ -131,19 +130,173 @@ GLOBAL_FUTURES = [
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
-# Yahoo symbol -> Twelve Data `symbol`[, exchange] for REST fallback (spot index), same display scale.
+# Yahoo symbol -> validated Twelve Data spot-index symbol/exchange for cash-index rows.
 _GLOBAL_TD_FALLBACK: Dict[str, tuple] = {
-    "^FTSE": ("FTSE", ""),
-    "^GDAXI": ("DAX", ""),
-    "^FCHI": ("FCHI", ""),
-    "^STOXX50E": ("STOXX50E", ""),
-    "^HSI": ("HSI", ""),
+    "^FTSE": ("FTSE", "LSE"),
+    "^GDAXI": ("GDAXI", "XETR"),
+    "^FCHI": ("FCHI", "Euronext"),
+    "^HSI": ("HSI", "HKEX"),
     "000001.SS": ("000001", "SSE"),
-    "^KS11": ("KS11", ""),
-    "^TWII": ("TWII", ""),
-    "^STI": ("STI", ""),
+    "^KS11": ("KOSPI", "KRX"),
+    "^STI": ("STI", "SGX"),
     "^SET.BK": ("SET", "SET"),
-    "^JKSE": ("JKSE", ""),
+    "^JKSE": ("JKSE", "IDX"),
+}
+
+_GLOBAL_TD_PREFER_FIRST = {
+    "^GDAXI",
+    "^FCHI",
+    "^HSI",
+    "000001.SS",
+    "^KS11",
+    "^STI",
+    "^SET.BK",
+    "^JKSE",
+}
+
+
+def _mins(hour: int, minute: int = 0) -> int:
+    return hour * 60 + minute
+
+
+def _d(year: int, month: int, day: int) -> date:
+    return date(year, month, day)
+
+
+_WEEKDAY_SESSION_0900_1700 = {wd: [(_mins(9, 0), _mins(17, 0))] for wd in range(5)}
+_WEEKDAY_SESSION_0900_1730 = {wd: [(_mins(9, 0), _mins(17, 30))] for wd in range(5)}
+_WEEKDAY_SESSION_0930_1600 = {wd: [(_mins(9, 30), _mins(12, 0)), (_mins(13, 0), _mins(16, 0))] for wd in range(5)}
+_WEEKDAY_SESSION_0930_1500 = {wd: [(_mins(9, 30), _mins(11, 30)), (_mins(13, 0), _mins(15, 0))] for wd in range(5)}
+
+_GLOBEX_24X5_SESSIONS = {
+    0: [(_mins(0, 0), _mins(17, 0)), (_mins(18, 0), _mins(24, 0))],
+    1: [(_mins(0, 0), _mins(17, 0)), (_mins(18, 0), _mins(24, 0))],
+    2: [(_mins(0, 0), _mins(17, 0)), (_mins(18, 0), _mins(24, 0))],
+    3: [(_mins(0, 0), _mins(17, 0)), (_mins(18, 0), _mins(24, 0))],
+    4: [(_mins(0, 0), _mins(17, 0))],
+    5: [],
+    6: [(_mins(18, 0), _mins(24, 0))],
+}
+
+_GIFT_NIFTY_SESSIONS = {
+    0: [(_mins(0, 0), _mins(2, 45)), (_mins(6, 30), _mins(15, 40)), (_mins(16, 35), _mins(24, 0))],
+    1: [(_mins(0, 0), _mins(2, 45)), (_mins(6, 30), _mins(15, 40)), (_mins(16, 35), _mins(24, 0))],
+    2: [(_mins(0, 0), _mins(2, 45)), (_mins(6, 30), _mins(15, 40)), (_mins(16, 35), _mins(24, 0))],
+    3: [(_mins(0, 0), _mins(2, 45)), (_mins(6, 30), _mins(15, 40)), (_mins(16, 35), _mins(24, 0))],
+    4: [(_mins(0, 0), _mins(2, 45)), (_mins(6, 30), _mins(15, 40)), (_mins(16, 35), _mins(24, 0))],
+    5: [(_mins(0, 0), _mins(2, 45))],
+    6: [],
+}
+
+_IDX_SESSIONS = {
+    0: [(_mins(9, 0), _mins(12, 0)), (_mins(13, 30), _mins(16, 0))],
+    1: [(_mins(9, 0), _mins(12, 0)), (_mins(13, 30), _mins(16, 0))],
+    2: [(_mins(9, 0), _mins(12, 0)), (_mins(13, 30), _mins(16, 0))],
+    3: [(_mins(9, 0), _mins(12, 0)), (_mins(13, 30), _mins(16, 0))],
+    4: [(_mins(9, 0), _mins(11, 30)), (_mins(14, 0), _mins(16, 0))],
+}
+
+_SET_SESSIONS = {
+    wd: [(_mins(10, 0), _mins(12, 30)), (_mins(14, 0), _mins(16, 30))]
+    for wd in range(5)
+}
+
+_SET_2026_HOLIDAYS = {
+    _d(2026, 1, 1),
+    _d(2026, 2, 3),
+    _d(2026, 4, 6),
+    _d(2026, 4, 13),
+    _d(2026, 4, 14),
+    _d(2026, 4, 15),
+    _d(2026, 5, 1),
+    _d(2026, 5, 4),
+    _d(2026, 5, 6),
+    _d(2026, 6, 1),
+    _d(2026, 6, 3),
+    _d(2026, 7, 30),
+    _d(2026, 8, 12),
+    _d(2026, 10, 13),
+    _d(2026, 10, 23),
+    _d(2026, 12, 7),
+    _d(2026, 12, 10),
+    _d(2026, 12, 31),
+}
+
+_HKEX_2026_HOLIDAYS = {
+    _d(2026, 1, 1),
+    _d(2026, 2, 17),
+    _d(2026, 2, 18),
+    _d(2026, 2, 19),
+    _d(2026, 4, 3),
+    _d(2026, 4, 6),
+    _d(2026, 4, 7),
+    _d(2026, 5, 1),
+    _d(2026, 5, 25),
+    _d(2026, 6, 19),
+    _d(2026, 7, 1),
+    _d(2026, 10, 1),
+    _d(2026, 10, 19),
+    _d(2026, 12, 25),
+}
+
+_IDX_2026_HOLIDAYS = {
+    _d(2026, 1, 1),
+    _d(2026, 1, 16),
+    _d(2026, 2, 16),
+    _d(2026, 2, 17),
+    _d(2026, 3, 18),
+    _d(2026, 3, 19),
+    _d(2026, 3, 20),
+    _d(2026, 3, 23),
+    _d(2026, 3, 24),
+    _d(2026, 4, 3),
+    _d(2026, 5, 1),
+    _d(2026, 5, 14),
+    _d(2026, 5, 15),
+    _d(2026, 5, 27),
+    _d(2026, 5, 28),
+    _d(2026, 6, 1),
+    _d(2026, 6, 16),
+    _d(2026, 8, 17),
+    _d(2026, 8, 25),
+    _d(2026, 12, 24),
+    _d(2026, 12, 25),
+    _d(2026, 12, 31),
+}
+
+GLOBAL_MARKET_SESSION_META = {
+    "S&P 500": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "NASDAQ": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "DOW JONES": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "RUSSELL 2000": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "FTSE 100": {"tz": "Europe/London", "venue": "LSE", "sessions": {wd: [(_mins(8, 0), _mins(16, 30))] for wd in range(5)}},
+    "DAX": {"tz": "Europe/Berlin", "venue": "XETRA", "sessions": _WEEKDAY_SESSION_0900_1730},
+    "CAC 40": {"tz": "Europe/Paris", "venue": "EURONEXT PARIS", "sessions": _WEEKDAY_SESSION_0900_1730},
+    "EURO STOXX 50": {"tz": "Europe/Paris", "venue": "EURONEXT", "sessions": _WEEKDAY_SESSION_0900_1730},
+    "GIFT NIFTY": {"tz": "Asia/Kolkata", "venue": "NSE IX", "sessions": _GIFT_NIFTY_SESSIONS},
+    "NIKKEI 225": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "HANG SENG": {"tz": "Asia/Hong_Kong", "venue": "HKEX", "sessions": _WEEKDAY_SESSION_0930_1600, "holidays": _HKEX_2026_HOLIDAYS},
+    "SHANGHAI": {"tz": "Asia/Shanghai", "venue": "SSE", "sessions": _WEEKDAY_SESSION_0930_1500},
+    "KOSPI": {"tz": "Asia/Seoul", "venue": "KRX", "sessions": {wd: [(_mins(9, 0), _mins(15, 30))] for wd in range(5)}},
+    "TAIWAN": {"tz": "Asia/Taipei", "venue": "TWSE", "sessions": {wd: [(_mins(9, 0), _mins(13, 30))] for wd in range(5)}},
+    "STRAITS TIMES": {"tz": "Asia/Singapore", "venue": "SGX", "sessions": _WEEKDAY_SESSION_0900_1700},
+    "SET COMPOSITE": {"tz": "Asia/Bangkok", "venue": "SET", "sessions": _SET_SESSIONS, "holidays": _SET_2026_HOLIDAYS},
+    "JAKARTA": {"tz": "Asia/Jakarta", "venue": "IDX", "sessions": _IDX_SESSIONS, "holidays": _IDX_2026_HOLIDAYS},
+    "CRUDE OIL (WTI)": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "BRENT CRUDE": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "NATURAL GAS": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "GOLD": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "SILVER": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "COPPER": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "EUR/USD": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "GBP/USD": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "USD/JPY": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "USD/INR": {"tz": "Asia/Kolkata", "venue": "FX", "sessions": _GIFT_NIFTY_SESSIONS},
+    "DXY (Dollar Index)": {"tz": "America/New_York", "venue": "ICE", "sessions": _GLOBEX_24X5_SESSIONS},
+    "BITCOIN": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "ETHEREUM": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "US 10Y YIELD": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
+    "US 2Y YIELD": {"tz": "America/New_York", "venue": "CME GLOBEX", "sessions": _GLOBEX_24X5_SESSIONS},
 }
 
 TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
@@ -447,7 +600,7 @@ TWELVE_DATA_MAX_PER_MINUTE = max(
     1,
     min(
         120,
-        int(os.getenv("TWELVE_DATA_MAX_PER_MINUTE", "6" if _TWELVE_FREE else "55")),
+        int(os.getenv("TWELVE_DATA_MAX_PER_MINUTE", "8" if _TWELVE_FREE else "55")),
     ),
 )
 TWELVE_DATA_QUOTE_CACHE_SECS = max(
@@ -926,6 +1079,129 @@ class DataEngine:
     @property
     def background_enabled(self) -> bool:
         return self._app_role in {"combined", "worker"}
+
+    @staticmethod
+    def _market_timepoint(tz_obj, day: date, minute: int) -> datetime:
+        base = tz_obj.localize(datetime.combine(day, datetime.min.time()))
+        return base + timedelta(minutes=minute)
+
+    @staticmethod
+    def _format_market_countdown(delta: timedelta) -> str:
+        total_minutes = max(0, int(delta.total_seconds() // 60))
+        days, rem = divmod(total_minutes, 24 * 60)
+        hours, minutes = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if days or hours:
+            parts.append(f"{hours}h")
+        parts.append(f"{minutes}m")
+        return " ".join(parts)
+
+    @staticmethod
+    def _fallback_global_market_meta(label: str, symbol: str) -> Optional[dict]:
+        if label in GLOBAL_MARKET_SESSION_META:
+            return GLOBAL_MARKET_SESSION_META[label]
+        if symbol and symbol.endswith("=F"):
+            return {
+                "tz": "America/New_York",
+                "venue": "CME GLOBEX",
+                "sessions": _GLOBEX_24X5_SESSIONS,
+            }
+        return None
+
+    def _describe_global_market_session(self, label: str, symbol: Optional[str]) -> dict:
+        meta = self._fallback_global_market_meta(label, symbol or "")
+        if not meta:
+            return {}
+
+        tz_obj = pytz.timezone(meta["tz"])
+        now_local = datetime.now(tz_obj)
+        today = now_local.date()
+        current_minute = (
+            now_local.hour * 60
+            + now_local.minute
+            + (now_local.second / 60.0)
+        )
+        holidays = meta.get("holidays") or set()
+        sessions_by_day = meta.get("sessions") or {}
+        today_sessions = list(sessions_by_day.get(today.weekday(), []))
+        holiday_today = today in holidays
+
+        current_session_end = None
+        if not holiday_today:
+            for start_minute, end_minute in today_sessions:
+                if start_minute <= current_minute < end_minute:
+                    current_session_end = self._market_timepoint(tz_obj, today, end_minute)
+                    break
+
+        next_open = None
+        next_reason = "closed"
+        for day_offset in range(0, 15):
+            target_day = today + timedelta(days=day_offset)
+            if target_day in holidays:
+                continue
+            day_sessions = list(sessions_by_day.get(target_day.weekday(), []))
+            if not day_sessions:
+                continue
+            for start_minute, _ in day_sessions:
+                open_dt = self._market_timepoint(tz_obj, target_day, start_minute)
+                if open_dt > now_local:
+                    next_open = open_dt
+                    if day_offset == 0 and any(end_minute <= current_minute for _, end_minute in today_sessions):
+                        next_reason = "break"
+                    else:
+                        next_reason = "closed"
+                    break
+            if next_open:
+                break
+
+        local_clock = now_local.strftime("%a %H:%M %Z")
+        session_venue = meta.get("venue") or ""
+
+        if current_session_end:
+            return {
+                "session_status": "OPEN",
+                "session_reason": "open",
+                "session_hint": f"Closes in {self._format_market_countdown(current_session_end - now_local)}",
+                "session_local_time": local_clock,
+                "session_venue": session_venue,
+                "session_next_change_at": current_session_end.strftime("%a %H:%M %Z"),
+                "session_countdown_mins": max(0, int((current_session_end - now_local).total_seconds() // 60)),
+                "session_timezone": meta["tz"],
+            }
+
+        closed_prefix = "Reopens in" if holiday_today or next_reason == "break" else "Opens in"
+        next_change_at = next_open.strftime("%a %H:%M %Z") if next_open else None
+        hint = "Closed"
+        countdown_mins = None
+        if next_open:
+            hint = f"{closed_prefix} {self._format_market_countdown(next_open - now_local)}"
+            countdown_mins = max(0, int((next_open - now_local).total_seconds() // 60))
+        status = "HOLIDAY" if holiday_today else "CLOSED"
+        reason = "holiday" if holiday_today else next_reason
+        return {
+            "session_status": status,
+            "session_reason": reason,
+            "session_hint": hint,
+            "session_local_time": local_clock,
+            "session_venue": session_venue,
+            "session_next_change_at": next_change_at,
+            "session_countdown_mins": countdown_mins,
+            "session_timezone": meta["tz"],
+        }
+
+    def _decorate_global_market_row(self, row: Optional[dict]) -> Optional[dict]:
+        if not row:
+            return None
+        payload = dict(row)
+        payload.update(
+            self._describe_global_market_session(
+                str(payload.get("name") or ""),
+                payload.get("symbol"),
+            )
+        )
+        return payload
 
     def _has_dashboard_state(self) -> bool:
         return bool(
@@ -1569,15 +1845,16 @@ class DataEngine:
         for sym, live in self._global_live.items():
             merged[sym] = live
         if self._gift_nifty:
-            merged["GIFTNIFTY"] = {
+            merged["GIFTNIFTY"] = self._decorate_global_market_row({
                 "name": "GIFT NIFTY",
                 "symbol": "GIFTNIFTY",
                 "region": "ASIAN MARKETS",
                 "price": self._gift_nifty["price"],
                 "change": self._gift_nifty["change"],
                 "change_pct": self._gift_nifty["change_pct"],
-            }
-        results = list(merged.values())
+            })
+        results = [self._decorate_global_market_row(item) for item in merged.values()]
+        results = [item for item in results if item]
         order = {r: i for i, (_, _, r) in enumerate(GLOBAL_FUTURES)}
         results.sort(key=lambda x: (order.get(x["region"], 99),
             next((i for i, (l, _, _) in enumerate(GLOBAL_FUTURES) if l == x["name"]), 99)))
@@ -2887,14 +3164,18 @@ class DataEngine:
         c = tdq["chg"]
         if tdq.get("prev", 0) > 0:
             self._global_prev_close[yahoo_sym] = tdq["prev"]
-        return {
+        return self._decorate_global_market_row({
             "name": label,
             "symbol": yahoo_sym,
             "region": region,
             "price": round(p, 2 if p >= 10 else 4),
             "change": round(c, 2 if abs(c) >= 1 else 4),
             "change_pct": round(float(tdq["pct"]), 2),
-        }
+        })
+
+    @staticmethod
+    def _prefer_twelve_global_row(yahoo_sym: str) -> bool:
+        return yahoo_sym in _GLOBAL_TD_PREFER_FIRST
 
     def _build_global_futures_row(
         self,
@@ -2931,14 +3212,14 @@ class DataEngine:
                 self._global_prev_close[yahoo_sym] = prev
             chg, chg_pct = self._yahoo_change_for_display(inf, price, prev)
             fp, fc = price, chg
-        return {
+        return self._decorate_global_market_row({
             "name": label,
             "symbol": yahoo_sym,
             "region": region,
             "price": round(fp, 2 if fp >= 10 else 4),
             "change": round(fc, 2 if abs(fc) >= 1 else 4),
             "change_pct": round(float(chg_pct), 2),
-        }
+        })
 
     def _fetch_nse_data(self):
         self._fetch_nse_stocks()
@@ -3215,45 +3496,48 @@ class DataEngine:
             results = []
             for label, sym, region in yf_entries:
                 row = None
+                if self._prefer_twelve_global_row(sym):
+                    row = self._try_twelve_global_futures_row(label, sym, region)
                 try:
-                    price = 0.0
-                    prev = 0.0
-                    inf: dict = {}
-                    try:
-                        t = tickers.tickers[sym]
+                    if not row:
+                        price = 0.0
+                        prev = 0.0
+                        inf: dict = {}
                         try:
-                            fi = t.fast_info
-                            price = self._to_float(fi.last_price, 0.0)
-                            prev = self._to_float(fi.previous_close, 0.0)
-                        except Exception:
-                            pass
-                        if not price or not prev:
+                            t = tickers.tickers[sym]
                             try:
-                                raw = t.info
-                                if isinstance(raw, dict):
-                                    inf = raw
+                                fi = t.fast_info
+                                price = self._to_float(fi.last_price, 0.0)
+                                prev = self._to_float(fi.previous_close, 0.0)
                             except Exception:
                                 pass
-                    except Exception:
-                        pass
-                    if not price and inf:
-                        price = self._to_float(
-                            inf.get("regularMarketPrice") or inf.get("currentPrice"),
-                            0.0,
-                        )
-                    if not prev and inf:
-                        prev = self._to_float(
-                            inf.get("regularMarketPreviousClose") or inf.get("previousClose"),
-                            0.0,
-                        )
-                    if not price or not prev:
-                        snap = self._fetch_yahoo_chart_snapshot(sym)
-                        if snap:
-                            if not price:
-                                price = self._to_float(snap.get("price"), 0.0)
-                            if not prev:
-                                prev = self._to_float(snap.get("prev_close"), 0.0)
-                    row = self._build_global_futures_row(label, sym, region, price, prev, inf)
+                            if not price or not prev:
+                                try:
+                                    raw = t.info
+                                    if isinstance(raw, dict):
+                                        inf = raw
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        if not price and inf:
+                            price = self._to_float(
+                                inf.get("regularMarketPrice") or inf.get("currentPrice"),
+                                0.0,
+                            )
+                        if not prev and inf:
+                            prev = self._to_float(
+                                inf.get("regularMarketPreviousClose") or inf.get("previousClose"),
+                                0.0,
+                            )
+                        if not price or not prev:
+                            snap = self._fetch_yahoo_chart_snapshot(sym)
+                            if snap:
+                                if not price:
+                                    price = self._to_float(snap.get("price"), 0.0)
+                                if not prev:
+                                    prev = self._to_float(snap.get("prev_close"), 0.0)
+                        row = self._build_global_futures_row(label, sym, region, price, prev, inf)
                 except Exception:
                     pass
                 if row:
@@ -3264,14 +3548,14 @@ class DataEngine:
                         results.append(trow)
             if self._gift_nifty:
                 gn = self._gift_nifty
-                results.append({
+                results.append(self._decorate_global_market_row({
                     "name": "GIFT NIFTY",
                     "symbol": "GIFTNIFTY",
                     "region": "ASIAN MARKETS",
                     "price": gn["price"],
                     "change": gn["change"],
                     "change_pct": gn["change_pct"],
-                })
+                }))
             if results:
                 order = {r: i for i, (_, _, r) in enumerate(GLOBAL_FUTURES)}
                 results.sort(key=lambda x: (order.get(x["region"], 99),
@@ -3908,6 +4192,8 @@ class DataEngine:
             self._ensure_ready_lock.release()
 
     def get_dashboard(self) -> dict:
+        global_rows = [self._decorate_global_market_row(row) for row in self._global_futures]
+        global_rows = [row for row in global_rows if row]
         return {
             **self._overview_payload(),
             "indices": self._indices,
@@ -3917,7 +4203,7 @@ class DataEngine:
             "sectors": self._sectors,
             "sector_map": SECTOR_MAP,
             "gift_nifty": self._gift_nifty,
-            "global_futures": self._global_futures,
+            "global_futures": global_rows,
             "last_global_update": self._last_global_update,
             "global_streaming": self._global_stream_connected,
             "news_llm_pending": self._llm_stack_pending_count(),
