@@ -691,6 +691,10 @@ WATCHLIST_PANEL_DEEP_REFRESH_SYMBOL_CAP = max(
     WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP,
     min(24, int(os.getenv("WATCHLIST_PANEL_DEEP_REFRESH_SYMBOL_CAP", "12" if IS_RENDER else "16"))),
 )
+WATCHLIST_REFRESH_WORKERS = max(
+    1,
+    min(6, int(os.getenv("WATCHLIST_REFRESH_WORKERS", "4" if IS_RENDER else "6"))),
+)
 LLM_CACHE_SIZE = 500
 
 _LLM_SYSTEM = (
@@ -2274,17 +2278,34 @@ class DataEngine:
         now_ts = time.time()
         ranked = self._rank_watchlist_refresh_symbols(unique_symbols, skip_symbols)
         changed: List[dict] = []
-        refreshed_symbols: List[str] = []
         max_symbols = max(1, min(len(ranked), int(limit or WATCHLIST_PANEL_REFRESH_SYMBOL_CAP)))
-        for sym in ranked[:max_symbols]:
+        selected_symbols = ranked[:max_symbols]
+        refreshed_symbols: List[str] = list(selected_symbols)
+        for sym in selected_symbols:
             self._watchlist_news_refresh_at[sym] = now_ts
-            refreshed_symbols.append(sym)
+        if len(selected_symbols) == 1:
+            sym = selected_symbols[0]
             try:
                 items = self._search_stock_news(sym)
             except Exception:
                 traceback.print_exc()
-                continue
+                items = []
             changed.extend(self._merge_watchlist_news_items(sym, items))
+        else:
+            workers = max(1, min(WATCHLIST_REFRESH_WORKERS, len(selected_symbols)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(self._search_stock_news, sym): sym
+                    for sym in selected_symbols
+                }
+                for future in as_completed(futures):
+                    sym = futures[future]
+                    try:
+                        items = future.result()
+                    except Exception:
+                        traceback.print_exc()
+                        continue
+                    changed.extend(self._merge_watchlist_news_items(sym, items))
         if changed:
             self._push_llm_stack(changed)
         return changed, refreshed_symbols
