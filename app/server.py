@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
 
 from .data_engine import DataEngine, IST, SECTOR_MAP
+from .mutual_funds import MutualFundsService
 from .panel_cache import PanelCacheManager
 from .watchlist_store import WatchlistStore
 
@@ -41,6 +42,7 @@ WATCHLIST_NEWS_STALE_TTL = 12 * 60 * 60.0
 engine = DataEngine()
 watchlist_store = WatchlistStore()
 panel_cache = PanelCacheManager(engine._dashboard_store)
+mutual_funds = MutualFundsService(engine._dashboard_store)
 
 
 class WatchlistPayload(BaseModel):
@@ -393,6 +395,42 @@ async def delete_watchlist_symbol(symbol: str):
     after_symbols = watchlist_store.list_symbols()
     await _invalidate_watchlist_panels(before_symbols, after_symbols)
     return JSONResponse(_watchlist_response())
+
+
+@app.get("/api/mf/status")
+async def mf_status():
+    return JSONResponse(mutual_funds.status())
+
+
+@app.get("/api/mf/holdings")
+async def mf_holdings():
+    return JSONResponse(mutual_funds.list_holdings())
+
+
+@app.post("/api/mf/sync")
+async def mf_sync():
+    try:
+        payload = await asyncio.to_thread(mutual_funds.sync)
+    except Exception as exc:
+        print(f"[MutualFunds] sync failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    equity_symbols = _normalize_symbols(payload.get("equity_symbols") or [])
+    if equity_symbols:
+        before_symbols = watchlist_store.list_symbols()
+        await asyncio.to_thread(watchlist_store.merge_symbols, equity_symbols)
+        after_symbols = watchlist_store.list_symbols()
+        await _invalidate_watchlist_panels(before_symbols, after_symbols)
+    return JSONResponse(mutual_funds.list_holdings())
+
+
+@app.get("/api/mf/compare/{isin}")
+async def mf_compare(isin: str, benchmark: str = Query(""), range_key: str = Query("max", alias="range")):
+    try:
+        data = await asyncio.to_thread(mutual_funds.compare, isin, benchmark or None, range_key)
+    except Exception as exc:
+        print(f"[MutualFunds] compare failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(data)
 
 
 @app.get("/api/options/{symbol}")

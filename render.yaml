@@ -2,7 +2,7 @@
 # Dashboard → New → Blueprint → connect repo → apply.
 #
 # Python version: uses repo [.python-version](.python-version) (see Render native Python).
-# Optional secrets (set in dashboard): NV_API_KEY, TWELVE_DATA_API_KEY, WATCHLIST_SEED_SYMBOLS, etc.
+# Optional secrets (set in dashboard): NV_API_KEY, TWELVE_DATA_API_KEY, ZERODHA_API_KEY, ZERODHA_ACCESS_TOKEN, WATCHLIST_SEED_SYMBOLS, etc.
 
 services:
   - type: web

@@ -31,6 +31,7 @@
                     <button class="nav-tab active" data-view="investing">INVESTING</button>
                     <button class="nav-tab" data-view="options">OPTIONS</button>
                     <button class="nav-tab" data-view="global">GLOBAL MARKETS</button>
+                    <button class="nav-tab" data-view="mutual">MUTUAL FUNDS</button>
                 </div>
             </div>
             <div class="header-center">
@@ -167,6 +168,48 @@
             <div class="gm-grid" id="gm-grid">
                 <div class="gm-loading">Fetching global markets…</div>
             </div>
+        </div>
+
+        <!-- ── Mutual Funds View ─────────────────────────────────── -->
+        <div id="mutual-view" class="mutual-view">
+            <aside class="mf-sidebar">
+                <div class="mf-toolbar">
+                    <div>
+                        <div class="mf-kicker">ZERODHA COIN</div>
+                        <h2 class="mf-title">Mutual Funds</h2>
+                    </div>
+                    <button id="mf-sync-btn" class="mf-sync-btn" type="button">SYNC</button>
+                </div>
+                <div id="mf-status" class="mf-status">Checking provider…</div>
+                <div id="mf-summary" class="mf-summary"></div>
+                <div id="mf-holdings" class="mf-holdings">
+                    <div class="gm-loading">No mutual fund holdings synced yet…</div>
+                </div>
+            </aside>
+            <section class="mf-stage">
+                <div id="mf-empty" class="mf-empty">
+                    Connect Zerodha in read-only mode to sync your funds, copy stock holdings into the shared watchlist, and compare each fund against the right benchmark.
+                </div>
+                <div id="mf-detail" class="mf-detail" hidden>
+                    <div id="mf-hero" class="mf-hero"></div>
+                    <div class="mf-control-block">
+                        <div class="mf-control-label">Suggested Benchmarks</div>
+                        <div id="mf-benchmarks" class="mf-chip-row"></div>
+                    </div>
+                    <div class="mf-control-block">
+                        <div class="mf-control-label">Compare Range</div>
+                        <div id="mf-ranges" class="mf-chip-row"></div>
+                    </div>
+                    <div id="mf-stats" class="mf-stats"></div>
+                    <div class="mf-chart-shell">
+                        <div class="mf-chart-head">
+                            <span id="mf-chart-title" class="mf-chart-title"></span>
+                            <span id="mf-chart-note" class="mf-chart-note"></span>
+                        </div>
+                        <div id="mf-chart" class="mf-chart"></div>
+                    </div>
+                </div>
+            </section>
         </div>
 
         <!-- ── News LLM queue (bottom-right) ─────────────────── -->
