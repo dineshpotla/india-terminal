@@ -32,6 +32,15 @@ _CATEGORY_BENCHMARKS = {
     "pharma": ["NIFTY PHARMA"],
 }
 
+_DIVERSIFIED_EQUITY_CATEGORIES = {
+    "flexicap",
+    "multicap",
+    "large_cap",
+    "midcap",
+    "smallcap",
+    "large_midcap",
+}
+
 _INDEX_NAME_CLEANUPS = {
     "NIFTY 50": "NIFTY 50",
     "NIFTY 100": "NIFTY 100",
@@ -138,6 +147,82 @@ def _range_options() -> List[dict]:
     ]
 
 
+def _query_category_hints(query_name: str) -> set[str]:
+    text = f" {query_name} "
+    hints: set[str] = set()
+    patterns = {
+        "flexicap": (" FLEXI CAP ", " FLEXICAP "),
+        "multicap": (" MULTI CAP ", " MULTICAP "),
+        "large_midcap": (" LARGE MID CAP ", " LARGE AND MID CAP ", " LARGE MIDCAP ", " LARGE MID "),
+        "large_cap": (" LARGE CAP ",),
+        "midcap": (" MID CAP ", " MIDCAP "),
+        "smallcap": (" SMALL CAP ", " SMALLCAP "),
+        "elss": (" ELSS ", " TAX SAVER ", " TAX SAVING "),
+        "banking": (" BANK ", " BANKING "),
+        "it": (" IT ", " TECHNOLOGY ", " TECH "),
+        "pharma": (" PHARMA ", " HEALTHCARE "),
+        "index": (" INDEX ", " ETF ", " NIFTY "),
+    }
+    for category, needles in patterns.items():
+        if any(needle in text for needle in needles):
+            hints.add(category)
+    return hints
+
+
+def _scheme_search_bucket(name: str, category: Optional[str], category_hints: set[str]) -> tuple:
+    text = _normalize_name(name)
+    is_direct = " DIRECT " in f" {text} "
+    is_growth = " GROWTH " in f" {text} " and " IDCW " not in f" {text} " and " DIVIDEND " not in f" {text} "
+    is_idcw = any(token in text for token in ("IDCW", "DIVIDEND", "MONTHLY", "DAILY", "WEEKLY", "QUARTERLY"))
+    debt_like = any(
+        token in text
+        for token in (
+            "LIQUID",
+            "GILT",
+            "OVERNIGHT",
+            "ARBITRAGE",
+            "ULTRA SHORT",
+            "LOW DURATION",
+            "MONEY MARKET",
+            "SHORT TERM",
+            "CORPORATE BOND",
+            "BANKING AND PSU",
+            "BANKING PSU",
+            "TREASURY",
+            "SAVINGS",
+            "CHILDREN",
+            "INCOME",
+            "DYNAMIC BOND",
+            "FLOATER",
+            "FLOATING RATE",
+        )
+    )
+    is_etf = " ETF " in f" {text} " or " EXCHANGE TRADED FUND " in text
+
+    if category_hints:
+        category_rank = 0 if category in category_hints else 1
+    elif category in _DIVERSIFIED_EQUITY_CATEGORIES:
+        category_rank = 0
+    elif category in {"elss", "banking", "it", "pharma", "index"}:
+        category_rank = 1
+    else:
+        category_rank = 2
+
+    debt_rank = 1 if debt_like else 0
+    etf_rank = 1 if is_etf else 0
+    idcw_rank = 1 if is_idcw else 0
+    direct_rank = 0 if is_direct else 1
+    growth_rank = 0 if is_growth else 1
+    return (
+        category_rank,
+        debt_rank,
+        etf_rank,
+        idcw_rank,
+        direct_rank,
+        growth_rank,
+    )
+
+
 class MutualFundsService:
     """Manual mutual-fund watchlist backed by AMFI and NSE data."""
 
@@ -151,17 +236,21 @@ class MutualFundsService:
         query_name = _normalize_name(raw_query)
         if len(query_name) < 2 and len(query_digits) < 2:
             return []
+        category_hints = _query_category_hints(query_name)
         master = self._amfi_master()
         matches = []
         for scheme in master.get("schemes") or []:
             name_key = scheme.get("normalized_name") or ""
+            scheme_name = scheme.get("name") or ""
             code = scheme.get("scheme_code") or ""
+            category = _infer_category(scheme_name)
             if query_digits and code.startswith(query_digits):
                 score = (0 if code == query_digits else 1, len(scheme.get("name") or ""))
             elif query_name and query_name in name_key:
                 starts = 0 if name_key.startswith(query_name) else 1
                 word_hit = 0 if any(part.startswith(query_name) for part in name_key.split()) else 1
-                score = (2, starts, word_hit, len(scheme.get("name") or ""))
+                bucket = _scheme_search_bucket(scheme_name, category, category_hints)
+                score = (2, starts, word_hit, *bucket, len(scheme_name))
             else:
                 continue
             matches.append((score, scheme))

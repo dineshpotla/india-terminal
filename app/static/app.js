@@ -320,7 +320,9 @@
     }
 
     function activeNewsRequestTab() {
-        return currentNewsTab === "watchlist" ? "watchlist" : "all";
+        if (currentNewsTab === "watchlist") return "watchlist";
+        if (currentNewsTab === "breaking") return "breaking";
+        return "all";
     }
 
     function clearNewsRetry(tab) {
@@ -849,6 +851,7 @@
 
     function activeNewsEnvelope() {
         if (currentNewsTab === "watchlist") return panelState.news.watchlist;
+        if (currentNewsTab === "breaking") return panelState.news.breaking || panelState.news.all;
         return panelState.news.all;
     }
 
@@ -1825,7 +1828,7 @@
                 else renderCurrentNews();
                 return;
             }
-            if (shouldRefreshNewsPanel("all", 60000)) loadNewsPanel("all");
+            if (shouldRefreshNewsPanel(activeNewsRequestTab(), 60000)) loadNewsPanel(activeNewsRequestTab());
             else renderCurrentNews();
         });
     });
@@ -2157,9 +2160,25 @@
         handleResize();
     }
 
+    function ensureWSConnection() {
+        if (document.hidden) return;
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+        connectWS();
+    }
+
+    function disconnectWS() {
+        if (!ws) return;
+        try {
+            ws.onclose = null;
+            ws.close();
+        } catch (err) {}
+        ws = null;
+    }
+
     // ── WebSocket ──────────────────────────────────────────────────────
 
     function connectWS() {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
         var proto = location.protocol === "https:" ? "wss" : "ws";
         ws = new WebSocket(proto + "://" + location.host + "/ws");
 
@@ -2183,17 +2202,25 @@
                     updateGlobalStatus(msg.global_streaming, msg.last_global_update, msg.global_futures || []);
                     if (currentView === "global") renderGlobalMarkets(msg.global_futures);
                 } else if (msg.type === "news" && msg.news) {
-                    if (dashboardData) {
-                        dashboardData.news = msg.news;
-                        if (msg.news_llm_pending !== undefined) {
-                            dashboardData.news_llm_pending = msg.news_llm_pending;
-                        }
-                        if (msg.news_llm_enabled !== undefined) {
-                            dashboardData.news_llm_enabled = msg.news_llm_enabled;
-                        }
-                    }
-                    updateNewsLlmState(msg);
-                    renderNews(msg.news, true);
+                    var liveNews = {
+                        items: msg.news || [],
+                        as_of: new Date().toISOString(),
+                        stale: false,
+                        refreshing: false,
+                        news_llm_pending: msg.news_llm_pending,
+                        news_llm_enabled: msg.news_llm_enabled,
+                    };
+                    applyNewsPanel("all", liveNews, { skipCache: true, isLiveUpdate: true });
+                    applyNewsPanel("breaking", {
+                        items: (msg.news || []).filter(function (n) {
+                            return n.breaking && !n.stock_event && !n.company_specific && n.india_market_impact;
+                        }),
+                        as_of: liveNews.as_of,
+                        stale: false,
+                        refreshing: false,
+                        news_llm_pending: msg.news_llm_pending,
+                        news_llm_enabled: msg.news_llm_enabled,
+                    }, { skipCache: true, isLiveUpdate: true });
                 } else if (msg.type === "llm_queue") {
                     if (dashboardData) {
                         if (msg.news_llm_pending !== undefined) {
@@ -2209,11 +2236,15 @@
         };
 
         ws.onclose = function () {
+            ws = null;
+            if (document.hidden) return;
             console.log("[WS] Disconnected \u2014 reconnecting in 3s");
-            setTimeout(connectWS, 3000);
+            setTimeout(ensureWSConnection, 3000);
         };
 
-        ws.onerror = function () { ws.close(); };
+        ws.onerror = function () {
+            try { ws.close(); } catch (err) {}
+        };
     }
 
     // ── Initial Load ───────────────────────────────────────────────────
@@ -2224,6 +2255,7 @@
             loadLocalPanelCaches();
             await loadBootstrap();
             await loadOverviewPanel();
+            ensureWSConnection();
             if (isNewsVisible()) await loadNewsPanel(activeNewsRequestTab());
             if (isWatchlistVisible()) await hydrateWatchlistStocks({ force: true });
             if (currentView === "global") await loadGlobalPanel();
@@ -2439,6 +2471,7 @@
     // Pull the shared watchlist again when the tab becomes active so other
     // browsers/devices stay in sync without a full reload.
     window.addEventListener("focus", function () {
+        ensureWSConnection();
         loadWatchlist();
         if (currentView === "investing") loadOverviewPanel();
         if (isWatchlistVisible()) hydrateWatchlistStocks({ staleMs: 30000 });
@@ -2448,12 +2481,15 @@
     });
     document.addEventListener("visibilitychange", function () {
         if (!document.hidden) {
+            ensureWSConnection();
             loadWatchlist();
             if (currentView === "investing") loadOverviewPanel();
             if (isWatchlistVisible()) hydrateWatchlistStocks({ staleMs: 30000 });
             if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
             if (currentView === "global") loadGlobalPanel();
             if (currentView === "mutual") loadMutualWatchlist();
+        } else {
+            disconnectWS();
         }
     });
     setInterval(function () {
@@ -2463,7 +2499,7 @@
     }, 60000);
     setInterval(function () {
         if (!document.hidden && isNewsVisible() && currentNewsTab !== "watchlist") {
-            loadNewsPanel("all");
+            loadNewsPanel(activeNewsRequestTab());
         }
     }, 60000);
     setInterval(function () {
