@@ -679,6 +679,14 @@ WATCHLIST_PANEL_REFRESH_SYMBOL_CAP = max(
     1,
     min(8, int(os.getenv("WATCHLIST_PANEL_REFRESH_SYMBOL_CAP", "3" if IS_RENDER else "5"))),
 )
+WATCHLIST_PANEL_SPARSE_TARGET_ITEMS = max(
+    1,
+    min(8, int(os.getenv("WATCHLIST_PANEL_SPARSE_TARGET_ITEMS", "3"))),
+)
+WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP = max(
+    WATCHLIST_PANEL_REFRESH_SYMBOL_CAP,
+    min(12, int(os.getenv("WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP", "6" if IS_RENDER else "8"))),
+)
 LLM_CACHE_SIZE = 500
 
 _LLM_SYSTEM = (
@@ -2250,7 +2258,7 @@ class DataEngine:
                 changed_items.extend(new_items)
         return changed_items
 
-    def _refresh_watchlist_news_sync(self, symbols: List[str]) -> List[dict]:
+    def _refresh_watchlist_news_sync(self, symbols: List[str], limit: Optional[int] = None) -> List[dict]:
         unique_symbols = []
         seen = set()
         for raw in symbols:
@@ -2267,7 +2275,8 @@ class DataEngine:
             key=lambda sym: self._watchlist_news_refresh_at.get(sym, 0),
         )
         changed: List[dict] = []
-        for sym in ranked[:WATCHLIST_PANEL_REFRESH_SYMBOL_CAP]:
+        max_symbols = max(1, min(len(ranked), int(limit or WATCHLIST_PANEL_REFRESH_SYMBOL_CAP)))
+        for sym in ranked[:max_symbols]:
             self._watchlist_news_refresh_at[sym] = now_ts
             try:
                 items = self._search_stock_news(sym)
@@ -2289,6 +2298,15 @@ class DataEngine:
                 for item in self._news
                 if any(sym in wl_set for sym in (item.get("watchlist_stocks") or item.get("keyword_stocks") or []))
             ]
+        filtered: List[dict] = []
+        for item in items:
+            explicit = [sym for sym in (item.get("watchlist_stocks") or []) if sym in wl_set]
+            if explicit:
+                filtered.append(item)
+                continue
+            if item.get("market_relevant") or item.get("company_specific") or item.get("india_market_impact"):
+                filtered.append(item)
+        items = filtered
         items.sort(key=lambda item: item.get("age_secs", 999999))
         return items[:80]
 
@@ -4109,7 +4127,11 @@ class DataEngine:
             self._fetch_all_news()
         if normalized_tab == "watchlist":
             symbols = [sym.upper() for sym in (watchlist_symbols or []) if sym]
-            self._refresh_watchlist_news_sync(symbols)
+            current_items = self._current_watchlist_news_items(symbols)
+            refresh_limit = WATCHLIST_PANEL_REFRESH_SYMBOL_CAP
+            if len(current_items) < WATCHLIST_PANEL_SPARSE_TARGET_ITEMS:
+                refresh_limit = min(len(symbols), WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP)
+            self._refresh_watchlist_news_sync(symbols, limit=refresh_limit)
             return {
                 "items": self._current_watchlist_news_items(symbols),
                 "watchlist_hash": self.watchlist_hash(symbols),
