@@ -998,6 +998,7 @@ body {
     flex: 1;
     display: none;
     flex-direction: column;
+    gap: 12px;
     overflow-y: auto;
     padding: 10px 16px 16px;
     scrollbar-width: thin;
@@ -1056,6 +1057,159 @@ body {
     font-size: 9px;
     color: var(--text-dim);
     font-family: var(--font-mono);
+}
+
+.gm-heatmap-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background:
+        radial-gradient(circle at 16% 18%, rgba(255,140,0,.10), transparent 26%),
+        radial-gradient(circle at 84% 12%, rgba(56,189,248,.08), transparent 28%),
+        linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015)),
+        var(--bg-panel);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+
+.gm-heatmap-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.gm-heatmap-kicker {
+    font-family: var(--font-head);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    color: var(--amber);
+}
+
+.gm-heatmap-title {
+    margin-top: 4px;
+    font-family: var(--font-head);
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: .8px;
+    color: var(--text-primary);
+}
+
+.gm-heatmap-legend {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.gm-heatmap-legend-label,
+.gm-heatmap-legend-text {
+    font-size: 9px;
+    font-family: var(--font-data);
+    color: var(--text-dim);
+}
+
+.gm-heatmap-legend-swatch {
+    width: 16px;
+    height: 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,.12);
+}
+
+.gm-heatmap-legend-swatch.is-down {
+    background: rgba(239, 68, 68, 0.58);
+}
+
+.gm-heatmap-legend-swatch.is-flat {
+    background: rgba(125, 211, 252, 0.16);
+}
+
+.gm-heatmap-legend-swatch.is-up {
+    background: rgba(34, 197, 94, 0.58);
+}
+
+.gm-heatmap {
+    position: relative;
+    min-height: 360px;
+    border-radius: 12px;
+    overflow: hidden;
+    background:
+        linear-gradient(180deg, rgba(10,14,24,.72), rgba(8,12,20,.92)),
+        radial-gradient(circle at center, rgba(125, 211, 252, 0.04), transparent 70%);
+    border: 1px solid rgba(255,255,255,.05);
+}
+
+.gm-map-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.gm-map-bg {
+    fill: rgba(7, 11, 19, 0.22);
+}
+
+.gm-map-backdrop {
+    fill: rgba(151, 163, 178, 0.08);
+    stroke: rgba(255,255,255,0.06);
+    stroke-width: 2;
+}
+
+.gm-map-meridians path {
+    fill: none;
+    stroke: rgba(255,255,255,0.05);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 14;
+}
+
+.gm-country {
+    cursor: default;
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform .16s ease;
+}
+
+.gm-country:hover,
+.gm-country:focus {
+    transform: translateY(-2px) scale(1.015);
+    outline: none;
+}
+
+.gm-country-shape {
+    stroke-width: 2;
+    transition: stroke-width .16s ease, fill .16s ease;
+}
+
+.gm-country.is-open .gm-country-shape {
+    stroke-width: 2.8;
+}
+
+.gm-country-label,
+.gm-country-pct {
+    pointer-events: none;
+    user-select: none;
+    font-family: var(--font-head);
+}
+
+.gm-country-label {
+    fill: rgba(255,255,255,.72);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}
+
+.gm-country-pct {
+    fill: var(--text-primary);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: .4px;
 }
 
 .gm-loading {
@@ -2472,6 +2626,36 @@ td.oc-pe span {
     .gm-grid {
         grid-template-columns: 1fr;
         gap: 8px;
+    }
+
+    .gm-heatmap-shell {
+        padding: 12px;
+        gap: 10px;
+    }
+
+    .gm-heatmap-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .gm-heatmap-title {
+        font-size: 18px;
+    }
+
+    .gm-heatmap-legend {
+        justify-content: flex-start;
+    }
+
+    .gm-heatmap {
+        min-height: 280px;
+    }
+
+    .gm-country-label {
+        font-size: 8px;
+    }
+
+    .gm-country-pct {
+        font-size: 13px;
     }
 
     .gm-table { font-size: 10px; }

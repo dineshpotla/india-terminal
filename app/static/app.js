@@ -73,6 +73,7 @@
     const $gmGrid      = $("gm-grid");
     const $gmStatus    = $("gm-status");
     const $gmUpdated   = $("gm-updated");
+    const $gmHeatmap   = $("gm-heatmap");
     const $mfInput     = $("mf-input");
     const $mfSuggest   = $("mf-suggest");
     const $mfStatus    = $("mf-status");
@@ -98,6 +99,132 @@
     const $giftPct     = $("gift-pct");
     const $newsLlmStack = $("news-llm-stack");
     const $newsLlmCount = $("news-llm-stack-count");
+
+    const GM_HEATMAP_BACKDROP = [
+        "M70 150 L145 120 L235 118 L315 145 L365 205 L345 258 L280 300 L205 320 L130 298 L86 235 Z",
+        "M288 342 L332 388 L354 446 L334 520 L305 556 L276 530 L286 456 L264 398 Z",
+        "M382 86 L448 78 L495 116 L468 170 L408 160 L372 118 Z",
+        "M586 170 L646 158 L696 182 L712 222 L678 246 L630 240 L594 206 Z",
+        "M614 258 L680 258 L728 322 L708 428 L652 508 L598 460 L580 356 Z",
+        "M702 146 L860 134 L1038 160 L1126 224 L1114 318 L1044 372 L942 354 L882 306 L820 314 L762 278 L728 236 Z",
+        "M988 410 L1064 414 L1126 450 L1112 516 L1034 520 L978 476 Z",
+    ];
+
+    const GM_HEATMAP_SPECS = [
+        {
+            key: "usa",
+            label: "USA",
+            source: "US composite",
+            names: ["S&P 500", "NASDAQ", "DOW JONES", "RUSSELL 2000"],
+            mode: "average",
+            path: "M118 214 L142 190 L192 182 L252 188 L286 208 L294 230 L258 242 L222 246 L188 262 L145 256 L120 238 Z",
+            labelX: 205, labelY: 212, pctX: 205, pctY: 234, metaX: 205, metaY: 252,
+        },
+        {
+            key: "uk",
+            label: "UK",
+            source: "FTSE 100",
+            names: ["FTSE 100"],
+            path: "M622 188 L640 184 L650 196 L646 214 L628 220 L618 205 Z",
+            labelX: 634, labelY: 194, pctX: 634, pctY: 209, metaX: 634, metaY: 224,
+        },
+        {
+            key: "france",
+            label: "FRANCE",
+            source: "CAC 40",
+            names: ["CAC 40"],
+            path: "M646 224 L670 216 L684 232 L678 254 L652 260 L638 242 Z",
+            labelX: 661, labelY: 229, pctX: 661, pctY: 245, metaX: 661, metaY: 260,
+        },
+        {
+            key: "germany",
+            label: "GERMANY",
+            source: "DAX",
+            names: ["DAX"],
+            path: "M684 200 L708 198 L720 214 L716 238 L694 246 L680 226 Z",
+            labelX: 700, labelY: 205, pctX: 700, pctY: 221, metaX: 700, metaY: 236,
+        },
+        {
+            key: "eurozone",
+            label: "EUROZONE",
+            source: "EURO STOXX 50",
+            names: ["EURO STOXX 50"],
+            path: "M724 214 L752 210 L770 222 L766 244 L740 252 L718 238 Z",
+            labelX: 744, labelY: 219, pctX: 744, pctY: 235, metaX: 744, metaY: 250,
+        },
+        {
+            key: "india",
+            label: "INDIA",
+            source: "GIFT NIFTY",
+            names: ["GIFT NIFTY"],
+            path: "M872 302 L902 296 L922 314 L916 344 L892 362 L870 344 Z",
+            labelX: 894, labelY: 308, pctX: 894, pctY: 327, metaX: 894, metaY: 346,
+        },
+        {
+            key: "china",
+            label: "CHINA",
+            source: "SHANGHAI",
+            names: ["SHANGHAI"],
+            path: "M930 230 L990 220 L1046 232 L1062 266 L1032 292 L972 298 L930 278 Z",
+            labelX: 986, labelY: 240, pctX: 986, pctY: 262, metaX: 986, metaY: 281,
+        },
+        {
+            key: "hongkong",
+            label: "HK",
+            source: "HANG SENG",
+            names: ["HANG SENG"],
+            path: "M978 286 L998 282 L1008 292 L1002 310 L982 312 L972 298 Z",
+            labelX: 990, labelY: 290, pctX: 990, pctY: 305, metaX: 990, metaY: 320,
+        },
+        {
+            key: "korea",
+            label: "KOREA",
+            source: "KOSPI",
+            names: ["KOSPI"],
+            path: "M1028 244 L1050 240 L1060 258 L1054 282 L1032 286 L1020 264 Z",
+            labelX: 1040, labelY: 249, pctX: 1040, pctY: 267, metaX: 1040, metaY: 284,
+        },
+        {
+            key: "taiwan",
+            label: "TAIWAN",
+            source: "TAIWAN",
+            names: ["TAIWAN"],
+            path: "M1046 292 L1066 288 L1074 304 L1068 326 L1050 330 L1042 312 Z",
+            labelX: 1058, labelY: 297, pctX: 1058, pctY: 315, metaX: 1058, metaY: 332,
+        },
+        {
+            key: "japan",
+            label: "JAPAN",
+            source: "NIKKEI 225",
+            names: ["NIKKEI 225"],
+            path: "M1082 220 L1100 208 L1118 216 L1114 236 L1122 252 L1110 270 L1092 266 L1094 246 L1086 234 Z",
+            labelX: 1102, labelY: 222, pctX: 1102, pctY: 241, metaX: 1102, metaY: 260,
+        },
+        {
+            key: "singapore",
+            label: "SG",
+            source: "STRAITS TIMES",
+            names: ["STRAITS TIMES"],
+            path: "M952 360 L976 358 L986 368 L978 384 L954 386 L944 372 Z",
+            labelX: 965, labelY: 365, pctX: 965, pctY: 379, metaX: 965, metaY: 394,
+        },
+        {
+            key: "thailand",
+            label: "THAILAND",
+            source: "SET COMPOSITE",
+            names: ["SET COMPOSITE"],
+            path: "M932 322 L958 314 L976 328 L972 350 L946 356 L928 340 Z",
+            labelX: 951, labelY: 327, pctX: 951, pctY: 344, metaX: 951, metaY: 360,
+        },
+        {
+            key: "indonesia",
+            label: "INDONESIA",
+            source: "JAKARTA",
+            names: ["JAKARTA"],
+            path: "M978 390 L1038 388 L1060 398 L1048 416 L988 418 L972 404 Z",
+            labelX: 1016, labelY: 394, pctX: 1016, pctY: 409, metaX: 1016, metaY: 425,
+        },
+    ];
 
     // ── Price change tracking (orderbook-style flash) ──────────────────
 
@@ -682,6 +809,123 @@
         return changeText + " (" + pctText + ")";
     }
 
+    function globalHeatTone(pct) {
+        var value = Number(pct);
+        if (!isFinite(value)) {
+            return {
+                fill: "rgba(120, 136, 158, 0.18)",
+                stroke: "rgba(148, 163, 184, 0.28)",
+                text: "#98a7bb",
+                shadow: "rgba(15, 23, 42, 0.08)",
+            };
+        }
+        var strength = Math.min(Math.abs(value), 2.5) / 2.5;
+        if (value > 0) {
+            return {
+                fill: "rgba(35, 197, 94, " + (0.20 + strength * 0.58).toFixed(3) + ")",
+                stroke: "rgba(110, 231, 183, " + (0.34 + strength * 0.36).toFixed(3) + ")",
+                text: "#f3fff7",
+                shadow: "rgba(34, 197, 94, " + (0.10 + strength * 0.28).toFixed(3) + ")",
+            };
+        }
+        if (value < 0) {
+            return {
+                fill: "rgba(239, 68, 68, " + (0.20 + strength * 0.58).toFixed(3) + ")",
+                stroke: "rgba(252, 165, 165, " + (0.34 + strength * 0.34).toFixed(3) + ")",
+                text: "#fff5f5",
+                shadow: "rgba(239, 68, 68, " + (0.10 + strength * 0.28).toFixed(3) + ")",
+            };
+        }
+        return {
+            fill: "rgba(96, 165, 250, 0.12)",
+            stroke: "rgba(125, 211, 252, 0.24)",
+            text: "#d6deea",
+            shadow: "rgba(59, 130, 246, 0.08)",
+        };
+    }
+
+    function buildGlobalHeatmapEntries(futures) {
+        var byName = {};
+        (futures || []).forEach(function (row) {
+            byName[row.name] = row;
+        });
+        return GM_HEATMAP_SPECS.map(function (spec) {
+            var rows = (spec.names || []).map(function (name) { return byName[name]; }).filter(Boolean);
+            var primary = rows[0] || null;
+            var pct = null;
+            if (rows.length) {
+                if (spec.mode === "average" && rows.length > 1) {
+                    var total = rows.reduce(function (sum, row) {
+                        return sum + (isFinite(Number(row.change_pct)) ? Number(row.change_pct) : 0);
+                    }, 0);
+                    pct = total / rows.length;
+                } else {
+                    pct = Number(primary.change_pct);
+                }
+                if (!isFinite(pct)) pct = null;
+            }
+            var anyOpen = rows.some(function (row) { return row.session_status === "OPEN"; });
+            var anyHoliday = rows.some(function (row) { return row.session_status === "HOLIDAY"; });
+            return {
+                spec: spec,
+                rows: rows,
+                primary: primary,
+                pct: pct,
+                status: anyOpen ? "OPEN" : (anyHoliday ? "HOLIDAY" : (primary ? primary.session_status : "UNKNOWN")),
+            };
+        });
+    }
+
+    function renderGlobalHeatmap(futures) {
+        if (!$gmHeatmap) return;
+        clearChildren($gmHeatmap);
+        if (!futures || !futures.length) {
+            $gmHeatmap.appendChild(el("div", "gm-loading", "Building country heatmap…"));
+            return;
+        }
+
+        var entries = buildGlobalHeatmapEntries(futures);
+        var svgMarkup = [
+            '<svg class="gm-map-svg" viewBox="0 0 1200 560" role="img" aria-label="Live global markets heatmap">',
+            '<defs>',
+            '<filter id="gmCountryGlow" x="-30%" y="-30%" width="160%" height="160%">',
+            '<feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="rgba(0,0,0,.24)" />',
+            '</filter>',
+            '</defs>',
+            '<rect class="gm-map-bg" x="0" y="0" width="1200" height="560" rx="24" ry="24"></rect>',
+            GM_HEATMAP_BACKDROP.map(function (path) {
+                return '<path class="gm-map-backdrop" d="' + path + '"></path>';
+            }).join(""),
+            '<g class="gm-map-meridians">',
+            '<path d="M150 80 C245 150 250 395 172 498"></path>',
+            '<path d="M350 58 C430 152 435 392 368 514"></path>',
+            '<path d="M570 52 C630 148 640 392 594 520"></path>',
+            '<path d="M780 64 C840 160 852 392 814 506"></path>',
+            '<path d="M990 84 C1038 178 1052 378 1030 474"></path>',
+            '</g>',
+        ];
+
+        entries.forEach(function (entry) {
+            var spec = entry.spec;
+            var tone = globalHeatTone(entry.pct);
+            var pctText = entry.pct == null ? "\u2014" : fmtPct(entry.pct);
+            var title = spec.label + " \u00b7 " + spec.source + " \u00b7 " + pctText;
+            if (entry.status === "OPEN") title += " \u00b7 open";
+            else if (entry.status === "HOLIDAY") title += " \u00b7 holiday";
+            svgMarkup.push(
+                '<g class="gm-country' + (entry.status === "OPEN" ? ' is-open' : '') + '" tabindex="0">',
+                '<title>' + title + '</title>',
+                '<path class="gm-country-shape" d="' + spec.path + '" fill="' + tone.fill + '" stroke="' + tone.stroke + '" filter="url(#gmCountryGlow)" style="--gm-country-shadow:' + tone.shadow + ';"></path>',
+                '<text class="gm-country-label" x="' + spec.labelX + '" y="' + spec.labelY + '" text-anchor="middle">' + spec.label + '</text>',
+                '<text class="gm-country-pct" x="' + spec.pctX + '" y="' + spec.pctY + '" text-anchor="middle" fill="' + tone.text + '">' + pctText + '</text>',
+                '</g>'
+            );
+        });
+
+        svgMarkup.push("</svg>");
+        $gmHeatmap.innerHTML = svgMarkup.join("");
+    }
+
     function summarizeGlobalSessions(futures) {
         var summary = { open: 0, closed: 0, holiday: 0 };
         (futures || []).forEach(function (f) {
@@ -716,6 +960,7 @@
     }
 
     function renderGlobalMarkets(futures) {
+        renderGlobalHeatmap(futures);
         clearChildren($gmGrid);
         if (!futures || !futures.length) {
             $gmGrid.appendChild(el("div", "gm-loading", "Fetching global markets…"));
