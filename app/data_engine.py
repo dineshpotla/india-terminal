@@ -667,6 +667,10 @@ WATCHLIST_ARTICLE_TIMEOUT_SECS = max(
     4,
     min(20, int(os.getenv("WATCHLIST_ARTICLE_TIMEOUT_SECS", "10" if IS_RENDER else "12"))),
 )
+WATCHLIST_LLM_TIMEOUT_SECS = max(
+    6,
+    min(20, int(os.getenv("WATCHLIST_LLM_TIMEOUT_SECS", "12" if IS_RENDER else "20"))),
+)
 WATCHLIST_ARTICLE_BODY_MAX_CHARS = max(
     1000,
     min(20000, int(os.getenv("WATCHLIST_ARTICLE_BODY_MAX_CHARS", "8000"))),
@@ -2022,7 +2026,7 @@ class DataEngine:
                     0.1,
                     900,
                 ),
-                timeout=35,
+                timeout=WATCHLIST_LLM_TIMEOUT_SECS,
             )
             if r.status_code != 200:
                 return None
@@ -2164,6 +2168,9 @@ class DataEngine:
                     seen_titles.add(title_key)
                     summary = entry.get("summary", "").strip()[:300]
                     tags = self._classify_news(title, summary)
+                    if not self._watchlist_candidate_mentions_target(symbol, short_name or company_name, title, summary):
+                        if tags.get("stock_event") or len(tags.get("keyword_stocks") or []) >= 3:
+                            continue
                     analyzed += 1
                     analysis = self._analyze_watchlist_candidate(symbol, company_name, title, summary, entry.get("link", ""), tags)
                     if not analysis.get("important"):
@@ -2220,6 +2227,37 @@ class DataEngine:
 
         print(f"[WL Search] {symbol}: kept {len(results)} of {analyzed} analyzed candidate(s)")
         return results
+
+    @staticmethod
+    def _watchlist_candidate_mentions_target(
+        symbol: str,
+        company_name: str,
+        title: str,
+        summary: str,
+    ) -> bool:
+        combined = f"{title or ''} {summary or ''}".lower()
+        symbol_token = (symbol or "").strip().lower()
+        if symbol_token and symbol_token in combined:
+            return True
+        base_name = (company_name or "").strip().lower()
+        if not base_name:
+            return False
+        cleaned = (
+            base_name.replace(" limited", "")
+            .replace(" ltd.", "")
+            .replace(" ltd", "")
+            .replace(" limited.", "")
+            .strip()
+        )
+        if cleaned and cleaned in combined:
+            return True
+        parts = [part for part in re.split(r"[^a-z0-9&]+", cleaned) if len(part) >= 4]
+        if not parts:
+            return False
+        leading_phrase = " ".join(parts[:2]).strip()
+        if leading_phrase and leading_phrase in combined:
+            return True
+        return sum(1 for part in parts[:3] if part in combined) >= 2
 
     def _merge_watchlist_news_items(self, symbol: str, items: List[dict]) -> List[dict]:
         if not items:
