@@ -19,7 +19,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 import threading
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
@@ -686,6 +686,10 @@ WATCHLIST_PANEL_SPARSE_TARGET_ITEMS = max(
 WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP = max(
     WATCHLIST_PANEL_REFRESH_SYMBOL_CAP,
     min(12, int(os.getenv("WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP", "6" if IS_RENDER else "8"))),
+)
+WATCHLIST_PANEL_DEEP_REFRESH_SYMBOL_CAP = max(
+    WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP,
+    min(24, int(os.getenv("WATCHLIST_PANEL_DEEP_REFRESH_SYMBOL_CAP", "12" if IS_RENDER else "16"))),
 )
 LLM_CACHE_SIZE = 500
 
@@ -2258,26 +2262,23 @@ class DataEngine:
                 changed_items.extend(new_items)
         return changed_items
 
-    def _refresh_watchlist_news_sync(self, symbols: List[str], limit: Optional[int] = None) -> List[dict]:
-        unique_symbols = []
-        seen = set()
-        for raw in symbols:
-            sym = (raw or "").strip().upper()
-            if not sym or sym in seen or not self.is_known_equity(sym):
-                continue
-            seen.add(sym)
-            unique_symbols.append(sym)
+    def _refresh_watchlist_news_sync(
+        self,
+        symbols: List[str],
+        limit: Optional[int] = None,
+        skip_symbols: Optional[Set[str]] = None,
+    ) -> Tuple[List[dict], List[str]]:
+        unique_symbols = self._normalize_watchlist_symbols(symbols)
         if not unique_symbols:
-            return []
+            return [], []
         now_ts = time.time()
-        ranked = sorted(
-            unique_symbols,
-            key=lambda sym: self._watchlist_news_refresh_at.get(sym, 0),
-        )
+        ranked = self._rank_watchlist_refresh_symbols(unique_symbols, skip_symbols)
         changed: List[dict] = []
+        refreshed_symbols: List[str] = []
         max_symbols = max(1, min(len(ranked), int(limit or WATCHLIST_PANEL_REFRESH_SYMBOL_CAP)))
         for sym in ranked[:max_symbols]:
             self._watchlist_news_refresh_at[sym] = now_ts
+            refreshed_symbols.append(sym)
             try:
                 items = self._search_stock_news(sym)
             except Exception:
@@ -2286,7 +2287,81 @@ class DataEngine:
             changed.extend(self._merge_watchlist_news_items(sym, items))
         if changed:
             self._push_llm_stack(changed)
-        return changed
+        return changed, refreshed_symbols
+
+    def _normalize_watchlist_symbols(self, symbols: List[str]) -> List[str]:
+        unique_symbols = []
+        seen = set()
+        for raw in symbols:
+            sym = (raw or "").strip().upper()
+            if not sym or sym in seen or not self.is_known_equity(sym):
+                continue
+            seen.add(sym)
+            unique_symbols.append(sym)
+        return unique_symbols
+
+    def _watchlist_direct_hit_symbols(self, symbols: List[str]) -> Set[str]:
+        wl_set = {sym.upper() for sym in symbols if sym}
+        if not wl_set:
+            return set()
+        recent_cutoff = time.time() - 12 * 60 * 60
+        direct_hits: Set[str] = set()
+        with self._news_lock:
+            for item in self._news:
+                age_secs = int(item.get("age_secs", 999999) or 999999)
+                injected_at = float(item.get("watchlist_injected_at", 0) or 0)
+                if age_secs > 12 * 60 * 60 and injected_at and injected_at < recent_cutoff:
+                    continue
+                for sym in item.get("watchlist_stocks", []) or []:
+                    if sym in wl_set:
+                        direct_hits.add(sym)
+        return direct_hits
+
+    def _rank_watchlist_refresh_symbols(
+        self,
+        symbols: List[str],
+        skip_symbols: Optional[Set[str]] = None,
+    ) -> List[str]:
+        unique_symbols = self._normalize_watchlist_symbols(symbols)
+        if skip_symbols:
+            unique_symbols = [sym for sym in unique_symbols if sym not in skip_symbols]
+        if not unique_symbols:
+            return []
+        direct_hits = self._watchlist_direct_hit_symbols(unique_symbols)
+        watchlist_order = {sym: idx for idx, sym in enumerate(unique_symbols)}
+        return sorted(
+            unique_symbols,
+            key=lambda sym: (
+                1 if sym in direct_hits else 0,
+                self._watchlist_news_refresh_at.get(sym, 0),
+                watchlist_order.get(sym, 0),
+            ),
+        )
+
+    @staticmethod
+    def _watchlist_item_sort_key(
+        item: dict,
+        wl_set: Set[str],
+    ) -> Tuple[int, int, int, int, int, int, int, int, int, float]:
+        explicit_matches = [sym for sym in (item.get("watchlist_stocks") or []) if sym in wl_set]
+        keyword_matches = [sym for sym in (item.get("keyword_stocks") or []) if sym in wl_set]
+        keyword_stock_count = len(item.get("keyword_stocks") or [])
+        keyword_only_stock_event = bool(not explicit_matches and item.get("stock_event"))
+        keyword_only_sector_basket = bool(not explicit_matches and keyword_stock_count >= 4)
+        age_secs = int(item.get("age_secs", 999999) or 999999)
+        injected_at = float(item.get("watchlist_injected_at", 0) or 0)
+        return (
+            0 if explicit_matches else 1,
+            0 if item.get("company_specific") else 1,
+            0 if item.get("market_relevant") else 1,
+            0 if item.get("india_market_impact") else 1,
+            1 if keyword_only_stock_event else 0,
+            1 if keyword_only_sector_basket else 0,
+            0 if item.get("is_fresh") else 1,
+            -(len(explicit_matches) or len(keyword_matches)),
+            age_secs,
+            -injected_at,
+        )
 
     def _current_watchlist_news_items(self, symbols: List[str]) -> List[dict]:
         wl_set = {sym.upper() for sym in symbols if sym}
@@ -2307,7 +2382,7 @@ class DataEngine:
             if item.get("market_relevant") or item.get("company_specific") or item.get("india_market_impact"):
                 filtered.append(item)
         items = filtered
-        items.sort(key=lambda item: item.get("age_secs", 999999))
+        items.sort(key=lambda item: self._watchlist_item_sort_key(item, wl_set))
         return items[:80]
 
     async def fetch_watchlist_stock_news(self, symbol: str):
@@ -4126,14 +4201,33 @@ class DataEngine:
         if not self._news:
             self._fetch_all_news()
         if normalized_tab == "watchlist":
-            symbols = [sym.upper() for sym in (watchlist_symbols or []) if sym]
+            symbols = self._normalize_watchlist_symbols(watchlist_symbols or [])
             current_items = self._current_watchlist_news_items(symbols)
             refresh_limit = WATCHLIST_PANEL_REFRESH_SYMBOL_CAP
+            refreshed_symbols: Set[str] = set()
             if len(current_items) < WATCHLIST_PANEL_SPARSE_TARGET_ITEMS:
                 refresh_limit = min(len(symbols), WATCHLIST_PANEL_SPARSE_REFRESH_SYMBOL_CAP)
-            self._refresh_watchlist_news_sync(symbols, limit=refresh_limit)
+            _, first_batch = self._refresh_watchlist_news_sync(symbols, limit=refresh_limit)
+            refreshed_symbols.update(first_batch)
+            current_items = self._current_watchlist_news_items(symbols)
+            if (
+                len(current_items) < WATCHLIST_PANEL_SPARSE_TARGET_ITEMS
+                and len(refreshed_symbols) < len(symbols)
+            ):
+                extra_limit = min(
+                    len(symbols) - len(refreshed_symbols),
+                    WATCHLIST_PANEL_DEEP_REFRESH_SYMBOL_CAP,
+                )
+                if extra_limit > 0:
+                    _, extra_batch = self._refresh_watchlist_news_sync(
+                        symbols,
+                        limit=extra_limit,
+                        skip_symbols=refreshed_symbols,
+                    )
+                    refreshed_symbols.update(extra_batch)
+                    current_items = self._current_watchlist_news_items(symbols)
             return {
-                "items": self._current_watchlist_news_items(symbols),
+                "items": current_items,
                 "watchlist_hash": self.watchlist_hash(symbols),
                 "news_llm_pending": self._llm_stack_pending_count(),
                 "news_llm_enabled": bool(NV_API_KEY),
