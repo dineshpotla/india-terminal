@@ -2144,7 +2144,7 @@ class DataEngine:
         for q in queries:
             url = f"https://news.google.com/rss/search?q={quote_plus(q)}&hl=en-IN&gl=IN&ceid=IN:en"
             try:
-                feed = feedparser.parse(url)
+                feed = self._load_feed(url)
                 for entry in feed.entries[:15]:
                     if analyzed >= WATCHLIST_NEWS_ANALYZE_LIMIT or len(results) >= WATCHLIST_NEWS_MAX_ITEMS:
                         break
