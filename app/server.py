@@ -31,11 +31,11 @@ OVERVIEW_TTL = 60.0
 OVERVIEW_STALE_TTL = 15 * 60.0
 GLOBAL_TTL = 60.0
 GLOBAL_STALE_TTL = 15 * 60.0
-NEWS_TTL = 180.0
+NEWS_TTL = 60.0
 NEWS_STALE_TTL = 30 * 60.0
 WATCHLIST_QUOTES_TTL = 60.0
 WATCHLIST_QUOTES_STALE_TTL = 10 * 60.0
-WATCHLIST_NEWS_TTL = 300.0
+WATCHLIST_NEWS_TTL = 120.0
 WATCHLIST_NEWS_STALE_TTL = 12 * 60 * 60.0
 
 engine = DataEngine()
@@ -231,6 +231,7 @@ async def bootstrap():
             "last_update": meta.get("last_update"),
             "time": _now_time_str(),
             "news_llm_enabled": meta.get("news_llm_enabled", False),
+            "news_llm_pending": meta.get("news_llm_pending", 0),
             "panels": cached,
         }
     )

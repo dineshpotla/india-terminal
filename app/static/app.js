@@ -14,6 +14,10 @@
     let dashboardData = null;
     let currentView = "investing";
     let watchlist = [];
+    let newsLlmState = {
+        news_llm_pending: undefined,
+        news_llm_enabled: undefined,
+    };
     let panelState = {
         bootstrap: null,
         overview: null,
@@ -30,6 +34,11 @@
     let watchlistLoadPromise = null;
     let lastWatchlistQuoteRefreshAt = 0;
     let watchlistQuotesLoadPromise = null;
+    let newsRetryTimers = {
+        all: null,
+        breaking: null,
+        watchlist: null,
+    };
 
     const $ = (id) => document.getElementById(id);
     const $clock       = $("clock");
@@ -156,6 +165,23 @@
             : pending + " headline(s) queued for AI classification";
     }
 
+    function updateNewsLlmState(data) {
+        if (!data) return;
+        var changed = false;
+        if (data.news_llm_enabled !== undefined) {
+            newsLlmState.news_llm_enabled = data.news_llm_enabled !== false;
+            changed = true;
+        }
+        if (data.news_llm_pending !== undefined) {
+            var pending = Number(data.news_llm_pending);
+            newsLlmState.news_llm_pending = isNaN(pending) || pending < 0 ? 0 : pending;
+            changed = true;
+        }
+        if (changed) {
+            renderNewsLlmStack(newsLlmState);
+        }
+    }
+
     // Show an immediate placeholder so the badge doesn't look "broken" while the
     // first dashboard fetch can take time (especially on serverless cold starts).
     if ($newsLlmStack && $newsLlmCount) {
@@ -206,6 +232,40 @@
                 : "imt_panel:" + kind;
             localStorage.removeItem(key);
         } catch (err) {}
+    }
+
+    function panelAgeMs(data) {
+        if (!data || !data.as_of) return Infinity;
+        var ts = Date.parse(data.as_of);
+        return isNaN(ts) ? Infinity : Math.max(0, Date.now() - ts);
+    }
+
+    function shouldRefreshNewsPanel(tab, maxAgeMs) {
+        var env = tab === "watchlist"
+            ? panelState.news.watchlist
+            : (tab === "breaking" ? panelState.news.breaking : panelState.news.all);
+        if (!env) return true;
+        if (env.refreshing) return false;
+        if (env.stale) return true;
+        return panelAgeMs(env) >= maxAgeMs;
+    }
+
+    function clearNewsRetry(tab) {
+        if (!newsRetryTimers[tab]) return;
+        clearTimeout(newsRetryTimers[tab]);
+        newsRetryTimers[tab] = null;
+    }
+
+    function scheduleNewsRetry(tab, delayMs) {
+        clearNewsRetry(tab);
+        newsRetryTimers[tab] = setTimeout(function () {
+            newsRetryTimers[tab] = null;
+            if (document.hidden || !isNewsVisible()) return;
+            if (tab === "watchlist" && currentNewsTab !== "watchlist") return;
+            if (tab === "breaking" && currentNewsTab !== "breaking") return;
+            if (tab === "all" && ["all", "india", "global", "gold_silver"].indexOf(currentNewsTab) === -1) return;
+            loadNewsPanel(tab);
+        }, delayMs);
     }
 
     async function fetchJson(url, opts) {
@@ -656,10 +716,7 @@
 
     function applyBootstrap(data) {
         panelState.bootstrap = data || null;
-        renderNewsLlmStack({
-            news_llm_enabled: data && data.news_llm_enabled,
-            news_llm_pending: panelState.news.all && panelState.news.all.news_llm_pending,
-        });
+        updateNewsLlmState(data);
     }
 
     function applyOverviewPanel(data, opts) {
@@ -714,13 +771,14 @@
     function renderCurrentNews(isLiveUpdate) {
         var env = activeNewsEnvelope();
         renderNews((env && env.items) || [], isLiveUpdate);
-        renderNewsLlmStack(env || panelState.news.all || panelState.news.watchlist || {});
+        renderNewsLlmStack(newsLlmState);
     }
 
     function applyNewsPanel(tab, data, opts) {
         opts = opts || {};
         if (!data) return;
         panelState.news[tab] = data;
+        updateNewsLlmState(data);
         if (!opts.skipCache) {
             if (tab === "all") savePanelCache("news:all", data);
             else if (tab === "breaking") savePanelCache("news:breaking", data);
@@ -732,8 +790,6 @@
             || (tab === "watchlist" && currentNewsTab === "watchlist")
         ) {
             renderCurrentNews(opts.isLiveUpdate);
-        } else {
-            renderNewsLlmStack(data);
         }
     }
 
@@ -814,11 +870,16 @@
     async function loadNewsPanel(tab) {
         var normalized = tab === "watchlist" ? "watchlist" : (tab === "breaking" ? "breaking" : "all");
         try {
-            var data = await fetchJson("/api/panel/news?tab=" + encodeURIComponent(normalized));
+            var data = await fetchJson("/api/panel/news?tab=" + encodeURIComponent(normalized), {
+                timeoutMs: normalized === "watchlist" ? 18000 : 12000,
+            });
             applyNewsPanel(normalized, data);
+            if (data && data.refreshing) scheduleNewsRetry(normalized, 5000);
+            else clearNewsRetry(normalized);
             return data;
         } catch (err) {
             console.error("News fetch error:", normalized, err);
+            clearNewsRetry(normalized);
             return panelState.news[normalized];
         }
     }
@@ -1053,15 +1114,16 @@
             tab.classList.add("active");
             currentNewsTab = tab.dataset.news;
             if (currentNewsTab === "watchlist") {
-                requestWatchlistBackfill();
-                return;
-            }
-            if (currentNewsTab === "breaking") {
-                if (!panelState.news.breaking) loadNewsPanel("breaking");
+                if (shouldRefreshNewsPanel("watchlist", 120000)) requestWatchlistBackfill();
                 else renderCurrentNews();
                 return;
             }
-            if (!panelState.news.all) loadNewsPanel("all");
+            if (currentNewsTab === "breaking") {
+                if (shouldRefreshNewsPanel("breaking", 60000)) loadNewsPanel("breaking");
+                else renderCurrentNews();
+                return;
+            }
+            if (shouldRefreshNewsPanel("all", 60000)) loadNewsPanel("all");
             else renderCurrentNews();
         });
     });
@@ -1428,15 +1490,8 @@
                             dashboardData.news_llm_enabled = msg.news_llm_enabled;
                         }
                     }
+                    updateNewsLlmState(msg);
                     renderNews(msg.news, true);
-                    renderNewsLlmStack({
-                        news_llm_pending: msg.news_llm_pending !== undefined
-                            ? msg.news_llm_pending
-                            : (dashboardData && dashboardData.news_llm_pending),
-                        news_llm_enabled: msg.news_llm_enabled !== undefined
-                            ? msg.news_llm_enabled
-                            : (dashboardData && dashboardData.news_llm_enabled),
-                    });
                 } else if (msg.type === "llm_queue") {
                     if (dashboardData) {
                         if (msg.news_llm_pending !== undefined) {
@@ -1446,10 +1501,7 @@
                             dashboardData.news_llm_enabled = msg.news_llm_enabled;
                         }
                     }
-                    renderNewsLlmStack({
-                        news_llm_pending: msg.news_llm_pending,
-                        news_llm_enabled: msg.news_llm_enabled,
-                    });
+                    updateNewsLlmState(msg);
                 }
             } catch (err) { console.error("[WS] Parse error:", err); }
         };
@@ -1704,7 +1756,7 @@
         if (!document.hidden && isNewsVisible() && currentNewsTab !== "watchlist") {
             loadNewsPanel(currentNewsTab === "breaking" ? "breaking" : "all");
         }
-    }, 120000);
+    }, 60000);
     setInterval(function () {
         if (!document.hidden && isWatchlistVisible()) {
             hydrateWatchlistStocks({ staleMs: 60000 });
@@ -1714,7 +1766,7 @@
         if (!document.hidden && isNewsVisible() && currentNewsTab === "watchlist") {
             requestWatchlistBackfill();
         }
-    }, 180000);
+    }, 120000);
     setInterval(function () {
         if (!document.hidden && currentView === "global") {
             loadGlobalPanel();

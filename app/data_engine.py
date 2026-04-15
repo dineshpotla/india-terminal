@@ -639,6 +639,10 @@ GLOBAL_STALE_SECS = max(30, min(1800, int(os.getenv("GLOBAL_STALE_SECS", "300" i
 NEWS_STALE_SECS = max(60, min(3600, int(os.getenv("NEWS_STALE_SECS", "600" if RENDER_MINIMAL_MODE else "180"))))
 LLM_BATCH_THRESHOLD = max(2, min(64, int(os.getenv("LLM_BATCH_THRESHOLD", "8"))))
 LLM_BATCH_SIZE = max(2, min(16, int(os.getenv("LLM_BATCH_SIZE", "6"))))
+REQUEST_LLM_SYNC_MAX_ITEMS = max(
+    4,
+    min(24, int(os.getenv("REQUEST_LLM_SYNC_MAX_ITEMS", "12" if IS_RENDER else "16"))),
+)
 DASHBOARD_SNAPSHOT_MIN_SECS = max(
     3,
     min(60, int(os.getenv("DASHBOARD_SNAPSHOT_MIN_SECS", "15" if IS_RENDER else "5"))),
@@ -4113,7 +4117,7 @@ class DataEngine:
                 "news_llm_enabled": bool(NV_API_KEY),
             }
         if normalized_tab in {"all", "breaking"} and self._llm_stack_pending_count() and not self.background_enabled:
-            self.process_llm_queue_sync(8)
+            self.process_llm_queue_sync(REQUEST_LLM_SYNC_MAX_ITEMS)
         items = list(self._news)
         if normalized_tab == "breaking":
             items = [
