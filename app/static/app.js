@@ -250,6 +250,10 @@
         return panelAgeMs(env) >= maxAgeMs;
     }
 
+    function activeNewsRequestTab() {
+        return currentNewsTab === "watchlist" ? "watchlist" : "all";
+    }
+
     function clearNewsRetry(tab) {
         if (!newsRetryTimers[tab]) return;
         clearTimeout(newsRetryTimers[tab]);
@@ -764,7 +768,6 @@
 
     function activeNewsEnvelope() {
         if (currentNewsTab === "watchlist") return panelState.news.watchlist;
-        if (currentNewsTab === "breaking") return panelState.news.breaking || panelState.news.all;
         return panelState.news.all;
     }
 
@@ -1115,11 +1118,6 @@
             currentNewsTab = tab.dataset.news;
             if (currentNewsTab === "watchlist") {
                 if (shouldRefreshNewsPanel("watchlist", 120000)) requestWatchlistBackfill();
-                else renderCurrentNews();
-                return;
-            }
-            if (currentNewsTab === "breaking") {
-                if (shouldRefreshNewsPanel("breaking", 60000)) loadNewsPanel("breaking");
                 else renderCurrentNews();
                 return;
             }
@@ -1522,7 +1520,7 @@
             loadLocalPanelCaches();
             await loadBootstrap();
             await loadOverviewPanel();
-            if (isNewsVisible()) await loadNewsPanel(currentNewsTab === "watchlist" ? "watchlist" : (currentNewsTab === "breaking" ? "breaking" : "all"));
+            if (isNewsVisible()) await loadNewsPanel(activeNewsRequestTab());
             if (isWatchlistVisible()) await hydrateWatchlistStocks({ force: true });
             if (currentView === "global") await loadGlobalPanel();
         } catch (err) { console.error("Initial load error:", err); }
@@ -1548,7 +1546,7 @@
             }
             if (view === "investing") {
                 loadOverviewPanel();
-                if (isNewsVisible()) loadNewsPanel(currentNewsTab === "watchlist" ? "watchlist" : (currentNewsTab === "breaking" ? "breaking" : "all"));
+                if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
                 if (isWatchlistVisible()) hydrateWatchlistStocks({ force: true });
             }
             if (view === "global") {
@@ -1719,7 +1717,7 @@
         btn.addEventListener("click", function () {
             activateMobilePanel(btn.dataset.panel);
             if (btn.dataset.panel === "panel-news") {
-                loadNewsPanel(currentNewsTab === "watchlist" ? "watchlist" : (currentNewsTab === "breaking" ? "breaking" : "all"));
+                loadNewsPanel(activeNewsRequestTab());
             } else if (btn.dataset.panel === "panel-stock") {
                 hydrateWatchlistStocks({ force: true });
             }
@@ -1735,7 +1733,7 @@
         loadWatchlist();
         if (currentView === "investing") loadOverviewPanel();
         if (isWatchlistVisible()) hydrateWatchlistStocks({ staleMs: 30000 });
-        if (isNewsVisible()) loadNewsPanel(currentNewsTab === "watchlist" ? "watchlist" : (currentNewsTab === "breaking" ? "breaking" : "all"));
+        if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
         if (currentView === "global") loadGlobalPanel();
     });
     document.addEventListener("visibilitychange", function () {
@@ -1743,7 +1741,7 @@
             loadWatchlist();
             if (currentView === "investing") loadOverviewPanel();
             if (isWatchlistVisible()) hydrateWatchlistStocks({ staleMs: 30000 });
-            if (isNewsVisible()) loadNewsPanel(currentNewsTab === "watchlist" ? "watchlist" : (currentNewsTab === "breaking" ? "breaking" : "all"));
+            if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
             if (currentView === "global") loadGlobalPanel();
         }
     });
@@ -1754,7 +1752,7 @@
     }, 60000);
     setInterval(function () {
         if (!document.hidden && isNewsVisible() && currentNewsTab !== "watchlist") {
-            loadNewsPanel(currentNewsTab === "breaking" ? "breaking" : "all");
+            loadNewsPanel("all");
         }
     }, 60000);
     setInterval(function () {
