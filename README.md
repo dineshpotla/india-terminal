@@ -26,17 +26,15 @@ This repo is configured for Render with [`render.yaml`](render.yaml) (Blueprint)
    - Health: `GET /health`
 6. Logs: `PYTHONUNBUFFERED=1` is set so stdout/stderr appear immediately in the Render log stream.
 
-Optional env vars (set in the service **Environment** tab): `NV_API_KEY`, `TWELVE_DATA_API_KEY`, `ZERODHA_API_KEY`, `ZERODHA_ACCESS_TOKEN`, `WATCHLIST_SEED_SYMBOLS`, `WATCHLIST_DB_PATH` (SQLite only; Postgres uses `DATABASE_URL`).
+Optional env vars (set in the service **Environment** tab): `NV_API_KEY`, `TWELVE_DATA_API_KEY`, `WATCHLIST_SEED_SYMBOLS`, `WATCHLIST_DB_PATH` (SQLite only; Postgres uses `DATABASE_URL`).
 
-## Mutual funds sync
+## Mutual funds
 
-The `MUTUAL FUNDS` page uses:
+The `MUTUAL FUNDS` page is a manual shared watchlist.
 
-- Zerodha Kite Connect read-only REST for holdings sync: `ZERODHA_API_KEY`, `ZERODHA_ACCESS_TOKEN`
-- AMFI for official mutual-fund NAV history
-- NSE historical index data for benchmark comparisons
-
-When sync is enabled, equity holdings are merged into the shared stock watchlist and Coin mutual-fund holdings stay on the dedicated mutual-funds page.
+- AMFI is used for scheme search and official NAV history.
+- NSE historical index data is used for benchmark comparisons.
+- Mutual funds stay on the dedicated mutual-funds page and do not alter the stock watchlist.
 
 ## Watchlist persistence
 

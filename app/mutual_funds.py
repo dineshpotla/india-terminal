@@ -1,45 +1,23 @@
-"""Mutual fund sync, NAV history, and benchmark comparison helpers."""
+"""Manual mutual-fund watchlist, AMFI NAV history, and benchmark comparison."""
 
 from __future__ import annotations
 
-import csv
-import io
-import json
-import os
 import re
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 import requests
 
 
-ZERODHA_BASE_URL = "https://api.kite.trade"
 AMFI_NAV_ALL_URL = "https://portal.amfiindia.com/spages/NAVAll.txt"
 AMFI_NAV_HISTORY_URL = "https://portal.amfiindia.com/DownloadNAVHistoryReport_Po.aspx"
 NSE_INDEX_HISTORY_URL = "https://www.nseindia.com/api/historicalOR/indicesHistory"
 NSE_BASE_URL = "https://www.nseindia.com"
 
-MUTUAL_HOLDINGS_KEY = "mf:holdings"
-MUTUAL_INSTRUMENTS_KEY = "mf:zerodha:instruments"
 MUTUAL_AMFI_MASTER_KEY = "mf:amfi:navall"
 MUTUAL_AMFI_AMC_CODES_KEY = "mf:amfi:amc_codes"
-
-_CATEGORY_ORDER = [
-    "flexicap",
-    "multicap",
-    "large_cap",
-    "midcap",
-    "smallcap",
-    "large_midcap",
-    "elss",
-    "banking",
-    "it",
-    "pharma",
-    "index",
-]
 
 _CATEGORY_BENCHMARKS = {
     "flexicap": ["NIFTY 500"],
@@ -97,6 +75,10 @@ def _normalize_name(value: str) -> str:
     return " ".join(text.split())
 
 
+def _normalize_scheme_code(value: str) -> str:
+    return re.sub(r"[^0-9]", "", str(value or "").strip())
+
+
 def _clean_float(value) -> Optional[float]:
     if value in (None, "", "-"):
         return None
@@ -106,9 +88,8 @@ def _clean_float(value) -> Optional[float]:
         return None
 
 
-def _infer_category(name: str, scheme_type: str = "") -> Optional[str]:
+def _infer_category(name: str) -> Optional[str]:
     text = _normalize_name(name)
-    coarse = (scheme_type or "").strip().lower()
     if "INDEX FUND" in text or "NIFTY INDEX" in text:
         return "index"
     if "FLEXI CAP" in text or "FLEXICAP" in text:
@@ -131,10 +112,6 @@ def _infer_category(name: str, scheme_type: str = "") -> Optional[str]:
         return "it"
     if "PHARMA" in text or "HEALTHCARE" in text:
         return "pharma"
-    if coarse == "elss":
-        return "elss"
-    if coarse == "equity":
-        return "flexicap"
     return None
 
 
@@ -152,123 +129,83 @@ def _benchmark_suggestions(name: str, category: Optional[str]) -> List[str]:
     return picks
 
 
-def _range_options(first_invested_at: Optional[str]) -> List[dict]:
-    opts = [
+def _range_options() -> List[dict]:
+    return [
         {"key": "1y", "label": "1Y"},
         {"key": "3y", "label": "3Y"},
         {"key": "5y", "label": "5Y"},
         {"key": "max", "label": "Since Inception"},
     ]
-    if first_invested_at:
-        opts.insert(0, {"key": "holding", "label": "Holding Period"})
-    return opts
 
 
 class MutualFundsService:
-    """Sync Zerodha Coin holdings and compare fund NAVs to benchmark indices."""
+    """Manual mutual-fund watchlist backed by AMFI and NSE data."""
 
-    def __init__(self, store):
+    def __init__(self, store, watchlist_store):
         self._store = store
-        self._lock = threading.Lock()
-        self._kite_api_key = (os.getenv("ZERODHA_API_KEY") or os.getenv("KITE_API_KEY") or "").strip()
-        self._kite_access_token = (
-            os.getenv("ZERODHA_ACCESS_TOKEN")
-            or os.getenv("KITE_ACCESS_TOKEN")
-            or os.getenv("ZERODHA_SESSION_TOKEN")
-            or ""
-        ).strip()
+        self._watchlist_store = watchlist_store
 
-    @property
-    def provider_configured(self) -> bool:
-        return bool(self._kite_api_key and self._kite_access_token)
+    def search(self, query: str, limit: int = 20) -> List[dict]:
+        raw_query = str(query or "").strip()
+        query_digits = _normalize_scheme_code(raw_query)
+        query_name = _normalize_name(raw_query)
+        if len(query_name) < 2 and len(query_digits) < 2:
+            return []
+        master = self._amfi_master()
+        matches = []
+        for scheme in master.get("schemes") or []:
+            name_key = scheme.get("normalized_name") or ""
+            code = scheme.get("scheme_code") or ""
+            if query_digits and code.startswith(query_digits):
+                score = (0 if code == query_digits else 1, len(scheme.get("name") or ""))
+            elif query_name and query_name in name_key:
+                starts = 0 if name_key.startswith(query_name) else 1
+                word_hit = 0 if any(part.startswith(query_name) for part in name_key.split()) else 1
+                score = (2, starts, word_hit, len(scheme.get("name") or ""))
+            else:
+                continue
+            matches.append((score, scheme))
+        matches.sort(key=lambda item: item[0])
+        tracked_codes = {item.get("scheme_code") for item in self._watchlist_store.list_entries()}
+        return [
+            {
+                **self._tracked_entry_from_scheme(scheme),
+                "tracked": scheme.get("scheme_code") in tracked_codes,
+            }
+            for _, scheme in matches[: max(1, min(limit, 50))]
+        ]
 
-    def status(self) -> dict:
-        snapshot = _load_snapshot(self._store, MUTUAL_HOLDINGS_KEY) or {}
-        holdings = snapshot.get("holdings") or []
+    def list_watchlist(self) -> dict:
+        items = [self._enrich_tracked_entry(entry) for entry in self._watchlist_store.list_entries()]
         return {
-            "provider": snapshot.get("provider") or ("kite_connect" if self.provider_configured else "unconfigured"),
-            "configured": self.provider_configured,
-            "connected": bool(snapshot.get("synced_at")),
-            "synced_at": snapshot.get("synced_at"),
-            "holdings_count": len(holdings),
-            "equity_symbols_count": len(snapshot.get("equity_symbols") or []),
-            "message": None if self.provider_configured else "Set ZERODHA_API_KEY and ZERODHA_ACCESS_TOKEN to enable sync",
+            "items": items,
+            "count": len(items),
+            "storage": self._watchlist_store.storage_mode,
+            "durable": self._watchlist_store.durable,
+            "shared": True,
         }
 
-    def list_holdings(self) -> dict:
-        snapshot = _load_snapshot(self._store, MUTUAL_HOLDINGS_KEY) or {}
-        holdings = snapshot.get("holdings") or []
-        total_value = round(sum(float(row.get("current_value") or 0.0) for row in holdings), 2)
-        total_cost = round(sum(float(row.get("cost_value") or 0.0) for row in holdings), 2)
-        return {
-            **self.status(),
-            "total_value": total_value,
-            "total_cost": total_cost,
-            "total_pnl": round(total_value - total_cost, 2),
-            "holdings": holdings,
-        }
+    def add(self, scheme_code: str) -> dict:
+        scheme = self._resolve_scheme_by_code(scheme_code)
+        self._watchlist_store.add_entry(self._tracked_entry_from_scheme(scheme))
+        return self.list_watchlist()
 
-    def sync(self) -> dict:
-        if not self.provider_configured:
-            raise RuntimeError("Zerodha provider is not configured")
-        equities = self._kite_get_json("/portfolio/holdings").get("data") or []
-        fund_holdings = self._kite_get_json("/mf/holdings").get("data") or []
-        instruments = self._kite_instruments_by_isin()
-        transformed = []
-        for raw in fund_holdings:
-            isin = str(raw.get("tradingsymbol") or "").strip().upper()
-            instrument = instruments.get(isin) or {}
-            fund_name = raw.get("fund") or instrument.get("name") or isin
-            category = _infer_category(fund_name, instrument.get("scheme_type") or "")
-            average_price = _clean_float(raw.get("average_price")) or 0.0
-            last_price = _clean_float(raw.get("last_price")) or 0.0
-            quantity = _clean_float(raw.get("quantity")) or 0.0
-            current_value = round(quantity * last_price, 2)
-            cost_value = round(quantity * average_price, 2)
-            transformed.append(
-                {
-                    "isin": isin,
-                    "fund": fund_name,
-                    "folio": raw.get("folio"),
-                    "average_price": average_price,
-                    "last_price": last_price,
-                    "last_price_date": raw.get("last_price_date") or instrument.get("last_price_date"),
-                    "quantity": quantity,
-                    "pnl": _clean_float(raw.get("pnl")) or round(current_value - cost_value, 2),
-                    "current_value": current_value,
-                    "cost_value": cost_value,
-                    "scheme_type": instrument.get("scheme_type"),
-                    "plan": instrument.get("plan"),
-                    "dividend_type": instrument.get("dividend_type"),
-                    "category": category,
-                    "benchmark_options": _benchmark_suggestions(fund_name, category),
-                    "range_options": _range_options(None),
-                }
-            )
-        transformed.sort(key=lambda row: row.get("current_value", 0.0), reverse=True)
-        equity_symbols = []
-        for row in equities:
-            symbol = str(row.get("tradingsymbol") or "").strip().upper()
-            if symbol and symbol not in equity_symbols:
-                equity_symbols.append(symbol)
-        snapshot = {
-            "provider": "kite_connect",
-            "synced_at": _utc_now_iso(),
-            "equity_symbols": equity_symbols,
-            "holdings": transformed,
-        }
-        _save_snapshot(self._store, MUTUAL_HOLDINGS_KEY, snapshot)
-        return snapshot
+    def remove(self, scheme_code: str) -> dict:
+        code = _normalize_scheme_code(scheme_code)
+        if not code:
+            raise RuntimeError("Invalid scheme code")
+        self._watchlist_store.remove_entry(code)
+        return self.list_watchlist()
 
-    def compare(self, isin: str, benchmark: Optional[str], range_key: str = "max") -> dict:
-        holdings = self.list_holdings().get("holdings") or []
-        target = next((row for row in holdings if str(row.get("isin")).upper() == str(isin or "").upper()), None)
+    def compare(self, scheme_code: str, benchmark: Optional[str], range_key: str = "max") -> dict:
+        code = _normalize_scheme_code(scheme_code)
+        target = self._watchlist_store.get_entry(code)
         if not target:
-            raise RuntimeError("Mutual fund holding not found")
+            raise RuntimeError("Mutual fund not found in watchlist")
+        target = self._enrich_tracked_entry(target)
         benchmark_name = benchmark or (target.get("benchmark_options") or ["NIFTY 500"])[0]
-        if benchmark_name not in _INDEX_NAME_CLEANUPS:
-            benchmark_name = _INDEX_NAME_CLEANUPS.get(benchmark_name, benchmark_name)
-        start_date = self._comparison_start_date(range_key, target.get("first_invested_at"))
+        benchmark_name = _INDEX_NAME_CLEANUPS.get(benchmark_name, benchmark_name)
+        start_date = self._comparison_start_date(range_key)
         fund_series = self._fund_history(target, start_date)
         benchmark_series = self._benchmark_history(benchmark_name, start_date, date.today())
         common_dates = sorted(set(fund_series) & set(benchmark_series))
@@ -292,11 +229,11 @@ class MutualFundsService:
         fund_return = round(chart[-1]["fund"] - 100.0, 2)
         benchmark_return = round(chart[-1]["benchmark"] - 100.0, 2)
         return {
-            "holding": target,
+            "fund": target,
             "benchmark": benchmark_name,
             "range": range_key,
-            "range_options": _range_options(target.get("first_invested_at")),
-            "benchmark_options": target.get("benchmark_options") or _benchmark_suggestions(target.get("fund", ""), target.get("category")),
+            "range_options": _range_options(),
+            "benchmark_options": target.get("benchmark_options") or _benchmark_suggestions(target.get("scheme_name", ""), target.get("category")),
             "from_date": common_dates[0].isoformat(),
             "to_date": common_dates[-1].isoformat(),
             "points": len(chart),
@@ -310,13 +247,8 @@ class MutualFundsService:
             },
         }
 
-    def _comparison_start_date(self, range_key: str, first_invested_at: Optional[str] = None) -> date:
+    def _comparison_start_date(self, range_key: str) -> date:
         today = date.today()
-        if range_key == "holding" and first_invested_at:
-            try:
-                return datetime.fromisoformat(str(first_invested_at)).date()
-            except Exception:
-                pass
         if range_key == "1y":
             return today - timedelta(days=366)
         if range_key == "3y":
@@ -325,59 +257,46 @@ class MutualFundsService:
             return today - timedelta(days=366 * 5)
         return date(2000, 1, 1)
 
-    def _kite_headers(self) -> dict:
+    def _tracked_entry_from_scheme(self, scheme: dict) -> dict:
+        category = _infer_category(scheme.get("name") or "")
         return {
-            "X-Kite-Version": "3",
-            "Authorization": f"token {self._kite_api_key}:{self._kite_access_token}",
-            "User-Agent": "IndiaMarketTerminal/1.0",
+            "scheme_code": scheme.get("scheme_code"),
+            "scheme_name": scheme.get("name"),
+            "isin_primary": scheme.get("isin_primary"),
+            "category": category,
+            "benchmark_options": _benchmark_suggestions(scheme.get("name") or "", category),
+            "latest_nav": scheme.get("nav"),
+            "latest_nav_date": scheme.get("date"),
         }
 
-    def _kite_get_json(self, path: str) -> dict:
-        url = ZERODHA_BASE_URL + path
-        resp = requests.get(url, headers=self._kite_headers(), timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("status") != "success":
-            raise RuntimeError(data.get("message") or f"Kite request failed: {path}")
-        return data
-
-    def _kite_instruments_by_isin(self) -> Dict[str, dict]:
-        cached = _load_snapshot(self._store, MUTUAL_INSTRUMENTS_KEY) or {}
-        if cached.get("as_of") and (time.time() - float(cached.get("_saved_at") or 0.0) < 24 * 60 * 60):
-            return cached.get("items") or {}
-        resp = requests.get(ZERODHA_BASE_URL + "/mf/instruments", headers=self._kite_headers(), timeout=60)
-        resp.raise_for_status()
-        text = resp.text
-        reader = csv.DictReader(io.StringIO(text))
-        items: Dict[str, dict] = {}
-        for row in reader:
-            isin = str(row.get("tradingsymbol") or "").strip().upper()
-            if not isin:
-                continue
-            items[isin] = {
-                "name": row.get("name"),
-                "scheme_type": row.get("scheme_type"),
-                "plan": row.get("plan"),
-                "dividend_type": row.get("dividend_type"),
-                "last_price": _clean_float(row.get("last_price")),
-                "last_price_date": row.get("last_price_date"),
+    def _enrich_tracked_entry(self, entry: dict) -> dict:
+        scheme = self._resolve_scheme_by_code(entry.get("scheme_code") or "")
+        merged = dict(entry)
+        merged.update(
+            {
+                "scheme_name": scheme.get("name"),
+                "isin_primary": scheme.get("isin_primary"),
+                "latest_nav": scheme.get("nav"),
+                "latest_nav_date": scheme.get("date"),
             }
-        payload = {"as_of": _utc_now_iso(), "_saved_at": time.time(), "items": items}
-        _save_snapshot(self._store, MUTUAL_INSTRUMENTS_KEY, payload)
-        return items
+        )
+        if not merged.get("category"):
+            merged["category"] = _infer_category(merged.get("scheme_name") or "")
+        if not merged.get("benchmark_options"):
+            merged["benchmark_options"] = _benchmark_suggestions(
+                merged.get("scheme_name") or "",
+                merged.get("category"),
+            )
+        return merged
 
     def _amfi_master(self) -> dict:
         cached = _load_snapshot(self._store, MUTUAL_AMFI_MASTER_KEY) or {}
-        cached_names = cached.get("by_name") or {}
-        if (
-            cached.get("as_of")
-            and "SCHEME NAME" not in cached_names
-            and (time.time() - float(cached.get("_saved_at") or 0.0) < 12 * 60 * 60)
-        ):
+        cached_codes = cached.get("by_scheme_code") or {}
+        if cached.get("as_of") and cached_codes and (time.time() - float(cached.get("_saved_at") or 0.0) < 12 * 60 * 60):
             return cached
         text = requests.get(AMFI_NAV_ALL_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=60).text
-        by_isin: Dict[str, dict] = {}
-        by_name: Dict[str, dict] = {}
+        by_scheme_code: Dict[str, dict] = {}
+        schemes: List[dict] = []
         current_house = None
         for raw_line in text.splitlines():
             line = raw_line.strip()
@@ -394,44 +313,41 @@ class MutualFundsService:
                 continue
             if parts[0].upper() == "SCHEME CODE" or parts[3].upper() == "SCHEME NAME":
                 continue
-            scheme_code = parts[0]
+            scheme_code = _normalize_scheme_code(parts[0])
+            if not scheme_code:
+                continue
             isin_one = parts[1].upper()
             isin_two = parts[2].upper()
             name = parts[3]
-            nav = _clean_float(parts[4])
-            nav_date = parts[5]
             entry = {
                 "scheme_code": scheme_code,
                 "house": current_house,
                 "name": name,
-                "nav": nav,
-                "date": nav_date,
+                "nav": _clean_float(parts[4]),
+                "date": parts[5],
+                "isin_primary": isin_one if isin_one and isin_one != "-" else (isin_two if isin_two and isin_two != "-" else None),
+                "isin_secondary": isin_two if isin_two and isin_two != "-" else None,
+                "normalized_name": _normalize_name(name),
             }
-            if isin_one and isin_one != "-":
-                by_isin[isin_one] = entry
-            if isin_two and isin_two != "-":
-                by_isin[isin_two] = entry
-            by_name[_normalize_name(name)] = entry
+            by_scheme_code[scheme_code] = entry
+            schemes.append(entry)
+        schemes.sort(key=lambda item: item.get("name") or "")
         payload = {
             "as_of": _utc_now_iso(),
             "_saved_at": time.time(),
-            "by_isin": by_isin,
-            "by_name": by_name,
+            "by_scheme_code": by_scheme_code,
+            "schemes": schemes,
         }
         _save_snapshot(self._store, MUTUAL_AMFI_MASTER_KEY, payload)
         return payload
 
-    def _resolve_scheme(self, holding: dict) -> dict:
+    def _resolve_scheme_by_code(self, scheme_code: str) -> dict:
+        code = _normalize_scheme_code(scheme_code)
         master = self._amfi_master()
-        isin = str(holding.get("isin") or "").upper()
-        by_isin = master.get("by_isin") or {}
-        if isin in by_isin:
-            return by_isin[isin]
-        name_key = _normalize_name(holding.get("fund") or "")
-        by_name = master.get("by_name") or {}
-        if name_key in by_name:
-            return by_name[name_key]
-        raise RuntimeError(f"Could not resolve AMFI scheme for {holding.get('fund') or isin}")
+        scheme = (master.get("by_scheme_code") or {}).get(code)
+        if scheme:
+            return scheme
+        raise RuntimeError(f"Could not resolve AMFI scheme for code {scheme_code}")
 
     def _amfi_amc_codes(self) -> Dict[str, int]:
         cached = _load_snapshot(self._store, MUTUAL_AMFI_AMC_CODES_KEY) or {}
@@ -479,10 +395,10 @@ class MutualFundsService:
         self._save_amfi_amc_codes(mapping)
         return found
 
-    def _fund_history(self, holding: dict, start_date: date) -> Dict[date, float]:
-        scheme = self._resolve_scheme(holding)
+    def _fund_history(self, fund: dict, start_date: date) -> Dict[date, float]:
+        scheme = self._resolve_scheme_by_code(fund.get("scheme_code") or "")
         amc_code = self._resolve_amc_code(scheme.get("house") or "", scheme.get("scheme_code") or "")
-        key = f"mf:history:{holding.get('isin')}:{start_date.isoformat()}"
+        key = f"mf:history:{scheme.get('scheme_code')}:{start_date.isoformat()}"
         cached = _load_snapshot(self._store, key) or {}
         items = cached.get("items") or {}
         if items:
@@ -519,7 +435,7 @@ class MutualFundsService:
                 continue
             history[dt] = nav
         if not history:
-            raise RuntimeError(f"No AMFI history returned for {holding.get('fund')}")
+            raise RuntimeError(f"No AMFI history returned for {fund.get('scheme_name') or scheme.get('name')}")
         payload = {
             "as_of": _utc_now_iso(),
             "items": {dt.isoformat(): val for dt, val in sorted(history.items())},

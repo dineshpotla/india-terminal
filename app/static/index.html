@@ -175,20 +175,23 @@
             <aside class="mf-sidebar">
                 <div class="mf-toolbar">
                     <div>
-                        <div class="mf-kicker">ZERODHA COIN</div>
+                        <div class="mf-kicker">AMFI WATCHLIST</div>
                         <h2 class="mf-title">Mutual Funds</h2>
                     </div>
-                    <button id="mf-sync-btn" class="mf-sync-btn" type="button">SYNC</button>
                 </div>
-                <div id="mf-status" class="mf-status">Checking provider…</div>
-                <div id="mf-summary" class="mf-summary"></div>
+                <div class="mf-search-wrap">
+                    <span class="mf-search-icon">⌕</span>
+                    <input id="mf-input" class="mf-input" type="text" placeholder="Search AMFI schemes…" autocomplete="off">
+                    <div id="mf-suggest" class="mf-suggest"></div>
+                </div>
+                <div id="mf-status" class="mf-status">Shared manual watchlist across browsers and devices.</div>
                 <div id="mf-holdings" class="mf-holdings">
-                    <div class="gm-loading">No mutual fund holdings synced yet…</div>
+                    <div class="mf-list-empty">Search AMFI schemes above to start tracking mutual funds.</div>
                 </div>
             </aside>
             <section class="mf-stage">
                 <div id="mf-empty" class="mf-empty">
-                    Connect Zerodha in read-only mode to sync your funds, copy stock holdings into the shared watchlist, and compare each fund against the right benchmark.
+                    Search and add AMFI schemes from the left, then compare each tracked mutual fund against its benchmark using official NAV and NSE index history.
                 </div>
                 <div id="mf-detail" class="mf-detail" hidden>
                     <div id="mf-hero" class="mf-hero"></div>
