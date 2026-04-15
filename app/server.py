@@ -290,7 +290,6 @@ async def panel_news(tab: str = Query("all")):
                 **_empty_news_payload(),
                 "watchlist_hash": engine.watchlist_hash(symbols),
             },
-            is_empty=lambda payload: not (payload.get("items") or []),
         )
         return JSONResponse(data)
     key = PANEL_NEWS_ALL_KEY if normalized == "all" else PANEL_NEWS_BREAKING_KEY
