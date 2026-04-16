@@ -1837,12 +1837,12 @@ td.oc-pe span {
 }
 
 .mf-sidebar {
-    width: 360px;
-    min-width: 320px;
+    width: clamp(286px, 24vw, 328px);
+    min-width: 286px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 14px;
+    gap: 10px;
+    padding: 12px;
     background:
         linear-gradient(180deg, rgba(255,140,0,.05) 0%, transparent 22%),
         linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01)),
@@ -1995,13 +1995,17 @@ td.oc-pe span {
 }
 
 .mf-status {
-    padding: 11px 12px;
-    border-radius: 6px;
+    padding: 8px 10px;
+    border-radius: 999px;
     border: 1px solid var(--border);
     background: rgba(255,255,255,.02);
     color: var(--text-secondary);
-    font-size: 11px;
-    line-height: 1.5;
+    font-size: 10px;
+    line-height: 1.3;
+    font-family: var(--font-data);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .mf-status.is-ready {
@@ -2073,18 +2077,51 @@ td.oc-pe span {
     contain: layout paint;
 }
 
-.mf-list-empty,
-.mf-empty {
+.mf-list-empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 180px;
-    padding: 20px;
+    min-height: 84px;
+    padding: 14px;
     border: 1px dashed rgba(255,255,255,.08);
     border-radius: 12px;
     color: var(--text-secondary);
     text-align: center;
-    line-height: 1.6;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.mf-empty {
+    width: 100%;
+    align-self: flex-start;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    min-height: 108px;
+    padding: 16px 18px;
+    border: 1px dashed rgba(255,255,255,.08);
+    border-radius: 12px;
+    color: var(--text-secondary);
+    background: rgba(255,255,255,.015);
+}
+
+.mf-empty-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-width: 420px;
+}
+
+.mf-empty-title {
+    font-family: var(--font-head);
+    font-size: 15px;
+    letter-spacing: .8px;
+    color: var(--text-primary);
+}
+
+.mf-empty-note {
+    font-size: 11px;
+    line-height: 1.45;
 }
 
 .mf-holding-card {

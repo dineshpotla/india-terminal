@@ -1344,11 +1344,11 @@
         if (!$mfStatus) return;
         var count = (mutualState.watchlist || []).length;
         var parts = [
-            "Shared manual watchlist",
-            count + " tracked fund" + (count === 1 ? "" : "s"),
+            "Shared",
+            count + " fund" + (count === 1 ? "" : "s"),
         ];
         if (mutualState.storage) {
-            parts.push(mutualState.durable ? "server persisted" : "ephemeral server storage");
+            parts.push(mutualState.durable ? "saved" : "session");
         }
         var clsName = "mf-status";
         if (count) {
@@ -1365,7 +1365,7 @@
         clearChildren($mfHoldings);
         var funds = mutualState.watchlist || [];
         if (!funds.length) {
-            $mfHoldings.appendChild(el("div", "mf-list-empty", "Search AMFI schemes above to start tracking mutual funds."));
+            $mfHoldings.appendChild(el("div", "mf-list-empty", "No funds tracked yet."));
             return;
         }
         var frag = document.createDocumentFragment();
