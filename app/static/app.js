@@ -106,13 +106,13 @@
     const $newsLlmCount = $("news-llm-stack-count");
 
     const GM_HEATMAP_BACKDROP = [
-        "M70 150 L145 120 L235 118 L315 145 L365 205 L345 258 L280 300 L205 320 L130 298 L86 235 Z",
-        "M288 342 L332 388 L354 446 L334 520 L305 556 L276 530 L286 456 L264 398 Z",
-        "M382 86 L448 78 L495 116 L468 170 L408 160 L372 118 Z",
-        "M586 170 L646 158 L696 182 L712 222 L678 246 L630 240 L594 206 Z",
-        "M614 258 L680 258 L728 322 L708 428 L652 508 L598 460 L580 356 Z",
-        "M702 146 L860 134 L1038 160 L1126 224 L1114 318 L1044 372 L942 354 L882 306 L820 314 L762 278 L728 236 Z",
-        "M988 410 L1064 414 L1126 450 L1112 516 L1034 520 L978 476 Z",
+        "M38 176 C60 136 109 112 170 108 C226 104 284 118 332 146 C366 168 388 205 389 238 C388 266 374 293 349 312 C319 335 281 348 235 354 C189 361 143 355 104 337 C76 323 58 302 47 278 C34 250 29 209 38 176 Z",
+        "M284 338 C303 352 320 375 331 402 C344 433 345 469 335 499 C326 526 309 548 291 556 C278 560 267 550 264 534 C259 511 261 488 256 467 C248 438 236 415 231 390 C228 369 236 350 252 339 C262 331 273 330 284 338 Z",
+        "M382 88 C405 75 438 71 470 77 C494 83 510 98 511 118 C512 140 497 158 473 170 C447 181 419 179 398 166 C379 153 370 134 370 114 C371 103 375 95 382 88 Z",
+        "M566 180 C584 163 613 155 642 156 C664 158 682 168 690 182 C698 197 694 214 680 228 C661 244 633 252 605 252 C584 251 568 243 559 229 C550 215 552 196 566 180 Z",
+        "M592 256 C617 248 649 252 677 266 C702 282 720 308 724 340 C728 373 720 408 704 440 C685 477 659 505 630 514 C610 519 592 510 582 491 C572 473 573 447 575 421 C578 395 574 367 568 339 C564 314 570 287 592 256 Z",
+        "M700 152 C744 129 803 118 866 117 C926 116 986 125 1036 144 C1083 161 1120 188 1132 222 C1141 250 1135 281 1116 309 C1090 344 1046 366 995 373 C942 381 889 373 844 355 C806 341 771 321 742 291 C716 264 697 232 693 200 C691 181 694 164 700 152 Z",
+        "M978 412 C1004 398 1040 395 1071 403 C1098 411 1118 427 1122 449 C1126 471 1119 494 1099 511 C1075 529 1042 536 1012 531 C986 525 967 508 963 486 C959 461 964 433 978 412 Z",
     ];
 
     const GM_HEATMAP_SPECS = [
@@ -123,16 +123,16 @@
             source: "US composite",
             names: ["S&P 500", "NASDAQ", "DOW JONES", "RUSSELL 2000"],
             mode: "average",
-            path: "M116 216 L140 194 L172 186 L214 184 L248 190 L280 202 L302 220 L298 238 L278 246 L258 260 L224 264 L192 274 L160 270 L136 256 L120 238 Z",
-            labelX: 205, labelY: 212, pctX: 205, pctY: 234, metaX: 205, metaY: 252,
+            path: "M114 229 C124 207 153 191 188 185 C224 178 266 184 298 198 C324 210 337 226 335 242 C332 255 318 266 299 274 C282 281 270 290 250 295 C222 302 190 303 163 296 C139 289 121 277 113 261 C108 251 108 240 114 229 Z",
+            labelX: 223, labelY: 213, pctX: 223, pctY: 234, metaX: 223, metaY: 252,
         },
         {
             key: "uk",
             label: "UK",
             source: "FTSE 100",
             names: ["FTSE 100"],
-            path: "M622 188 L640 184 L650 196 L646 214 L628 220 L618 205 Z",
-            labelX: 634, labelY: 194, pctX: 634, pctY: 209, metaX: 634, metaY: 224,
+            path: "M622 186 C628 178 637 176 644 181 C649 188 649 198 644 207 C638 214 629 215 622 209 C618 202 617 193 622 186 Z",
+            labelX: 633, labelY: 190, pctX: 633, pctY: 206, metaX: 633, metaY: 223,
         },
         {
             key: "france",
@@ -140,8 +140,8 @@
             shortLabel: "FR",
             source: "CAC 40",
             names: ["CAC 40"],
-            path: "M646 224 L670 216 L684 232 L678 254 L652 260 L638 242 Z",
-            labelX: 661, labelY: 229, pctX: 661, pctY: 245, metaX: 661, metaY: 260,
+            path: "M642 223 C651 215 664 213 676 219 C686 228 687 243 679 254 C668 263 652 264 641 253 C634 243 635 232 642 223 Z",
+            labelX: 660, labelY: 228, pctX: 660, pctY: 244, metaX: 660, metaY: 260,
         },
         {
             key: "germany",
@@ -149,8 +149,8 @@
             shortLabel: "DE",
             source: "DAX",
             names: ["DAX"],
-            path: "M684 200 L708 198 L720 214 L716 238 L694 246 L680 226 Z",
-            labelX: 700, labelY: 205, pctX: 700, pctY: 221, metaX: 700, metaY: 236,
+            path: "M682 198 C690 192 703 192 712 200 C719 211 718 227 711 238 C703 246 691 247 682 240 C675 229 675 210 682 198 Z",
+            labelX: 698, labelY: 205, pctX: 698, pctY: 221, metaX: 698, metaY: 237,
         },
         {
             key: "eurozone",
@@ -158,8 +158,8 @@
             shortLabel: "EU",
             source: "EURO STOXX 50",
             names: ["EURO STOXX 50"],
-            path: "M724 214 L752 210 L770 222 L766 244 L740 252 L718 238 Z",
-            labelX: 744, labelY: 219, pctX: 744, pctY: 235, metaX: 744, metaY: 250,
+            path: "M716 213 C732 205 752 205 767 214 C776 225 775 240 764 250 C749 258 728 258 714 248 C706 238 707 224 716 213 Z",
+            labelX: 741, labelY: 220, pctX: 741, pctY: 236, metaX: 741, metaY: 252,
         },
         {
             key: "india",
@@ -167,8 +167,8 @@
             shortLabel: "IN",
             source: "GIFT NIFTY",
             names: ["GIFT NIFTY"],
-            path: "M874 302 L892 294 L908 300 L922 318 L918 340 L906 356 L892 364 L880 350 L872 334 Z",
-            labelX: 894, labelY: 308, pctX: 894, pctY: 327, metaX: 894, metaY: 346,
+            path: "M878 300 C887 291 900 289 911 293 C920 299 924 309 922 320 C920 331 916 341 911 350 C905 360 895 364 885 360 C877 354 873 344 872 333 C870 322 871 309 878 300 Z",
+            labelX: 897, labelY: 306, pctX: 897, pctY: 326, metaX: 897, metaY: 345,
         },
         {
             key: "china",
@@ -176,16 +176,16 @@
             shortLabel: "CN",
             source: "SHANGHAI",
             names: ["SHANGHAI"],
-            path: "M932 230 L966 220 L1002 222 L1038 234 L1058 252 L1060 272 L1044 288 L1010 298 L972 296 L948 286 L934 268 Z",
-            labelX: 986, labelY: 240, pctX: 986, pctY: 262, metaX: 986, metaY: 281,
+            path: "M931 231 C954 217 985 213 1014 218 C1039 223 1058 236 1063 253 C1065 269 1060 283 1046 294 C1026 302 1000 304 974 301 C955 299 940 291 932 279 C927 266 926 246 931 231 Z",
+            labelX: 988, labelY: 238, pctX: 988, pctY: 261, metaX: 988, metaY: 280,
         },
         {
             key: "hongkong",
             label: "HK",
             source: "HANG SENG",
             names: ["HANG SENG"],
-            path: "M978 286 L998 282 L1008 292 L1002 310 L982 312 L972 298 Z",
-            labelX: 990, labelY: 290, pctX: 990, pctY: 305, metaX: 990, metaY: 320,
+            path: "M977 287 C983 282 993 282 1001 286 C1006 293 1006 304 1000 311 C993 316 983 316 976 311 C971 304 971 293 977 287 Z",
+            labelX: 989, labelY: 290, pctX: 989, pctY: 305, metaX: 989, metaY: 320,
         },
         {
             key: "korea",
@@ -193,8 +193,8 @@
             shortLabel: "KR",
             source: "KOSPI",
             names: ["KOSPI"],
-            path: "M1028 244 L1050 240 L1060 258 L1054 282 L1032 286 L1020 264 Z",
-            labelX: 1040, labelY: 249, pctX: 1040, pctY: 267, metaX: 1040, metaY: 284,
+            path: "M1028 245 C1036 238 1047 236 1056 243 C1062 252 1062 264 1056 274 C1048 281 1037 282 1029 274 C1024 265 1023 253 1028 245 Z",
+            labelX: 1041, labelY: 249, pctX: 1041, pctY: 267, metaX: 1041, metaY: 285,
         },
         {
             key: "taiwan",
@@ -202,8 +202,8 @@
             shortLabel: "TW",
             source: "TAIWAN",
             names: ["TAIWAN"],
-            path: "M1046 292 L1066 288 L1074 304 L1068 326 L1050 330 L1042 312 Z",
-            labelX: 1058, labelY: 297, pctX: 1058, pctY: 315, metaX: 1058, metaY: 332,
+            path: "M1048 293 C1055 286 1066 286 1072 294 C1077 303 1074 316 1066 325 C1058 332 1049 329 1044 319 C1041 310 1042 300 1048 293 Z",
+            labelX: 1058, labelY: 297, pctX: 1058, pctY: 315, metaX: 1058, metaY: 333,
         },
         {
             key: "japan",
@@ -211,16 +211,16 @@
             shortLabel: "JP",
             source: "NIKKEI 225",
             names: ["NIKKEI 225"],
-            path: "M1084 220 L1098 210 L1110 214 L1114 228 L1108 242 L1116 256 L1110 270 L1098 266 L1094 250 L1088 238 Z",
-            labelX: 1102, labelY: 222, pctX: 1102, pctY: 241, metaX: 1102, metaY: 260,
+            path: "M1087 216 C1096 208 1107 210 1111 221 C1112 230 1107 238 1109 248 C1112 257 1110 266 1101 270 C1093 269 1089 261 1087 252 C1085 243 1079 236 1079 228 C1080 222 1082 219 1087 216 Z",
+            labelX: 1098, labelY: 220, pctX: 1098, pctY: 240, metaX: 1098, metaY: 259,
         },
         {
             key: "singapore",
             label: "SG",
             source: "STRAITS TIMES",
             names: ["STRAITS TIMES"],
-            path: "M952 360 L976 358 L986 368 L978 384 L954 386 L944 372 Z",
-            labelX: 965, labelY: 365, pctX: 965, pctY: 379, metaX: 965, metaY: 394,
+            path: "M951 360 C958 356 969 356 977 360 C983 366 983 376 978 383 C970 388 959 388 950 384 C944 378 944 367 951 360 Z",
+            labelX: 964, labelY: 365, pctX: 964, pctY: 379, metaX: 964, metaY: 394,
         },
         {
             key: "thailand",
@@ -228,7 +228,7 @@
             shortLabel: "TH",
             source: "SET COMPOSITE",
             names: ["SET COMPOSITE"],
-            path: "M932 322 L958 314 L976 328 L972 350 L946 356 L928 340 Z",
+            path: "M932 321 C943 314 958 314 970 321 C976 331 974 344 964 352 C951 358 936 357 928 348 C923 340 923 329 932 321 Z",
             labelX: 951, labelY: 327, pctX: 951, pctY: 344, metaX: 951, metaY: 360,
         },
         {
@@ -237,7 +237,7 @@
             shortLabel: "ID",
             source: "JAKARTA",
             names: ["JAKARTA"],
-            path: "M978 392 L1012 388 L1038 390 L1058 398 L1048 410 L1026 414 L1004 416 L984 418 L972 406 Z",
+            path: "M978 391 C994 385 1015 384 1036 387 C1052 390 1064 398 1066 406 C1065 414 1056 421 1043 425 C1024 429 1002 430 984 426 C972 421 966 414 966 405 C968 398 972 393 978 391 Z",
             labelX: 1016, labelY: 394, pctX: 1016, pctY: 409, metaX: 1016, metaY: 425,
         },
     ];
@@ -915,7 +915,7 @@
     }
 
     function globalHeatDisplayLabel(spec) {
-        return window.innerWidth < 920 ? (spec.shortLabel || spec.label) : spec.label;
+        return spec.shortLabel || spec.label;
     }
 
     function renderGlobalHeatmap(futures) {
@@ -955,10 +955,10 @@
             var tone = globalHeatTone(entry.pct);
             var pctText = entry.pct == null ? "\u2014" : fmtPct(entry.pct);
             var displayLabel = globalHeatDisplayLabel(spec);
-            var chipWidth = Math.max(44, 38 + displayLabel.length * (window.innerWidth < 920 ? 5.5 : 7.2));
-            var chipHeight = window.innerWidth < 920 ? 34 : 40;
+            var chipWidth = Math.max(42, 28 + displayLabel.length * 8);
+            var chipHeight = window.innerWidth < 920 ? 32 : 38;
             var chipX = spec.pctX - chipWidth / 2;
-            var chipY = spec.pctY - chipHeight / 2 - 6;
+            var chipY = spec.pctY - chipHeight / 2 - 7;
             var title = spec.label + " \u00b7 " + spec.source + " \u00b7 " + pctText;
             if (entry.status === "OPEN") title += " \u00b7 open";
             else if (entry.status === "HOLIDAY") title += " \u00b7 holiday";

@@ -1067,9 +1067,9 @@ body {
     border: 1px solid var(--border);
     border-radius: 10px;
     background:
-        radial-gradient(circle at 16% 18%, rgba(255,140,0,.10), transparent 26%),
-        radial-gradient(circle at 84% 12%, rgba(56,189,248,.08), transparent 28%),
-        linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015)),
+        radial-gradient(circle at 16% 18%, rgba(255,140,0,.08), transparent 24%),
+        radial-gradient(circle at 84% 12%, rgba(56,189,248,.07), transparent 26%),
+        linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.012)),
         var(--bg-panel);
     box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
 }
@@ -1141,8 +1141,9 @@ body {
     border-radius: 12px;
     overflow: hidden;
     background:
-        linear-gradient(180deg, rgba(10,14,24,.72), rgba(8,12,20,.92)),
-        radial-gradient(circle at center, rgba(125, 211, 252, 0.04), transparent 70%);
+        radial-gradient(circle at 50% 42%, rgba(66, 153, 225, 0.05), transparent 44%),
+        radial-gradient(circle at 16% 22%, rgba(255,140,0,.05), transparent 28%),
+        linear-gradient(180deg, rgba(7,11,19,.84), rgba(6,10,18,.96));
     border: 1px solid rgba(255,255,255,.05);
 }
 
@@ -1153,20 +1154,23 @@ body {
 }
 
 .gm-map-bg {
-    fill: rgba(7, 11, 19, 0.22);
+    fill: rgba(6, 10, 18, 0.30);
 }
 
 .gm-map-backdrop {
-    fill: rgba(151, 163, 178, 0.08);
-    stroke: rgba(255,255,255,0.06);
-    stroke-width: 2;
+    fill: rgba(151, 163, 178, 0.05);
+    stroke: rgba(226, 232, 240, 0.12);
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
 }
 
 .gm-map-meridians path {
     fill: none;
-    stroke: rgba(255,255,255,0.05);
-    stroke-width: 1.5;
-    stroke-dasharray: 6 14;
+    stroke: rgba(255,255,255,0.035);
+    stroke-width: 1.1;
+    stroke-dasharray: 4 16;
+    vector-effect: non-scaling-stroke;
 }
 
 .gm-country {
@@ -1183,13 +1187,14 @@ body {
 }
 
 .gm-country-shape {
-    stroke-width: 2;
-    transition: stroke-width .16s ease, fill .16s ease;
+    stroke-width: 1.9;
+    transition: stroke-width .16s ease, fill .16s ease, opacity .16s ease;
     vector-effect: non-scaling-stroke;
+    opacity: .96;
 }
 
 .gm-country.is-open .gm-country-shape {
-    stroke-width: 2.8;
+    stroke-width: 2.4;
 }
 
 .gm-country-label,
@@ -1221,22 +1226,22 @@ body {
 }
 
 .gm-country-chip-bg {
-    fill: rgba(8,12,20,.64);
-    stroke-width: 1.5;
+    fill: rgba(8,12,20,.46);
+    stroke-width: 1.2;
     vector-effect: non-scaling-stroke;
 }
 
 .gm-country-chip-label {
-    fill: rgba(230, 238, 248, 0.88);
-    font-size: 9px;
+    fill: rgba(231, 238, 247, 0.78);
+    font-size: 8px;
     font-weight: 700;
-    letter-spacing: 1.2px;
+    letter-spacing: 1.4px;
     text-transform: uppercase;
 }
 
 .gm-country-chip-pct {
     fill: var(--text-primary);
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: .3px;
 }
