@@ -1137,7 +1137,7 @@ body {
 .gm-heatmap {
     position: relative;
     min-height: clamp(280px, 36vw, 480px);
-    aspect-ratio: 1200 / 560;
+    aspect-ratio: 2528 / 1239;
     border-radius: 12px;
     overflow: hidden;
     background:
@@ -1153,97 +1153,98 @@ body {
     height: 100%;
 }
 
-.gm-map-bg {
-    fill: rgba(6, 10, 18, 0.30);
+.gm-world-svg {
+    display: block;
+    width: 100%;
+    height: 100%;
 }
 
-.gm-map-backdrop {
-    fill: rgba(151, 163, 178, 0.05);
-    stroke: rgba(226, 232, 240, 0.12);
-    stroke-width: 1.6;
-    stroke-linejoin: round;
+.gm-world-svg #ocean {
+    fill: transparent !important;
+    stroke: none !important;
+}
+
+.gm-world-svg .landxx,
+.gm-world-svg .limitxx,
+.gm-world-svg .coastxx {
+    fill: rgba(125, 136, 152, 0.09) !important;
+    stroke: rgba(214, 223, 235, 0.14) !important;
+    stroke-width: .8 !important;
     vector-effect: non-scaling-stroke;
+    transition: fill .16s ease, stroke .16s ease, opacity .16s ease;
 }
 
-.gm-map-meridians path {
+.gm-world-svg .circlexx,
+.gm-world-svg .subxx,
+.gm-world-svg .noxx {
+    display: none;
+}
+
+.gm-world-svg [data-market] path,
+.gm-world-svg [data-market] polygon,
+.gm-world-svg [data-market] circle,
+.gm-world-svg [data-market] ellipse {
+    fill: var(--gm-fill) !important;
+    stroke: var(--gm-stroke) !important;
+    stroke-width: var(--gm-stroke-width, 1.3) !important;
+    opacity: .98;
+}
+
+.gm-world-svg [data-market] .circlexx,
+.gm-world-svg [data-market] .subxx,
+.gm-world-svg [data-market] .noxx {
+    display: block;
+    opacity: 1;
+}
+
+.gm-market-overlay {
+    pointer-events: none;
+}
+
+.gm-market-badge {
+    pointer-events: none;
+}
+
+.gm-market-link {
     fill: none;
-    stroke: rgba(255,255,255,0.035);
-    stroke-width: 1.1;
-    stroke-dasharray: 4 16;
+    stroke: rgba(255,255,255,0.16);
+    stroke-width: 1.15;
     vector-effect: non-scaling-stroke;
+    stroke-dasharray: 4 5;
 }
 
-.gm-country {
-    cursor: default;
-    transform-box: fill-box;
-    transform-origin: center;
-    transition: transform .16s ease;
-}
-
-.gm-country:hover,
-.gm-country:focus {
-    transform: translateY(-2px) scale(1.015);
-    outline: none;
-}
-
-.gm-country-shape {
-    stroke-width: 1.9;
-    transition: stroke-width .16s ease, fill .16s ease, opacity .16s ease;
+.gm-market-badge-bg {
+    fill: rgba(8,12,20,.72);
+    stroke: var(--gm-badge-stroke);
+    stroke-width: 1.2;
     vector-effect: non-scaling-stroke;
-    opacity: .96;
+    filter: drop-shadow(0 8px 18px rgba(0,0,0,.24));
 }
 
-.gm-country.is-open .gm-country-shape {
-    stroke-width: 2.4;
-}
-
-.gm-country-label,
-.gm-country-pct,
-.gm-country-chip-label,
-.gm-country-chip-pct {
+.gm-market-badge-code,
+.gm-market-badge-pct {
     pointer-events: none;
     user-select: none;
     font-family: var(--font-head);
     paint-order: stroke fill;
-    stroke: rgba(7, 11, 19, 0.78);
+    stroke: rgba(6, 10, 18, 0.84);
     stroke-width: 3px;
     stroke-linejoin: round;
 }
 
-.gm-country-label {
-    fill: rgba(255,255,255,.72);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-}
-
-.gm-country-pct {
-    fill: var(--text-primary);
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: .4px;
-}
-
-.gm-country-chip-bg {
-    fill: rgba(8,12,20,.46);
-    stroke-width: 1.2;
-    vector-effect: non-scaling-stroke;
-}
-
-.gm-country-chip-label {
-    fill: rgba(231, 238, 247, 0.78);
+.gm-market-badge-code {
+    fill: rgba(228, 235, 244, 0.74);
     font-size: 8px;
     font-weight: 700;
-    letter-spacing: 1.4px;
+    letter-spacing: 1.35px;
     text-transform: uppercase;
 }
 
-.gm-country-chip-pct {
+.gm-market-badge-pct {
     fill: var(--text-primary);
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 700;
-    letter-spacing: .3px;
+    letter-spacing: .25px;
 }
 
 .gm-loading {
@@ -2702,11 +2703,11 @@ td.oc-pe span {
         min-height: 240px;
     }
 
-    .gm-country-chip-label {
+    .gm-market-badge-code {
         font-size: 8px;
     }
 
-    .gm-country-chip-pct {
+    .gm-market-badge-pct {
         font-size: 12px;
     }
 

@@ -105,16 +105,6 @@
     const $newsLlmStack = $("news-llm-stack");
     const $newsLlmCount = $("news-llm-stack-count");
 
-    const GM_HEATMAP_BACKDROP = [
-        "M38 176 C60 136 109 112 170 108 C226 104 284 118 332 146 C366 168 388 205 389 238 C388 266 374 293 349 312 C319 335 281 348 235 354 C189 361 143 355 104 337 C76 323 58 302 47 278 C34 250 29 209 38 176 Z",
-        "M284 338 C303 352 320 375 331 402 C344 433 345 469 335 499 C326 526 309 548 291 556 C278 560 267 550 264 534 C259 511 261 488 256 467 C248 438 236 415 231 390 C228 369 236 350 252 339 C262 331 273 330 284 338 Z",
-        "M382 88 C405 75 438 71 470 77 C494 83 510 98 511 118 C512 140 497 158 473 170 C447 181 419 179 398 166 C379 153 370 134 370 114 C371 103 375 95 382 88 Z",
-        "M566 180 C584 163 613 155 642 156 C664 158 682 168 690 182 C698 197 694 214 680 228 C661 244 633 252 605 252 C584 251 568 243 559 229 C550 215 552 196 566 180 Z",
-        "M592 256 C617 248 649 252 677 266 C702 282 720 308 724 340 C728 373 720 408 704 440 C685 477 659 505 630 514 C610 519 592 510 582 491 C572 473 573 447 575 421 C578 395 574 367 568 339 C564 314 570 287 592 256 Z",
-        "M700 152 C744 129 803 118 866 117 C926 116 986 125 1036 144 C1083 161 1120 188 1132 222 C1141 250 1135 281 1116 309 C1090 344 1046 366 995 373 C942 381 889 373 844 355 C806 341 771 321 742 291 C716 264 697 232 693 200 C691 181 694 164 700 152 Z",
-        "M978 412 C1004 398 1040 395 1071 403 C1098 411 1118 427 1122 449 C1126 471 1119 494 1099 511 C1075 529 1042 536 1012 531 C986 525 967 508 963 486 C959 461 964 433 978 412 Z",
-    ];
-
     const GM_HEATMAP_SPECS = [
         {
             key: "usa",
@@ -123,16 +113,18 @@
             source: "US composite",
             names: ["S&P 500", "NASDAQ", "DOW JONES", "RUSSELL 2000"],
             mode: "average",
-            path: "M114 229 C124 207 153 191 188 185 C224 178 266 184 298 198 C324 210 337 226 335 242 C332 255 318 266 299 274 C282 281 270 290 250 295 C222 302 190 303 163 296 C139 289 121 277 113 261 C108 251 108 240 114 229 Z",
-            labelX: 223, labelY: 213, pctX: 223, pctY: 234, metaX: 223, metaY: 252,
+            countryIds: ["us"],
+            anchorX: 0.64,
+            anchorY: 0.48,
         },
         {
             key: "uk",
             label: "UK",
             source: "FTSE 100",
             names: ["FTSE 100"],
-            path: "M622 186 C628 178 637 176 644 181 C649 188 649 198 644 207 C638 214 629 215 622 209 C618 202 617 193 622 186 Z",
-            labelX: 633, labelY: 190, pctX: 633, pctY: 206, metaX: 633, metaY: 223,
+            countryIds: ["gb"],
+            dx: -6,
+            dy: -10,
         },
         {
             key: "france",
@@ -140,8 +132,9 @@
             shortLabel: "FR",
             source: "CAC 40",
             names: ["CAC 40"],
-            path: "M642 223 C651 215 664 213 676 219 C686 228 687 243 679 254 C668 263 652 264 641 253 C634 243 635 232 642 223 Z",
-            labelX: 660, labelY: 228, pctX: 660, pctY: 244, metaX: 660, metaY: 260,
+            countryIds: ["frx"],
+            dx: -18,
+            dy: 22,
         },
         {
             key: "germany",
@@ -149,8 +142,9 @@
             shortLabel: "DE",
             source: "DAX",
             names: ["DAX"],
-            path: "M682 198 C690 192 703 192 712 200 C719 211 718 227 711 238 C703 246 691 247 682 240 C675 229 675 210 682 198 Z",
-            labelX: 698, labelY: 205, pctX: 698, pctY: 221, metaX: 698, metaY: 237,
+            countryIds: ["de"],
+            dx: 18,
+            dy: -2,
         },
         {
             key: "eurozone",
@@ -158,8 +152,9 @@
             shortLabel: "EU",
             source: "EURO STOXX 50",
             names: ["EURO STOXX 50"],
-            path: "M716 213 C732 205 752 205 767 214 C776 225 775 240 764 250 C749 258 728 258 714 248 C706 238 707 224 716 213 Z",
-            labelX: 741, labelY: 220, pctX: 741, pctY: 236, metaX: 741, metaY: 252,
+            countryIds: [],
+            badgeX: 1438,
+            badgeY: 356,
         },
         {
             key: "india",
@@ -167,8 +162,11 @@
             shortLabel: "IN",
             source: "GIFT NIFTY",
             names: ["GIFT NIFTY"],
-            path: "M878 300 C887 291 900 289 911 293 C920 299 924 309 922 320 C920 331 916 341 911 350 C905 360 895 364 885 360 C877 354 873 344 872 333 C870 322 871 309 878 300 Z",
-            labelX: 897, labelY: 306, pctX: 897, pctY: 326, metaX: 897, metaY: 345,
+            countryIds: ["in"],
+            anchorX: 0.58,
+            anchorY: 0.54,
+            dx: 24,
+            dy: 8,
         },
         {
             key: "china",
@@ -176,16 +174,20 @@
             shortLabel: "CN",
             source: "SHANGHAI",
             names: ["SHANGHAI"],
-            path: "M931 231 C954 217 985 213 1014 218 C1039 223 1058 236 1063 253 C1065 269 1060 283 1046 294 C1026 302 1000 304 974 301 C955 299 940 291 932 279 C927 266 926 246 931 231 Z",
-            labelX: 988, labelY: 238, pctX: 988, pctY: 261, metaX: 988, metaY: 280,
+            countryIds: ["cnx"],
+            anchorX: 0.58,
+            anchorY: 0.52,
+            dx: 52,
+            dy: 8,
         },
         {
             key: "hongkong",
             label: "HK",
             source: "HANG SENG",
             names: ["HANG SENG"],
-            path: "M977 287 C983 282 993 282 1001 286 C1006 293 1006 304 1000 311 C993 316 983 316 976 311 C971 304 971 293 977 287 Z",
-            labelX: 989, labelY: 290, pctX: 989, pctY: 305, metaX: 989, metaY: 320,
+            countryIds: ["hk"],
+            dx: -18,
+            dy: 26,
         },
         {
             key: "korea",
@@ -193,8 +195,9 @@
             shortLabel: "KR",
             source: "KOSPI",
             names: ["KOSPI"],
-            path: "M1028 245 C1036 238 1047 236 1056 243 C1062 252 1062 264 1056 274 C1048 281 1037 282 1029 274 C1024 265 1023 253 1028 245 Z",
-            labelX: 1041, labelY: 249, pctX: 1041, pctY: 267, metaX: 1041, metaY: 285,
+            countryIds: ["kr"],
+            dx: 14,
+            dy: -2,
         },
         {
             key: "taiwan",
@@ -202,8 +205,9 @@
             shortLabel: "TW",
             source: "TAIWAN",
             names: ["TAIWAN"],
-            path: "M1048 293 C1055 286 1066 286 1072 294 C1077 303 1074 316 1066 325 C1058 332 1049 329 1044 319 C1041 310 1042 300 1048 293 Z",
-            labelX: 1058, labelY: 297, pctX: 1058, pctY: 315, metaX: 1058, metaY: 333,
+            countryIds: ["tw"],
+            dx: 16,
+            dy: 14,
         },
         {
             key: "japan",
@@ -211,16 +215,20 @@
             shortLabel: "JP",
             source: "NIKKEI 225",
             names: ["NIKKEI 225"],
-            path: "M1087 216 C1096 208 1107 210 1111 221 C1112 230 1107 238 1109 248 C1112 257 1110 266 1101 270 C1093 269 1089 261 1087 252 C1085 243 1079 236 1079 228 C1080 222 1082 219 1087 216 Z",
-            labelX: 1098, labelY: 220, pctX: 1098, pctY: 240, metaX: 1098, metaY: 259,
+            countryIds: ["jp"],
+            anchorX: 0.44,
+            anchorY: 0.42,
+            dx: 22,
+            dy: -18,
         },
         {
             key: "singapore",
             label: "SG",
             source: "STRAITS TIMES",
             names: ["STRAITS TIMES"],
-            path: "M951 360 C958 356 969 356 977 360 C983 366 983 376 978 383 C970 388 959 388 950 384 C944 378 944 367 951 360 Z",
-            labelX: 964, labelY: 365, pctX: 964, pctY: 379, metaX: 964, metaY: 394,
+            countryIds: ["sg"],
+            dx: 12,
+            dy: 18,
         },
         {
             key: "thailand",
@@ -228,8 +236,9 @@
             shortLabel: "TH",
             source: "SET COMPOSITE",
             names: ["SET COMPOSITE"],
-            path: "M932 321 C943 314 958 314 970 321 C976 331 974 344 964 352 C951 358 936 357 928 348 C923 340 923 329 932 321 Z",
-            labelX: 951, labelY: 327, pctX: 951, pctY: 344, metaX: 951, metaY: 360,
+            countryIds: ["th"],
+            dx: 26,
+            dy: -10,
         },
         {
             key: "indonesia",
@@ -237,10 +246,15 @@
             shortLabel: "ID",
             source: "JAKARTA",
             names: ["JAKARTA"],
-            path: "M978 391 C994 385 1015 384 1036 387 C1052 390 1064 398 1066 406 C1065 414 1056 421 1043 425 C1024 429 1002 430 984 426 C972 421 966 414 966 405 C968 398 972 393 978 391 Z",
-            labelX: 1016, labelY: 394, pctX: 1016, pctY: 409, metaX: 1016, metaY: 425,
+            countryIds: ["id"],
+            anchorX: 0.52,
+            anchorY: 0.50,
+            dy: 12,
         },
     ];
+
+    var gmWorldSvgTemplate = null;
+    var gmWorldSvgPromise = null;
 
     // ── Price change tracking (orderbook-style flash) ──────────────────
 
@@ -918,65 +932,175 @@
         return spec.shortLabel || spec.label;
     }
 
+    function ensureGlobalWorldSvgTemplate() {
+        if (gmWorldSvgTemplate) return Promise.resolve(gmWorldSvgTemplate);
+        if (gmWorldSvgPromise) return gmWorldSvgPromise;
+        gmWorldSvgPromise = fetch("/static/world-map-compact.svg")
+            .then(function (res) {
+                if (!res.ok) throw new Error("world map asset unavailable");
+                return res.text();
+            })
+            .then(function (text) {
+                var doc = new DOMParser().parseFromString(text, "image/svg+xml");
+                var root = document.importNode(doc.documentElement, true);
+                root.classList.add("gm-world-svg");
+                root.setAttribute("preserveAspectRatio", "xMidYMid meet");
+                root.removeAttribute("width");
+                root.removeAttribute("height");
+                root.setAttribute("role", "img");
+                root.setAttribute("aria-label", "Live global markets world map");
+                gmWorldSvgTemplate = root;
+                return gmWorldSvgTemplate;
+            })
+            .catch(function (err) {
+                gmWorldSvgPromise = null;
+                throw err;
+            });
+        return gmWorldSvgPromise;
+    }
+
+    function globalHeatNodes(svgRoot, ids) {
+        return (ids || []).map(function (id) {
+            return svgRoot.querySelector("#" + id);
+        }).filter(Boolean);
+    }
+
+    function unionBBox(nodes) {
+        var box = null;
+        (nodes || []).forEach(function (node) {
+            var b = node.getBBox();
+            if (!b || !isFinite(b.x) || !isFinite(b.y) || !isFinite(b.width) || !isFinite(b.height)) return;
+            if (!box) {
+                box = { x: b.x, y: b.y, width: b.width, height: b.height };
+                return;
+            }
+            var minX = Math.min(box.x, b.x);
+            var minY = Math.min(box.y, b.y);
+            var maxX = Math.max(box.x + box.width, b.x + b.width);
+            var maxY = Math.max(box.y + box.height, b.y + b.height);
+            box = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+        });
+        return box;
+    }
+
+    function tintGlobalCountry(nodes, tone, status) {
+        (nodes || []).forEach(function (node) {
+            node.setAttribute("data-market", status === "OPEN" ? "open" : "closed");
+            node.style.setProperty("--gm-fill", tone.fill);
+            node.style.setProperty("--gm-stroke", tone.stroke);
+            node.style.setProperty("--gm-stroke-width", status === "OPEN" ? "1.7" : "1.3");
+        });
+    }
+
+    function createSvgNode(tag) {
+        return document.createElementNS("http://www.w3.org/2000/svg", tag);
+    }
+
+    function appendGlobalBadge(layer, entry, anchorX, anchorY) {
+        var spec = entry.spec;
+        var tone = globalHeatTone(entry.pct);
+        var pctText = entry.pct == null ? "\u2014" : fmtPct(entry.pct);
+        var label = globalHeatDisplayLabel(spec);
+        var width = Math.max(48, 34 + label.length * 9);
+        var height = window.innerWidth < 920 ? 34 : 40;
+        var x = anchorX - width / 2;
+        var y = anchorY - height / 2;
+        var group = createSvgNode("g");
+        group.setAttribute("class", "gm-market-badge" + (entry.status === "OPEN" ? " is-open" : ""));
+        group.setAttribute("tabindex", "0");
+
+        var title = createSvgNode("title");
+        title.textContent = spec.label + " · " + spec.source + " · " + pctText + (entry.status === "OPEN" ? " · open" : "");
+        group.appendChild(title);
+
+        if (spec.countryIds && spec.countryIds.length && (spec.dx || spec.dy)) {
+            var line = createSvgNode("path");
+            line.setAttribute("class", "gm-market-link");
+            line.setAttribute("d", "M" + (anchorX - (spec.dx || 0)) + " " + (anchorY - (spec.dy || 0)) + " L" + anchorX + " " + anchorY);
+            group.appendChild(line);
+        }
+
+        var rect = createSvgNode("rect");
+        rect.setAttribute("class", "gm-market-badge-bg");
+        rect.setAttribute("x", x.toFixed(1));
+        rect.setAttribute("y", y.toFixed(1));
+        rect.setAttribute("width", width.toFixed(1));
+        rect.setAttribute("height", height);
+        rect.setAttribute("rx", "15");
+        rect.setAttribute("ry", "15");
+        rect.setAttribute("style", "--gm-badge-stroke:" + tone.stroke + "; --gm-badge-fill:" + tone.fill + ";");
+        group.appendChild(rect);
+
+        var code = createSvgNode("text");
+        code.setAttribute("class", "gm-market-badge-code");
+        code.setAttribute("x", anchorX);
+        code.setAttribute("y", anchorY - 4);
+        code.setAttribute("text-anchor", "middle");
+        code.textContent = label;
+        group.appendChild(code);
+
+        var pct = createSvgNode("text");
+        pct.setAttribute("class", "gm-market-badge-pct");
+        pct.setAttribute("x", anchorX);
+        pct.setAttribute("y", anchorY + 14);
+        pct.setAttribute("text-anchor", "middle");
+        pct.setAttribute("fill", tone.text);
+        pct.textContent = pctText;
+        group.appendChild(pct);
+
+        layer.appendChild(group);
+    }
+
     function renderGlobalHeatmap(futures) {
         if (!$gmHeatmap) return;
         clearChildren($gmHeatmap);
         if (!futures || !futures.length) {
-            $gmHeatmap.appendChild(el("div", "gm-loading", "Building country heatmap…"));
+            $gmHeatmap.appendChild(el("div", "gm-loading", "Building world market map…"));
             return;
         }
 
-        var entries = buildGlobalHeatmapEntries(futures);
-        var svgMarkup = [
-            '<svg class="gm-map-svg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Live global markets heatmap">',
-            '<defs>',
-            '<filter id="gmCountryGlow" x="-30%" y="-30%" width="160%" height="160%">',
-            '<feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="rgba(0,0,0,.24)" />',
-            '</filter>',
-            '<filter id="gmChipShadow" x="-30%" y="-30%" width="160%" height="160%">',
-            '<feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="rgba(0,0,0,.22)" />',
-            '</filter>',
-            '</defs>',
-            '<rect class="gm-map-bg" x="0" y="0" width="1200" height="560" rx="24" ry="24"></rect>',
-            GM_HEATMAP_BACKDROP.map(function (path) {
-                return '<path class="gm-map-backdrop" d="' + path + '"></path>';
-            }).join(""),
-            '<g class="gm-map-meridians">',
-            '<path d="M150 80 C245 150 250 395 172 498"></path>',
-            '<path d="M350 58 C430 152 435 392 368 514"></path>',
-            '<path d="M570 52 C630 148 640 392 594 520"></path>',
-            '<path d="M780 64 C840 160 852 392 814 506"></path>',
-            '<path d="M990 84 C1038 178 1052 378 1030 474"></path>',
-            '</g>',
-        ];
+        ensureGlobalWorldSvgTemplate()
+            .then(function (template) {
+                if (!$gmHeatmap) return;
+                clearChildren($gmHeatmap);
+                var svgRoot = template.cloneNode(true);
+                $gmHeatmap.appendChild(svgRoot);
 
-        entries.forEach(function (entry) {
-            var spec = entry.spec;
-            var tone = globalHeatTone(entry.pct);
-            var pctText = entry.pct == null ? "\u2014" : fmtPct(entry.pct);
-            var displayLabel = globalHeatDisplayLabel(spec);
-            var chipWidth = Math.max(42, 28 + displayLabel.length * 8);
-            var chipHeight = window.innerWidth < 920 ? 32 : 38;
-            var chipX = spec.pctX - chipWidth / 2;
-            var chipY = spec.pctY - chipHeight / 2 - 7;
-            var title = spec.label + " \u00b7 " + spec.source + " \u00b7 " + pctText;
-            if (entry.status === "OPEN") title += " \u00b7 open";
-            else if (entry.status === "HOLIDAY") title += " \u00b7 holiday";
-            svgMarkup.push(
-                '<g class="gm-country' + (entry.status === "OPEN" ? ' is-open' : '') + '" tabindex="0">',
-                '<title>' + title + '</title>',
-                '<path class="gm-country-shape" d="' + spec.path + '" fill="' + tone.fill + '" stroke="' + tone.stroke + '" filter="url(#gmCountryGlow)" style="--gm-country-shadow:' + tone.shadow + ';"></path>',
-                '<g class="gm-country-chip" filter="url(#gmChipShadow)">',
-                '<rect class="gm-country-chip-bg" x="' + chipX.toFixed(1) + '" y="' + chipY.toFixed(1) + '" width="' + chipWidth.toFixed(1) + '" height="' + chipHeight + '" rx="14" ry="14" stroke="' + tone.stroke + '" fill="rgba(8,12,20,0.64)"></rect>',
-                '<text class="gm-country-chip-label" x="' + spec.labelX + '" y="' + (spec.labelY + 2) + '" text-anchor="middle">' + displayLabel + '</text>',
-                '<text class="gm-country-chip-pct" x="' + spec.pctX + '" y="' + (spec.pctY + 2) + '" text-anchor="middle" fill="' + tone.text + '">' + pctText + '</text>',
-                '</g>',
-                '</g>'
-            );
-        });
+                var overlay = createSvgNode("g");
+                overlay.setAttribute("class", "gm-market-overlay");
+                svgRoot.appendChild(overlay);
 
-        svgMarkup.push("</svg>");
-        $gmHeatmap.innerHTML = svgMarkup.join("");
+                buildGlobalHeatmapEntries(futures).forEach(function (entry) {
+                    var spec = entry.spec;
+                    var nodes = globalHeatNodes(svgRoot, spec.countryIds);
+                    var tone = globalHeatTone(entry.pct);
+                    if (nodes.length) {
+                        tintGlobalCountry(nodes, tone, entry.status);
+                    }
+
+                    var box = unionBBox(nodes);
+                    var anchorX = spec.badgeX != null
+                        ? spec.badgeX
+                        : box
+                            ? box.x + box.width * (spec.anchorX == null ? 0.5 : spec.anchorX)
+                            : 0;
+                    var anchorY = spec.badgeY != null
+                        ? spec.badgeY
+                        : box
+                            ? box.y + box.height * (spec.anchorY == null ? 0.5 : spec.anchorY)
+                            : 0;
+                    anchorX += spec.dx || 0;
+                    anchorY += spec.dy || 0;
+
+                    if (anchorX && anchorY) {
+                        appendGlobalBadge(overlay, entry, anchorX, anchorY);
+                    }
+                });
+            })
+            .catch(function () {
+                clearChildren($gmHeatmap);
+                $gmHeatmap.appendChild(el("div", "gm-loading", "World market map unavailable"));
+            });
     }
 
     function summarizeGlobalSessions(futures) {
