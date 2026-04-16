@@ -81,12 +81,14 @@
     const $mfSuggest   = $("mf-suggest");
     const $mfStatus    = $("mf-status");
     const $mfHoldings  = $("mf-holdings");
-    const $mfEmpty     = $("mf-empty");
     const $mfDetail    = $("mf-detail");
     const $mfHero      = $("mf-hero");
+    const $mfBenchmarkBlock = $("mf-benchmark-block");
     const $mfBenchmarks = $("mf-benchmarks");
+    const $mfRangeBlock = $("mf-range-block");
     const $mfRanges    = $("mf-ranges");
     const $mfStats     = $("mf-stats");
+    const $mfChartShell = $("mf-chart-shell");
     const $mfChartTitle = $("mf-chart-title");
     const $mfChartNote = $("mf-chart-note");
     const $mfChartBox  = $("mf-chart");
@@ -1484,7 +1486,7 @@
             showMutualChartPlaceholder(
                 mutualState.compareLoading
                     ? "Loading official NAV and benchmark history…"
-                    : (mutualState.compareError || "Choose a fund to compare.")
+                    : (mutualState.compareError || ((mutualState.selectedSchemeCode || "").trim() ? "Choose a benchmark and range." : "Select a tracked fund."))
             );
             return;
         }
@@ -1506,17 +1508,43 @@
     }
 
     function renderMutualDetail() {
-        if (!$mfEmpty || !$mfDetail || !$mfHero || !$mfBenchmarks || !$mfRanges || !$mfStats || !$mfChartTitle || !$mfChartNote) {
+        if (
+            !$mfDetail ||
+            !$mfHero ||
+            !$mfBenchmarkBlock ||
+            !$mfBenchmarks ||
+            !$mfRangeBlock ||
+            !$mfRanges ||
+            !$mfStats ||
+            !$mfChartShell ||
+            !$mfChartTitle ||
+            !$mfChartNote
+        ) {
             return;
         }
         var fund = currentMutualFund();
         if (!fund) {
-            $mfEmpty.hidden = false;
-            $mfDetail.hidden = true;
+            clearChildren($mfHero);
+            clearChildren($mfBenchmarks);
+            clearChildren($mfRanges);
+            clearChildren($mfStats);
+            $mfDetail.classList.add("is-empty");
+            $mfHero.hidden = true;
+            $mfBenchmarkBlock.hidden = true;
+            $mfRangeBlock.hidden = true;
+            $mfStats.hidden = true;
+            $mfChartShell.classList.add("is-empty");
+            $mfChartTitle.textContent = "NAV COMPARISON";
+            $mfChartNote.textContent = "Select a tracked fund";
+            renderMutualChart(null);
             return;
         }
-        $mfEmpty.hidden = true;
-        $mfDetail.hidden = false;
+        $mfDetail.classList.remove("is-empty");
+        $mfHero.hidden = false;
+        $mfBenchmarkBlock.hidden = false;
+        $mfRangeBlock.hidden = false;
+        $mfStats.hidden = false;
+        $mfChartShell.classList.remove("is-empty");
 
         clearChildren($mfHero);
         clearChildren($mfBenchmarks);

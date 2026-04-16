@@ -2091,39 +2091,6 @@ td.oc-pe span {
     line-height: 1.45;
 }
 
-.mf-empty {
-    width: 100%;
-    align-self: flex-start;
-    display: flex;
-    align-items: flex-start;
-    justify-content: flex-start;
-    min-height: 108px;
-    padding: 16px 18px;
-    border: 1px dashed rgba(255,255,255,.08);
-    border-radius: 12px;
-    color: var(--text-secondary);
-    background: rgba(255,255,255,.015);
-}
-
-.mf-empty-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    max-width: 420px;
-}
-
-.mf-empty-title {
-    font-family: var(--font-head);
-    font-size: 15px;
-    letter-spacing: .8px;
-    color: var(--text-primary);
-}
-
-.mf-empty-note {
-    font-size: 11px;
-    line-height: 1.45;
-}
-
 .mf-holding-card {
     width: 100%;
     display: flex;
@@ -2228,6 +2195,10 @@ td.oc-pe span {
     flex-direction: column;
     gap: 12px;
     contain: layout paint;
+}
+
+.mf-detail.is-empty {
+    justify-content: stretch;
 }
 
 .mf-hero,
@@ -2349,6 +2320,10 @@ td.oc-pe span {
     flex-direction: column;
     overflow: hidden;
     contain: layout paint;
+}
+
+.mf-detail.is-empty .mf-chart-shell {
+    padding-top: 16px;
 }
 
 .mf-chart-head {
