@@ -1136,7 +1136,8 @@ body {
 
 .gm-heatmap {
     position: relative;
-    min-height: 360px;
+    min-height: clamp(280px, 36vw, 480px);
+    aspect-ratio: 1200 / 560;
     border-radius: 12px;
     overflow: hidden;
     background:
@@ -1148,7 +1149,7 @@ body {
 .gm-map-svg {
     display: block;
     width: 100%;
-    height: auto;
+    height: 100%;
 }
 
 .gm-map-bg {
@@ -1184,6 +1185,7 @@ body {
 .gm-country-shape {
     stroke-width: 2;
     transition: stroke-width .16s ease, fill .16s ease;
+    vector-effect: non-scaling-stroke;
 }
 
 .gm-country.is-open .gm-country-shape {
@@ -1191,10 +1193,16 @@ body {
 }
 
 .gm-country-label,
-.gm-country-pct {
+.gm-country-pct,
+.gm-country-chip-label,
+.gm-country-chip-pct {
     pointer-events: none;
     user-select: none;
     font-family: var(--font-head);
+    paint-order: stroke fill;
+    stroke: rgba(7, 11, 19, 0.78);
+    stroke-width: 3px;
+    stroke-linejoin: round;
 }
 
 .gm-country-label {
@@ -1210,6 +1218,27 @@ body {
     font-size: 16px;
     font-weight: 700;
     letter-spacing: .4px;
+}
+
+.gm-country-chip-bg {
+    fill: rgba(8,12,20,.64);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+}
+
+.gm-country-chip-label {
+    fill: rgba(230, 238, 248, 0.88);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+}
+
+.gm-country-chip-pct {
+    fill: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .3px;
 }
 
 .gm-loading {
@@ -1881,6 +1910,7 @@ td.oc-pe span {
         rgba(12,16,24,.96);
     box-shadow: 0 18px 36px rgba(0,0,0,.34);
     z-index: 40;
+    contain: content;
 }
 
 .mf-suggest.visible {
@@ -2040,6 +2070,7 @@ td.oc-pe span {
     flex-direction: column;
     gap: 10px;
     padding-right: 2px;
+    contain: layout paint;
 }
 
 .mf-list-empty,
@@ -2071,6 +2102,8 @@ td.oc-pe span {
     text-align: left;
     cursor: pointer;
     transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    content-visibility: auto;
+    contain-intrinsic-size: 112px;
 }
 
 .mf-holding-card:hover {
@@ -2157,6 +2190,7 @@ td.oc-pe span {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    contain: layout paint;
 }
 
 .mf-hero,
@@ -2277,6 +2311,7 @@ td.oc-pe span {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    contain: layout paint;
 }
 
 .mf-chart-head {
@@ -2647,15 +2682,15 @@ td.oc-pe span {
     }
 
     .gm-heatmap {
-        min-height: 280px;
+        min-height: 240px;
     }
 
-    .gm-country-label {
+    .gm-country-chip-label {
         font-size: 8px;
     }
 
-    .gm-country-pct {
-        font-size: 13px;
+    .gm-country-chip-pct {
+        font-size: 12px;
     }
 
     .gm-table { font-size: 10px; }

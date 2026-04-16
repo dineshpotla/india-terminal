@@ -58,6 +58,7 @@ _INDEX_NAME_CLEANUPS = {
 
 _AMFI_HISTORY_DATE_FMT = "%d-%b-%Y"
 _NSE_HISTORY_DATE_FMT = "%d-%m-%Y"
+MF_COMPARE_MAX_RENDER_POINTS = 420
 
 
 def _utc_now_iso() -> str:
@@ -167,6 +168,26 @@ def _query_category_hints(query_name: str) -> set[str]:
         if any(needle in text for needle in needles):
             hints.add(category)
     return hints
+
+
+def _downsample_compare_series(points: List[dict], max_points: int = MF_COMPARE_MAX_RENDER_POINTS) -> List[dict]:
+    if len(points) <= max_points:
+        return list(points)
+    if max_points <= 2:
+        return [points[0], points[-1]]
+    step = (len(points) - 1) / float(max_points - 1)
+    sampled: List[dict] = []
+    seen_times = set()
+    for idx in range(max_points):
+        point = points[int(round(idx * step))]
+        time_key = point.get("time")
+        if time_key in seen_times:
+            continue
+        seen_times.add(time_key)
+        sampled.append(point)
+    if sampled[-1].get("time") != points[-1].get("time"):
+        sampled[-1] = points[-1]
+    return sampled
 
 
 def _scheme_search_bucket(name: str, category: Optional[str], category_hints: set[str]) -> tuple:
@@ -311,10 +332,9 @@ class MutualFundsService:
                     "time": int(datetime(dt.year, dt.month, dt.day).timestamp()),
                     "fund": round(100.0 * fund_nav / base_fund, 2),
                     "benchmark": round(100.0 * bench_close / base_bm, 2),
-                    "fund_nav": round(fund_nav, 4),
-                    "benchmark_close": round(bench_close, 2),
                 }
             )
+        render_series = _downsample_compare_series(chart)
         fund_return = round(chart[-1]["fund"] - 100.0, 2)
         benchmark_return = round(chart[-1]["benchmark"] - 100.0, 2)
         return {
@@ -326,7 +346,8 @@ class MutualFundsService:
             "from_date": common_dates[0].isoformat(),
             "to_date": common_dates[-1].isoformat(),
             "points": len(chart),
-            "series": chart,
+            "render_points": len(render_series),
+            "series": render_series,
             "fund_return_pct": fund_return,
             "benchmark_return_pct": benchmark_return,
             "alpha_pct": round(fund_return - benchmark_return, 2),

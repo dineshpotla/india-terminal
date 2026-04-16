@@ -17,6 +17,7 @@
     let mfChart = null;
     let mfFundSeries = null;
     let mfBenchmarkSeries = null;
+    let mutualChartRenderKey = "";
     let newsLlmState = {
         news_llm_pending: undefined,
         news_llm_enabled: undefined,
@@ -51,6 +52,8 @@
     let mutualHoldingsLoadPromise = null;
     let mutualCompareLoadPromise = null;
     let mutualCompareRequestSeq = 0;
+    let mutualCompareAbortController = null;
+    let mutualSearchAbortController = null;
     let mutualSearchResults = [];
     let newsRetryTimers = {
         all: null,
@@ -114,10 +117,11 @@
         {
             key: "usa",
             label: "USA",
+            shortLabel: "US",
             source: "US composite",
             names: ["S&P 500", "NASDAQ", "DOW JONES", "RUSSELL 2000"],
             mode: "average",
-            path: "M118 214 L142 190 L192 182 L252 188 L286 208 L294 230 L258 242 L222 246 L188 262 L145 256 L120 238 Z",
+            path: "M116 216 L140 194 L172 186 L214 184 L248 190 L280 202 L302 220 L298 238 L278 246 L258 260 L224 264 L192 274 L160 270 L136 256 L120 238 Z",
             labelX: 205, labelY: 212, pctX: 205, pctY: 234, metaX: 205, metaY: 252,
         },
         {
@@ -131,6 +135,7 @@
         {
             key: "france",
             label: "FRANCE",
+            shortLabel: "FR",
             source: "CAC 40",
             names: ["CAC 40"],
             path: "M646 224 L670 216 L684 232 L678 254 L652 260 L638 242 Z",
@@ -139,6 +144,7 @@
         {
             key: "germany",
             label: "GERMANY",
+            shortLabel: "DE",
             source: "DAX",
             names: ["DAX"],
             path: "M684 200 L708 198 L720 214 L716 238 L694 246 L680 226 Z",
@@ -146,7 +152,8 @@
         },
         {
             key: "eurozone",
-            label: "EUROZONE",
+            label: "EU STOXX",
+            shortLabel: "EU",
             source: "EURO STOXX 50",
             names: ["EURO STOXX 50"],
             path: "M724 214 L752 210 L770 222 L766 244 L740 252 L718 238 Z",
@@ -155,17 +162,19 @@
         {
             key: "india",
             label: "INDIA",
+            shortLabel: "IN",
             source: "GIFT NIFTY",
             names: ["GIFT NIFTY"],
-            path: "M872 302 L902 296 L922 314 L916 344 L892 362 L870 344 Z",
+            path: "M874 302 L892 294 L908 300 L922 318 L918 340 L906 356 L892 364 L880 350 L872 334 Z",
             labelX: 894, labelY: 308, pctX: 894, pctY: 327, metaX: 894, metaY: 346,
         },
         {
             key: "china",
             label: "CHINA",
+            shortLabel: "CN",
             source: "SHANGHAI",
             names: ["SHANGHAI"],
-            path: "M930 230 L990 220 L1046 232 L1062 266 L1032 292 L972 298 L930 278 Z",
+            path: "M932 230 L966 220 L1002 222 L1038 234 L1058 252 L1060 272 L1044 288 L1010 298 L972 296 L948 286 L934 268 Z",
             labelX: 986, labelY: 240, pctX: 986, pctY: 262, metaX: 986, metaY: 281,
         },
         {
@@ -179,6 +188,7 @@
         {
             key: "korea",
             label: "KOREA",
+            shortLabel: "KR",
             source: "KOSPI",
             names: ["KOSPI"],
             path: "M1028 244 L1050 240 L1060 258 L1054 282 L1032 286 L1020 264 Z",
@@ -187,6 +197,7 @@
         {
             key: "taiwan",
             label: "TAIWAN",
+            shortLabel: "TW",
             source: "TAIWAN",
             names: ["TAIWAN"],
             path: "M1046 292 L1066 288 L1074 304 L1068 326 L1050 330 L1042 312 Z",
@@ -195,9 +206,10 @@
         {
             key: "japan",
             label: "JAPAN",
+            shortLabel: "JP",
             source: "NIKKEI 225",
             names: ["NIKKEI 225"],
-            path: "M1082 220 L1100 208 L1118 216 L1114 236 L1122 252 L1110 270 L1092 266 L1094 246 L1086 234 Z",
+            path: "M1084 220 L1098 210 L1110 214 L1114 228 L1108 242 L1116 256 L1110 270 L1098 266 L1094 250 L1088 238 Z",
             labelX: 1102, labelY: 222, pctX: 1102, pctY: 241, metaX: 1102, metaY: 260,
         },
         {
@@ -211,6 +223,7 @@
         {
             key: "thailand",
             label: "THAILAND",
+            shortLabel: "TH",
             source: "SET COMPOSITE",
             names: ["SET COMPOSITE"],
             path: "M932 322 L958 314 L976 328 L972 350 L946 356 L928 340 Z",
@@ -219,9 +232,10 @@
         {
             key: "indonesia",
             label: "INDONESIA",
+            shortLabel: "ID",
             source: "JAKARTA",
             names: ["JAKARTA"],
-            path: "M978 390 L1038 388 L1060 398 L1048 416 L988 418 L972 404 Z",
+            path: "M978 392 L1012 388 L1038 390 L1058 398 L1048 410 L1026 414 L1004 416 L984 418 L972 406 Z",
             labelX: 1016, labelY: 394, pctX: 1016, pctY: 409, metaX: 1016, metaY: 425,
         },
     ];
@@ -473,8 +487,10 @@
     async function fetchJson(url, opts) {
         opts = opts || {};
         var timeoutMs = Number(opts.timeoutMs || 0);
+        var externalSignal = opts.signal || null;
         var controller = null;
         var timer = null;
+        var abortListener = null;
         if (timeoutMs > 0 && typeof AbortController !== "undefined") {
             controller = new AbortController();
             timer = setTimeout(function () {
@@ -483,13 +499,33 @@
         }
         var res;
         var fetchOpts = {};
+        if (controller && externalSignal) {
+            if (externalSignal.aborted) controller.abort();
+            else {
+                abortListener = function () { controller.abort(); };
+                externalSignal.addEventListener("abort", abortListener, { once: true });
+            }
+        }
         if (controller) fetchOpts.signal = controller.signal;
+        else if (externalSignal) fetchOpts.signal = externalSignal;
         if (opts.method) fetchOpts.method = opts.method;
         if (opts.headers) fetchOpts.headers = opts.headers;
         if (opts.body !== undefined) fetchOpts.body = opts.body;
         try {
             res = await fetch(url, fetchOpts);
+        } catch (err) {
+            if (abortListener && externalSignal) {
+                externalSignal.removeEventListener("abort", abortListener);
+            }
+            if (timer) clearTimeout(timer);
+            if (err && err.name === "AbortError") {
+                throw new Error("Request cancelled");
+            }
+            throw err;
         } finally {
+            if (abortListener && externalSignal) {
+                externalSignal.removeEventListener("abort", abortListener);
+            }
             if (timer) clearTimeout(timer);
         }
         if (!res.ok) {
@@ -876,6 +912,10 @@
         });
     }
 
+    function globalHeatDisplayLabel(spec) {
+        return window.innerWidth < 920 ? (spec.shortLabel || spec.label) : spec.label;
+    }
+
     function renderGlobalHeatmap(futures) {
         if (!$gmHeatmap) return;
         clearChildren($gmHeatmap);
@@ -886,10 +926,13 @@
 
         var entries = buildGlobalHeatmapEntries(futures);
         var svgMarkup = [
-            '<svg class="gm-map-svg" viewBox="0 0 1200 560" role="img" aria-label="Live global markets heatmap">',
+            '<svg class="gm-map-svg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Live global markets heatmap">',
             '<defs>',
             '<filter id="gmCountryGlow" x="-30%" y="-30%" width="160%" height="160%">',
             '<feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="rgba(0,0,0,.24)" />',
+            '</filter>',
+            '<filter id="gmChipShadow" x="-30%" y="-30%" width="160%" height="160%">',
+            '<feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="rgba(0,0,0,.22)" />',
             '</filter>',
             '</defs>',
             '<rect class="gm-map-bg" x="0" y="0" width="1200" height="560" rx="24" ry="24"></rect>',
@@ -909,6 +952,11 @@
             var spec = entry.spec;
             var tone = globalHeatTone(entry.pct);
             var pctText = entry.pct == null ? "\u2014" : fmtPct(entry.pct);
+            var displayLabel = globalHeatDisplayLabel(spec);
+            var chipWidth = Math.max(44, 38 + displayLabel.length * (window.innerWidth < 920 ? 5.5 : 7.2));
+            var chipHeight = window.innerWidth < 920 ? 34 : 40;
+            var chipX = spec.pctX - chipWidth / 2;
+            var chipY = spec.pctY - chipHeight / 2 - 6;
             var title = spec.label + " \u00b7 " + spec.source + " \u00b7 " + pctText;
             if (entry.status === "OPEN") title += " \u00b7 open";
             else if (entry.status === "HOLIDAY") title += " \u00b7 holiday";
@@ -916,8 +964,11 @@
                 '<g class="gm-country' + (entry.status === "OPEN" ? ' is-open' : '') + '" tabindex="0">',
                 '<title>' + title + '</title>',
                 '<path class="gm-country-shape" d="' + spec.path + '" fill="' + tone.fill + '" stroke="' + tone.stroke + '" filter="url(#gmCountryGlow)" style="--gm-country-shadow:' + tone.shadow + ';"></path>',
-                '<text class="gm-country-label" x="' + spec.labelX + '" y="' + spec.labelY + '" text-anchor="middle">' + spec.label + '</text>',
-                '<text class="gm-country-pct" x="' + spec.pctX + '" y="' + spec.pctY + '" text-anchor="middle" fill="' + tone.text + '">' + pctText + '</text>',
+                '<g class="gm-country-chip" filter="url(#gmChipShadow)">',
+                '<rect class="gm-country-chip-bg" x="' + chipX.toFixed(1) + '" y="' + chipY.toFixed(1) + '" width="' + chipWidth.toFixed(1) + '" height="' + chipHeight + '" rx="14" ry="14" stroke="' + tone.stroke + '" fill="rgba(8,12,20,0.64)"></rect>',
+                '<text class="gm-country-chip-label" x="' + spec.labelX + '" y="' + (spec.labelY + 2) + '" text-anchor="middle">' + displayLabel + '</text>',
+                '<text class="gm-country-chip-pct" x="' + spec.pctX + '" y="' + (spec.pctY + 2) + '" text-anchor="middle" fill="' + tone.text + '">' + pctText + '</text>',
+                '</g>',
                 '</g>'
             );
         });
@@ -1268,6 +1319,27 @@
         ];
     }
 
+    function clearMutualSuggestions() {
+        mutualSearchResults = [];
+        if ($mfSuggest) {
+            clearChildren($mfSuggest);
+            $mfSuggest.classList.remove("visible");
+        }
+    }
+
+    function prepareMutualComparePayload(data) {
+        if (!data || !Array.isArray(data.series)) return data;
+        data.fund_chart_data = data.series.map(function (point) {
+            return { time: point.time, value: point.fund };
+        });
+        data.benchmark_chart_data = data.series.map(function (point) {
+            return { time: point.time, value: point.benchmark };
+        });
+        data.render_points = data.render_points || data.series.length;
+        delete data.series;
+        return data;
+    }
+
     function renderMutualStatus() {
         if (!$mfStatus) return;
         var count = (mutualState.watchlist || []).length;
@@ -1296,6 +1368,7 @@
             $mfHoldings.appendChild(el("div", "mf-list-empty", "Search AMFI schemes above to start tracking mutual funds."));
             return;
         }
+        var frag = document.createDocumentFragment();
         funds.forEach(function (fund) {
             var active = String(fund.scheme_code || "") === String(mutualState.selectedSchemeCode || "");
             var card = el("button", "mf-holding-card" + (active ? " active" : ""));
@@ -1329,8 +1402,9 @@
             card.addEventListener("click", function () {
                 setMutualSelection(String(fund.scheme_code || ""));
             });
-            $mfHoldings.appendChild(card);
+            frag.appendChild(card);
         });
+        $mfHoldings.appendChild(frag);
     }
 
     function ensureMutualChart() {
@@ -1403,9 +1477,10 @@
 
     function renderMutualChart(compare) {
         if (!$mfChartBox) return;
-        if (!compare || !compare.series || !compare.series.length) {
+        if (!compare || !compare.fund_chart_data || !compare.fund_chart_data.length) {
             if (mfFundSeries) mfFundSeries.setData([]);
             if (mfBenchmarkSeries) mfBenchmarkSeries.setData([]);
+            mutualChartRenderKey = "";
             showMutualChartPlaceholder(
                 mutualState.compareLoading
                     ? "Loading official NAV and benchmark history…"
@@ -1416,13 +1491,18 @@
         hideMutualChartPlaceholder();
         var chartRef = ensureMutualChart();
         if (!chartRef || !mfFundSeries || !mfBenchmarkSeries) return;
-        mfFundSeries.setData(compare.series.map(function (point) {
-            return { time: point.time, value: point.fund };
-        }));
-        mfBenchmarkSeries.setData(compare.series.map(function (point) {
-            return { time: point.time, value: point.benchmark };
-        }));
+        var renderKey = [
+            compare.fund && compare.fund.scheme_code,
+            compare.benchmark,
+            compare.range,
+            compare.render_points || 0,
+            compare.to_date || "",
+        ].join("|");
+        if (mutualChartRenderKey === renderKey) return;
+        mfFundSeries.setData(compare.fund_chart_data || []);
+        mfBenchmarkSeries.setData(compare.benchmark_chart_data || []);
         chartRef.timeScale().fitContent();
+        mutualChartRenderKey = renderKey;
     }
 
     function renderMutualDetail() {
@@ -1517,7 +1597,11 @@
         if (compare) {
             $mfChartNote.textContent =
                 "Normalized to 100 from " + fmtDateLabel(compare.from_date) +
-                " · " + compare.points + " NAV points · " +
+                " · " +
+                ((compare.render_points && compare.render_points < compare.points)
+                    ? (compare.render_points + "/" + compare.points + " points rendered")
+                    : (compare.points + " NAV points")) +
+                " · " +
                 (compare.source && compare.source.fund ? compare.source.fund : "AMFI") +
                 " vs " +
                 (compare.source && compare.source.benchmark ? compare.source.benchmark : "NSE");
@@ -1588,6 +1672,7 @@
             mutualState.compare = null;
             mutualState.compareLoading = false;
             mutualState.compareError = null;
+            mutualChartRenderKey = "";
             renderMutualPage();
             return;
         }
@@ -1657,15 +1742,22 @@
         mutualState.compareError = null;
         renderMutualPage();
         var requestSeq = ++mutualCompareRequestSeq;
+        if (mutualCompareAbortController) {
+            mutualCompareAbortController.abort();
+        }
+        mutualCompareAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+        var compareController = mutualCompareAbortController;
         mutualCompareLoadPromise = (async function () {
             try {
                 var data = await fetchJson(
                     "/api/mf/compare/" + encodeURIComponent(String(fund.scheme_code || "")) +
                     "?benchmark=" + encodeURIComponent(benchmark) +
                     "&range=" + encodeURIComponent(rangeKey),
-                    { timeoutMs: 60000 }
+                    { timeoutMs: 45000, signal: compareController ? compareController.signal : null }
                 );
+                if (compareController && compareController.signal.aborted) return null;
                 if (requestSeq !== mutualCompareRequestSeq) return data;
+                data = prepareMutualComparePayload(data);
                 mutualState.compare = data;
                 mutualState.compareLoading = false;
                 mutualState.selectedBenchmark = data.benchmark || benchmark;
@@ -1674,6 +1766,7 @@
                 renderMutualPage();
                 return data;
             } catch (err) {
+                if (compareController && compareController.signal.aborted) return null;
                 if (requestSeq !== mutualCompareRequestSeq) return null;
                 console.error("Mutual compare fetch error:", err);
                 mutualState.compareLoading = false;
@@ -1681,6 +1774,9 @@
                 renderMutualPage();
                 return null;
             } finally {
+                if (mutualCompareAbortController === compareController) {
+                    mutualCompareAbortController = null;
+                }
                 if (requestSeq === mutualCompareRequestSeq) {
                     mutualCompareLoadPromise = null;
                 }
@@ -1707,11 +1803,11 @@
             if ($mfInput) {
                 $mfInput.value = "";
             }
-            mutualSearchResults = [];
-            if ($mfSuggest) {
-                clearChildren($mfSuggest);
-                $mfSuggest.classList.remove("visible");
+            if (mutualSearchAbortController) {
+                mutualSearchAbortController.abort();
+                mutualSearchAbortController = null;
             }
+            clearMutualSuggestions();
         }
     }
 
@@ -1739,11 +1835,12 @@
     function renderMutualSuggestions(items) {
         if (!$mfSuggest) return;
         clearChildren($mfSuggest);
-        mutualSearchResults = items || [];
+        mutualSearchResults = (items || []).slice(0, 12);
         if (!mutualSearchResults.length) {
             $mfSuggest.classList.remove("visible");
             return;
         }
+        var frag = document.createDocumentFragment();
         mutualSearchResults.forEach(function (item) {
             var row = el("button", "mf-suggest-item" + (item.tracked ? " already" : ""));
             row.type = "button";
@@ -1769,8 +1866,9 @@
                     addMutualFund(item.scheme_code);
                 });
             }
-            $mfSuggest.appendChild(row);
+            frag.appendChild(row);
         });
+        $mfSuggest.appendChild(frag);
         $mfSuggest.classList.add("visible");
     }
 
@@ -1778,19 +1876,29 @@
         if (!$mfSuggest) return;
         var q = String(query || "").trim();
         if (q.length < 2) {
-            clearChildren($mfSuggest);
-            $mfSuggest.classList.remove("visible");
-            mutualSearchResults = [];
+            clearMutualSuggestions();
             return;
         }
+        if (mutualSearchAbortController) {
+            mutualSearchAbortController.abort();
+        }
+        mutualSearchAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+        var searchController = mutualSearchAbortController;
         try {
-            var items = await fetchJson("/api/mf/search?q=" + encodeURIComponent(q), { timeoutMs: 15000 });
+            var items = await fetchJson("/api/mf/search?q=" + encodeURIComponent(q), {
+                timeoutMs: 12000,
+                signal: searchController ? searchController.signal : null,
+            });
+            if (searchController && searchController.signal.aborted) return;
             renderMutualSuggestions(items || []);
         } catch (err) {
+            if (searchController && searchController.signal.aborted) return;
             console.error("Mutual search error:", err);
-            clearChildren($mfSuggest);
-            $mfSuggest.classList.remove("visible");
-            mutualSearchResults = [];
+            clearMutualSuggestions();
+        } finally {
+            if (mutualSearchAbortController === searchController) {
+                mutualSearchAbortController = null;
+            }
         }
     }
 
@@ -1800,11 +1908,11 @@
             clearTimeout(mutualSuggestTimeout);
             var query = $mfInput.value.trim();
             if (!query) {
-                if ($mfSuggest) {
-                    clearChildren($mfSuggest);
-                    $mfSuggest.classList.remove("visible");
+                if (mutualSearchAbortController) {
+                    mutualSearchAbortController.abort();
+                    mutualSearchAbortController = null;
                 }
-                mutualSearchResults = [];
+                clearMutualSuggestions();
                 return;
             }
             mutualSuggestTimeout = setTimeout(function () {
@@ -1819,6 +1927,10 @@
         $mfInput.addEventListener("blur", function () {
             setTimeout(function () {
                 if ($mfSuggest) $mfSuggest.classList.remove("visible");
+                if (mutualSearchAbortController) {
+                    mutualSearchAbortController.abort();
+                    mutualSearchAbortController = null;
+                }
             }, 180);
         });
 
@@ -1951,6 +2063,12 @@
         }
         if (mfChart && $mfChartBox) {
             mfChart.applyOptions({ width: $mfChartBox.clientWidth, height: $mfChartBox.clientHeight });
+        }
+        var globalRows = (panelState.global && panelState.global.global_futures)
+            || (dashboardData && dashboardData.global_futures)
+            || [];
+        if (globalRows.length) {
+            renderGlobalHeatmap(globalRows);
         }
     }
     window.addEventListener("resize", handleResize);
