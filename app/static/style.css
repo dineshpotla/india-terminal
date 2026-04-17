@@ -1549,6 +1549,9 @@ body {
 }
 
 .nav-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     font-family: var(--font-head);
     font-size: 9px;
     font-weight: 600;
@@ -1559,6 +1562,7 @@ body {
     background: transparent;
     color: var(--text-dim);
     cursor: pointer;
+    text-decoration: none;
     transition: all .2s;
 }
 

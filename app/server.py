@@ -15,15 +15,11 @@ from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
 
 from .data_engine import DataEngine, IST, SECTOR_MAP
-from .mutual_fund_store import MutualFundWatchlistStore
-from .mutual_funds import MutualFundsService
 from .panel_cache import PanelCacheManager
 from .watchlist_store import WatchlistStore
 
 STATIC = Path(__file__).parent / "static"
 _WATCHLIST_SYMBOL_RE = re.compile(r"^[A-Z0-9&.-]{1,20}$")
-_MF_SCHEME_CODE_RE = re.compile(r"^[0-9]{1,20}$")
-
 PANEL_OVERVIEW_KEY = "panel:overview"
 PANEL_GLOBAL_KEY = "panel:global"
 PANEL_NEWS_ALL_KEY = "panel:news:all"
@@ -43,9 +39,7 @@ WATCHLIST_NEWS_STALE_TTL = 12 * 60 * 60.0
 
 engine = DataEngine()
 watchlist_store = WatchlistStore()
-mutual_fund_store = MutualFundWatchlistStore()
 panel_cache = PanelCacheManager(engine._dashboard_store)
-mutual_funds = MutualFundsService(engine._dashboard_store, mutual_fund_store)
 
 
 class WatchlistPayload(BaseModel):
@@ -61,13 +55,6 @@ def _normalize_symbol(symbol: str) -> str:
     if not sym or not _WATCHLIST_SYMBOL_RE.fullmatch(sym):
         raise HTTPException(status_code=400, detail="Invalid symbol")
     return sym
-
-
-def _normalize_scheme_code(scheme_code: str) -> str:
-    code = (scheme_code or "").strip()
-    if not code or not _MF_SCHEME_CODE_RE.fullmatch(code):
-        raise HTTPException(status_code=400, detail="Invalid scheme code")
-    return code
 
 
 def _known_symbol(symbol: str) -> bool:
@@ -404,49 +391,6 @@ async def delete_watchlist_symbol(symbol: str):
     after_symbols = watchlist_store.list_symbols()
     await _invalidate_watchlist_panels(before_symbols, after_symbols)
     return JSONResponse(_watchlist_response())
-
-
-@app.get("/api/mf/search")
-async def mf_search(q: str = Query("")):
-    return JSONResponse(await asyncio.to_thread(mutual_funds.search, q))
-
-
-@app.get("/api/mf/watchlist")
-async def mf_watchlist():
-    return JSONResponse(await asyncio.to_thread(mutual_funds.list_watchlist))
-
-
-@app.put("/api/mf/watchlist/{scheme_code}")
-async def add_mf_watchlist_item(scheme_code: str):
-    code = _normalize_scheme_code(scheme_code)
-    try:
-        data = await asyncio.to_thread(mutual_funds.add, code)
-    except Exception as exc:
-        print(f"[MutualFunds] add failed: {exc}")
-        raise HTTPException(status_code=400, detail=str(exc))
-    return JSONResponse(data)
-
-
-@app.delete("/api/mf/watchlist/{scheme_code}")
-async def delete_mf_watchlist_item(scheme_code: str):
-    code = _normalize_scheme_code(scheme_code)
-    try:
-        data = await asyncio.to_thread(mutual_funds.remove, code)
-    except Exception as exc:
-        print(f"[MutualFunds] delete failed: {exc}")
-        raise HTTPException(status_code=400, detail=str(exc))
-    return JSONResponse(data)
-
-
-@app.get("/api/mf/compare/{scheme_code}")
-async def mf_compare(scheme_code: str, benchmark: str = Query(""), range_key: str = Query("max", alias="range")):
-    code = _normalize_scheme_code(scheme_code)
-    try:
-        data = await asyncio.to_thread(mutual_funds.compare, code, benchmark or None, range_key)
-    except Exception as exc:
-        print(f"[MutualFunds] compare failed: {exc}")
-        raise HTTPException(status_code=400, detail=str(exc))
-    return JSONResponse(data)
 
 
 @app.get("/api/options/{symbol}")

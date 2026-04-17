@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>India Market Mutual Funds</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/mutual.css">
+</head>
+<body>
+    <div class="terminal terminal--mutual">
+        <header class="header mutual-page-header">
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-icon">◆</span>
+                    <span class="logo-text">INDIA MARKET MUTUAL FUNDS</span>
+                </div>
+                <span class="market-badge preopen" id="mf-page-badge">AMFI + NSE</span>
+            </div>
+            <div class="header-right mutual-page-actions">
+                <span class="update-label" id="mf-page-updated">Shared watchlist</span>
+                <a class="nav-tab nav-tab-link" href="https://india-market-terminal.onrender.com" rel="noreferrer">BACK TO TERMINAL</a>
+            </div>
+        </header>
+
+        <div class="mutual-view mutual-view--standalone">
+            <aside class="mf-sidebar">
+                <div class="mf-toolbar">
+                    <div>
+                        <div class="mf-kicker">AMFI WATCHLIST</div>
+                        <h2 class="mf-title">Mutual Funds</h2>
+                    </div>
+                </div>
+                <div class="mf-search-wrap">
+                    <span class="mf-search-icon">⌕</span>
+                    <input id="mf-input" class="mf-input" type="text" placeholder="Search AMFI schemes…" autocomplete="off">
+                    <div id="mf-suggest" class="mf-suggest"></div>
+                </div>
+                <div id="mf-status" class="mf-status">Shared list</div>
+                <div id="mf-holdings" class="mf-holdings">
+                    <div class="mf-list-empty">No funds tracked yet.</div>
+                </div>
+            </aside>
+
+            <section class="mf-stage">
+                <div id="mf-detail" class="mf-detail">
+                    <div id="mf-hero" class="mf-hero" hidden></div>
+                    <div id="mf-benchmark-block" class="mf-control-block" hidden>
+                        <div class="mf-control-label">Suggested Benchmarks</div>
+                        <div id="mf-benchmarks" class="mf-chip-row"></div>
+                    </div>
+                    <div id="mf-range-block" class="mf-control-block" hidden>
+                        <div class="mf-control-label">Compare Range</div>
+                        <div id="mf-ranges" class="mf-chip-row"></div>
+                    </div>
+                    <div id="mf-stats" class="mf-stats" hidden></div>
+                    <div id="mf-chart-shell" class="mf-chart-shell">
+                        <div class="mf-chart-head">
+                            <span id="mf-chart-title" class="mf-chart-title"></span>
+                            <span id="mf-chart-note" class="mf-chart-note"></span>
+                        </div>
+                        <div id="mf-chart" class="mf-chart"></div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="/static/mutual.js"></script>
+</body>
+</html>

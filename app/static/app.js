@@ -2781,7 +2781,7 @@
     // ── View Switching (INVESTING / OPTIONS / GLOBAL / MUTUAL) ────────
 
     var $terminal = document.querySelector(".terminal");
-    var navTabs = document.querySelectorAll(".nav-tab");
+    var navTabs = document.querySelectorAll(".nav-tab[data-view]");
 
     navTabs.forEach(function (btn) {
         btn.addEventListener("click", function () {

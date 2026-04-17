@@ -1,0 +1,27 @@
+.terminal--mutual {
+    min-height: 100vh;
+}
+
+.mutual-page-header {
+    border-bottom: 1px solid var(--border);
+}
+
+.mutual-page-actions {
+    min-width: auto;
+    gap: 12px;
+}
+
+.mutual-view--standalone {
+    display: flex;
+    flex: 1;
+}
+
+@media (max-width: 960px) {
+    .mutual-page-actions {
+        gap: 8px;
+    }
+
+    .mutual-view--standalone {
+        padding-top: 12px;
+    }
+}
