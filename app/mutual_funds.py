@@ -17,6 +17,7 @@ AMFI_NAV_ALL_URL = "https://portal.amfiindia.com/spages/NAVAll.txt"
 AMFI_NAV_HISTORY_URL = "https://portal.amfiindia.com/DownloadNAVHistoryReport_Po.aspx"
 NSE_INDEX_HISTORY_URL = "https://www.nseindia.com/api/historicalOR/indicesHistory"
 NSE_BASE_URL = "https://www.nseindia.com"
+MFAPI_HISTORY_URL = "https://api.mfapi.in/mf/{scheme_code}"
 
 MUTUAL_AMFI_MASTER_KEY = "mf:amfi:navall"
 MUTUAL_AMFI_AMC_CODES_KEY = "mf:amfi:amc_codes"
@@ -62,6 +63,8 @@ _AMFI_HISTORY_DATE_FMT = "%d-%b-%Y"
 _NSE_HISTORY_DATE_FMT = "%d-%m-%Y"
 MF_COMPARE_MAX_RENDER_POINTS = 240
 MF_MULTI_COMPARE_MAX_RENDER_POINTS = 180
+MF_WATCHLIST_SYNC_INTERVAL_SECONDS = 15 * 60
+MF_INCREMENTAL_HISTORY_LOOKBACK_DAYS = 7
 
 
 def _utc_now_iso() -> str:
@@ -99,6 +102,20 @@ def _clean_float(value) -> Optional[float]:
         return float(str(value).replace(",", ""))
     except Exception:
         return None
+
+
+def _parse_date_value(value) -> Optional[date]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", _AMFI_HISTORY_DATE_FMT, "%d %b %Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except Exception:
+            continue
+    return None
 
 
 def _infer_category(name: str) -> Optional[str]:
@@ -301,6 +318,8 @@ class MutualFundsService:
         self._watchlist_store = watchlist_store
         self._master_lock = threading.Lock()
         self._master_cache: Optional[dict] = None
+        self._watchlist_sync_lock = threading.Lock()
+        self._watchlist_sync_checked_at = 0.0
 
     def search(self, query: str, limit: int = 20) -> List[dict]:
         raw_query = str(query or "").strip()
@@ -337,6 +356,7 @@ class MutualFundsService:
         ]
 
     def list_watchlist(self) -> dict:
+        self._sync_watchlist_daily()
         items = [self._enrich_tracked_entry(entry) for entry in self._watchlist_store.list_entries()]
         return {
             "items": items,
@@ -348,7 +368,12 @@ class MutualFundsService:
 
     def add(self, scheme_code: str) -> dict:
         scheme = self._resolve_scheme_by_code(scheme_code)
-        self._watchlist_store.add_entry(self._tracked_entry_from_scheme(scheme))
+        entry = self._tracked_entry_from_scheme(scheme)
+        self._watchlist_store.add_entry(entry)
+        try:
+            self._ensure_fund_history_current(entry, self._comparison_start_date("max"))
+        except Exception as exc:
+            print(f"[MutualFunds] initial history backfill failed for {scheme_code}: {exc}")
         return self.list_watchlist()
 
     def remove(self, scheme_code: str) -> dict:
@@ -356,6 +381,7 @@ class MutualFundsService:
         if not code:
             raise RuntimeError("Invalid scheme code")
         self._watchlist_store.remove_entry(code)
+        self._watchlist_store.delete_nav_history(code)
         return self.list_watchlist()
 
     def compare(self, scheme_code: str, benchmark: Optional[str], range_key: str = "max") -> dict:
@@ -366,13 +392,9 @@ class MutualFundsService:
         target = self._enrich_tracked_entry(target)
         benchmark_name = benchmark or (target.get("benchmark_options") or ["NIFTY 500"])[0]
         benchmark_name = _INDEX_NAME_CLEANUPS.get(benchmark_name, benchmark_name)
-        cache_key = _cache_key("mf:compare:v2", code, benchmark_name, range_key)
-        cached = _load_snapshot(self._store, cache_key) or {}
-        if cached.get("fund_chart_data") and cached.get("benchmark_chart_data"):
-            return cached
         start_date = self._comparison_start_date(range_key)
-        fund_series = self._fund_history(target, start_date)
-        benchmark_series = self._benchmark_history(benchmark_name, start_date, date.today())
+        fund_series = self._ensure_fund_history_current(target, start_date)
+        benchmark_series = self._ensure_benchmark_history_current(benchmark_name, start_date, date.today())
         common_dates = sorted(set(fund_series) & set(benchmark_series))
         if len(common_dates) < 2:
             raise RuntimeError("Not enough overlapping history to compare this fund with the selected benchmark")
@@ -405,11 +427,10 @@ class MutualFundsService:
             "benchmark_return_pct": benchmark_return,
             "alpha_pct": round(fund_return - benchmark_return, 2),
             "source": {
-                "fund": "AMFI",
-                "benchmark": "NSE",
+                "fund": "Stored NAV",
+                "benchmark": "Stored Benchmark",
             },
         }
-        _save_snapshot(self._store, cache_key, payload)
         return payload
 
     def compare_many(self, scheme_codes: List[str], range_key: str = "max") -> dict:
@@ -424,11 +445,6 @@ class MutualFundsService:
         if not normalized_codes:
             raise RuntimeError("No mutual funds selected")
 
-        cache_key = _cache_key("mf:multi:v2", ",".join(sorted(normalized_codes)), range_key)
-        cached = _load_snapshot(self._store, cache_key) or {}
-        if cached.get("items"):
-            return cached
-
         start_date = self._comparison_start_date(range_key)
         selected_map = {
             str(entry.get("scheme_code") or "").strip(): self._enrich_tracked_entry(entry)
@@ -442,7 +458,7 @@ class MutualFundsService:
             target = selected_map.get(code)
             if not target:
                 continue
-            history = self._fund_history(target, start_date)
+            history = self._ensure_fund_history_current(target, start_date)
             dates = sorted(history)
             if len(dates) < 2:
                 continue
@@ -480,9 +496,8 @@ class MutualFundsService:
             "from_date": earliest.isoformat() if earliest else None,
             "to_date": latest.isoformat() if latest else None,
             "items": items,
-            "source": {"fund": "AMFI"},
+            "source": {"fund": "Stored NAV"},
         }
-        _save_snapshot(self._store, cache_key, payload)
         return payload
 
     def _comparison_start_date(self, range_key: str) -> date:
@@ -510,12 +525,13 @@ class MutualFundsService:
     def _enrich_tracked_entry(self, entry: dict) -> dict:
         scheme = self._resolve_scheme_by_code(entry.get("scheme_code") or "")
         merged = dict(entry)
+        latest_db = self._watchlist_store.latest_nav_point(str(entry.get("scheme_code") or "").strip())
         merged.update(
             {
                 "scheme_name": scheme.get("name"),
                 "isin_primary": scheme.get("isin_primary"),
-                "latest_nav": scheme.get("nav"),
-                "latest_nav_date": scheme.get("date"),
+                "latest_nav": float(latest_db[1]) if latest_db else scheme.get("nav"),
+                "latest_nav_date": latest_db[0].isoformat() if latest_db and latest_db[0] else scheme.get("date"),
             }
         )
         if not merged.get("category"):
@@ -651,64 +667,149 @@ class MutualFundsService:
         self._save_amfi_amc_codes(mapping)
         return found
 
-    def _fund_history(self, fund: dict, start_date: date) -> Dict[date, float]:
+    def _sync_watchlist_daily(self, force: bool = False):
+        now = time.time()
+        if not force and now - self._watchlist_sync_checked_at < MF_WATCHLIST_SYNC_INTERVAL_SECONDS:
+            return
+        with self._watchlist_sync_lock:
+            now = time.time()
+            if not force and now - self._watchlist_sync_checked_at < MF_WATCHLIST_SYNC_INTERVAL_SECONDS:
+                return
+            self._watchlist_sync_checked_at = now
+            for entry in self._watchlist_store.list_entries():
+                try:
+                    self._ensure_latest_fund_nav(entry)
+                except Exception as exc:
+                    print(f"[MutualFunds] watchlist daily sync failed for {entry.get('scheme_code')}: {exc}")
+
+    def _ensure_latest_fund_nav(self, fund: dict):
         scheme = self._resolve_scheme_by_code(fund.get("scheme_code") or "")
-        amc_code = self._resolve_amc_code(scheme.get("house") or "", scheme.get("scheme_code") or "")
-        key = f"mf:history:{scheme.get('scheme_code')}:{start_date.isoformat()}"
-        cached = _load_snapshot(self._store, key) or {}
-        items = cached.get("items") or {}
-        if items:
-            return {
-                datetime.strptime(dt, "%Y-%m-%d").date(): float(val)
-                for dt, val in items.items()
-            }
-        resp = requests.get(
-            AMFI_NAV_HISTORY_URL,
-            params={
-                "mf": amc_code,
-                "frmdt": start_date.strftime(_AMFI_HISTORY_DATE_FMT),
-                "todt": date.today().strftime(_AMFI_HISTORY_DATE_FMT),
-            },
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=90,
-        )
-        resp.raise_for_status()
-        history: Dict[date, float] = {}
-        prefix = f"{scheme.get('scheme_code')};"
-        for raw_line in resp.text.splitlines():
-            line = raw_line.strip()
-            if not line.startswith(prefix):
-                continue
-            parts = [part.strip() for part in line.split(";")]
-            if len(parts) < 8:
-                continue
-            nav = _clean_float(parts[4])
-            try:
-                dt = datetime.strptime(parts[7], _AMFI_HISTORY_DATE_FMT).date()
-            except Exception:
-                continue
-            if nav is None:
-                continue
-            history[dt] = nav
+        code = str(scheme.get("scheme_code") or "").strip()
+        master_nav = _clean_float(scheme.get("nav"))
+        master_date = _parse_date_value(scheme.get("date"))
+        latest_db = self._watchlist_store.latest_nav_point(code)
+        if master_date and master_nav is not None:
+            if latest_db and latest_db[0] and latest_db[0] >= master_date:
+                return
+            if latest_db and latest_db[0]:
+                fetch_from = max(latest_db[0] - timedelta(days=MF_INCREMENTAL_HISTORY_LOOKBACK_DAYS), master_date - timedelta(days=MF_INCREMENTAL_HISTORY_LOOKBACK_DAYS))
+                try:
+                    self._fetch_and_store_fund_history(scheme, fetch_from, date.today())
+                    return
+                except Exception as exc:
+                    print(f"[MutualFunds] incremental NAV sync fallback for {code}: {exc}")
+            self._watchlist_store.upsert_nav_history(code, [(master_date, master_nav)])
+
+    def _ensure_fund_history_current(self, fund: dict, start_date: date) -> Dict[date, float]:
+        scheme = self._resolve_scheme_by_code(fund.get("scheme_code") or "")
+        code = str(scheme.get("scheme_code") or "").strip()
+        self._ensure_latest_fund_nav(scheme)
+        history = self._watchlist_store.nav_history(code, start_date, date.today())
+        if self._needs_fund_backfill(history, start_date):
+            self._fetch_and_store_fund_history(scheme, start_date, date.today())
+            history = self._watchlist_store.nav_history(code, start_date, date.today())
         if not history:
-            raise RuntimeError(f"No AMFI history returned for {fund.get('scheme_name') or scheme.get('name')}")
-        payload = {
-            "as_of": _utc_now_iso(),
-            "items": {dt.isoformat(): val for dt, val in sorted(history.items())},
-        }
-        _save_snapshot(self._store, key, payload)
+            raise RuntimeError(f"No stored NAV history for {fund.get('scheme_name') or scheme.get('name')}")
         return history
 
-    def _benchmark_history(self, benchmark_name: str, start_date: date, end_date: date) -> Dict[date, float]:
+    def _needs_fund_backfill(self, history: Dict[date, float], start_date: date) -> bool:
+        if not history:
+            return True
+        dates = sorted(history)
+        earliest = dates[0]
+        latest = dates[-1]
+        coverage_days = max(0, (latest - earliest).days)
+        requested_days = max(0, (date.today() - start_date).days)
+        if requested_days <= 40:
+            return coverage_days + 7 < requested_days
+        if coverage_days < min(120, requested_days // 2):
+            return True
+        return False
+
+    def _fetch_and_store_fund_history(self, scheme: dict, start_date: date, end_date: date):
+        history: List[tuple[date, float]] = []
+        try:
+            amc_code = self._resolve_amc_code(scheme.get("house") or "", scheme.get("scheme_code") or "")
+            resp = requests.get(
+                AMFI_NAV_HISTORY_URL,
+                params={
+                    "mf": amc_code,
+                    "frmdt": start_date.strftime(_AMFI_HISTORY_DATE_FMT),
+                    "todt": end_date.strftime(_AMFI_HISTORY_DATE_FMT),
+                },
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=90,
+            )
+            resp.raise_for_status()
+            prefix = f"{scheme.get('scheme_code')};"
+            for raw_line in resp.text.splitlines():
+                line = raw_line.strip()
+                if not line.startswith(prefix):
+                    continue
+                parts = [part.strip() for part in line.split(";")]
+                if len(parts) < 8:
+                    continue
+                nav = _clean_float(parts[4])
+                try:
+                    dt = datetime.strptime(parts[7], _AMFI_HISTORY_DATE_FMT).date()
+                except Exception:
+                    continue
+                if nav is None:
+                    continue
+                history.append((dt, nav))
+        except Exception as exc:
+            print(f"[MutualFunds] AMFI history fallback for {scheme.get('scheme_code')}: {exc}")
+        if not history:
+            history = self._fetch_mfapi_history(str(scheme.get("scheme_code") or "").strip(), start_date, end_date)
+        if not history:
+            raise RuntimeError(f"No AMFI history returned for {scheme.get('name')}")
+        self._watchlist_store.upsert_nav_history(str(scheme.get("scheme_code") or "").strip(), history)
+
+    def _fetch_mfapi_history(self, scheme_code: str, start_date: date, end_date: date) -> List[tuple[date, float]]:
+        resp = requests.get(
+            MFAPI_HISTORY_URL.format(scheme_code=scheme_code),
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        history: List[tuple[date, float]] = []
+        for row in payload.get("data") or []:
+            raw_date = row.get("date")
+            nav = _clean_float(row.get("nav"))
+            if not raw_date or nav is None:
+                continue
+            try:
+                dt = datetime.strptime(raw_date, "%d-%m-%Y").date()
+            except Exception:
+                continue
+            if dt < start_date or dt > end_date:
+                continue
+            history.append((dt, nav))
+        return history
+
+    def _ensure_benchmark_history_current(self, benchmark_name: str, start_date: date, end_date: date) -> Dict[date, float]:
         clean_name = _INDEX_NAME_CLEANUPS.get(benchmark_name, benchmark_name)
-        key = f"mf:benchmark:{clean_name}:{start_date.isoformat()}:{end_date.isoformat()}"
-        cached = _load_snapshot(self._store, key) or {}
-        items = cached.get("items") or {}
-        if items:
-            return {
-                datetime.strptime(dt, "%Y-%m-%d").date(): float(val)
-                for dt, val in items.items()
-            }
+        latest_db = self._watchlist_store.latest_benchmark_point(clean_name)
+        history = self._watchlist_store.benchmark_history(clean_name, start_date, end_date)
+        needs_backfill = not history
+        if history:
+            dates = sorted(history)
+            coverage_days = max(0, (dates[-1] - dates[0]).days)
+            requested_days = max(0, (end_date - start_date).days)
+            if requested_days > 40 and coverage_days < min(120, requested_days // 2):
+                needs_backfill = True
+        if needs_backfill:
+            self._fetch_and_store_benchmark_history(clean_name, start_date, end_date)
+        elif latest_db and latest_db[0] and latest_db[0] < end_date - timedelta(days=2):
+            fetch_from = max(latest_db[0] - timedelta(days=MF_INCREMENTAL_HISTORY_LOOKBACK_DAYS), start_date)
+            self._fetch_and_store_benchmark_history(clean_name, fetch_from, end_date)
+        history = self._watchlist_store.benchmark_history(clean_name, start_date, end_date)
+        if not history:
+            raise RuntimeError(f"No stored benchmark history for {clean_name}")
+        return history
+
+    def _fetch_and_store_benchmark_history(self, clean_name: str, start_date: date, end_date: date):
         session = requests.Session()
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -717,7 +818,7 @@ class MutualFundsService:
         }
         session.get(NSE_BASE_URL, headers=headers, timeout=30)
         cursor = start_date
-        history: Dict[date, float] = {}
+        history: List[tuple[date, float]] = []
         while cursor <= end_date:
             chunk_end = min(cursor + timedelta(days=360), end_date)
             resp = session.get(
@@ -741,13 +842,8 @@ class MutualFundsService:
                     dt = datetime.strptime(raw_date, "%d-%b-%Y").date()
                 except Exception:
                     continue
-                history[dt] = close_val
+                history.append((dt, close_val))
             cursor = chunk_end + timedelta(days=1)
         if not history:
             raise RuntimeError(f"No NSE history returned for {clean_name}")
-        _save_snapshot(
-            self._store,
-            key,
-            {"as_of": _utc_now_iso(), "items": {dt.isoformat(): val for dt, val in sorted(history.items())}},
-        )
-        return history
+        self._watchlist_store.upsert_benchmark_history(clean_name, history)

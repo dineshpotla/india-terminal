@@ -7,8 +7,9 @@ import os
 import sqlite3
 import threading
 import time
+from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 try:
     import psycopg
@@ -80,6 +81,28 @@ class MutualFundWatchlistStore:
                 )
                 """
             )
+            self._sqlite.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mutual_fund_nav_history (
+                    scheme_code TEXT NOT NULL,
+                    nav_date TEXT NOT NULL,
+                    nav REAL NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (scheme_code, nav_date)
+                )
+                """
+            )
+            self._sqlite.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mutual_fund_benchmark_history (
+                    benchmark_name TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    close_value REAL NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (benchmark_name, trade_date)
+                )
+                """
+            )
 
     def _postgres_connect(self):
         return psycopg.connect(self._db_url, connect_timeout=5)
@@ -96,6 +119,28 @@ class MutualFundWatchlistStore:
                         category TEXT,
                         benchmark_options TEXT NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS mutual_fund_nav_history (
+                        scheme_code TEXT NOT NULL,
+                        nav_date DATE NOT NULL,
+                        nav DOUBLE PRECISION NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (scheme_code, nav_date)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS mutual_fund_benchmark_history (
+                        benchmark_name TEXT NOT NULL,
+                        trade_date DATE NOT NULL,
+                        close_value DOUBLE PRECISION NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (benchmark_name, trade_date)
                     )
                     """
                 )
@@ -124,6 +169,20 @@ class MutualFundWatchlistStore:
                 self._postgres_ready = False
                 self._log_postgres_error(exc, "[MutualFundStore] Postgres unavailable")
                 return False
+
+    @staticmethod
+    def _coerce_date(value) -> Optional[date]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, date):
+            return value
+        text = str(value).strip()
+        for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d %b %Y"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _serialize_row(row) -> dict:
@@ -267,4 +326,229 @@ class MutualFundWatchlistStore:
             self._sqlite.execute(
                 "DELETE FROM mutual_fund_watchlist_items WHERE scheme_code = ?",
                 (scheme_code,),
+            )
+
+    def latest_nav_point(self, scheme_code: str) -> Optional[Tuple[date, float]]:
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return None
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT nav_date, nav
+                        FROM mutual_fund_nav_history
+                        WHERE scheme_code = %s
+                        ORDER BY nav_date DESC
+                        LIMIT 1
+                        """,
+                        (scheme_code,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    return (self._coerce_date(row[0]), float(row[1]))
+
+        with self._lock:
+            row = self._sqlite.execute(
+                """
+                SELECT nav_date, nav
+                FROM mutual_fund_nav_history
+                WHERE scheme_code = ?
+                ORDER BY nav_date DESC
+                LIMIT 1
+                """,
+                (scheme_code,),
+            ).fetchone()
+        if not row:
+            return None
+        return (self._coerce_date(row[0]), float(row[1]))
+
+    def nav_history(self, scheme_code: str, start_date: Optional[date] = None, end_date: Optional[date] = None) -> Dict[date, float]:
+        clauses = ["scheme_code = ?"] if self._mode == "sqlite" else ["scheme_code = %s"]
+        params: List[object] = [scheme_code]
+        if start_date:
+            clauses.append("nav_date >= ?" if self._mode == "sqlite" else "nav_date >= %s")
+            params.append(start_date.isoformat())
+        if end_date:
+            clauses.append("nav_date <= ?" if self._mode == "sqlite" else "nav_date <= %s")
+            params.append(end_date.isoformat())
+        sql = (
+            "SELECT nav_date, nav FROM mutual_fund_nav_history "
+            f"WHERE {' AND '.join(clauses)} ORDER BY nav_date ASC"
+        )
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return {}
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, tuple(params))
+                    rows = cur.fetchall()
+        else:
+            with self._lock:
+                rows = self._sqlite.execute(sql, tuple(params)).fetchall()
+        history: Dict[date, float] = {}
+        for row in rows:
+            dt = self._coerce_date(row[0] if not isinstance(row, sqlite3.Row) else row["nav_date"])
+            val = row[1] if not isinstance(row, sqlite3.Row) else row["nav"]
+            if dt is None:
+                continue
+            history[dt] = float(val)
+        return history
+
+    def upsert_nav_history(self, scheme_code: str, points: Iterable[Tuple[date, float]]):
+        normalized = []
+        for raw_date, raw_nav in points:
+            dt = self._coerce_date(raw_date)
+            if dt is None or raw_nav is None:
+                continue
+            normalized.append((scheme_code, dt.isoformat(), float(raw_nav)))
+        if not normalized:
+            return
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO mutual_fund_nav_history (scheme_code, nav_date, nav)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (scheme_code, nav_date) DO UPDATE
+                        SET nav = EXCLUDED.nav
+                        """,
+                        normalized,
+                    )
+                conn.commit()
+            return
+        with self._lock, self._sqlite:
+            self._sqlite.executemany(
+                """
+                INSERT INTO mutual_fund_nav_history (scheme_code, nav_date, nav)
+                VALUES (?, ?, ?)
+                ON CONFLICT(scheme_code, nav_date) DO UPDATE SET
+                    nav = excluded.nav
+                """,
+                normalized,
+            )
+
+    def delete_nav_history(self, scheme_code: str):
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM mutual_fund_nav_history WHERE scheme_code = %s",
+                        (scheme_code,),
+                    )
+                conn.commit()
+            return
+        with self._lock, self._sqlite:
+            self._sqlite.execute(
+                "DELETE FROM mutual_fund_nav_history WHERE scheme_code = ?",
+                (scheme_code,),
+            )
+
+    def latest_benchmark_point(self, benchmark_name: str) -> Optional[Tuple[date, float]]:
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return None
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT trade_date, close_value
+                        FROM mutual_fund_benchmark_history
+                        WHERE benchmark_name = %s
+                        ORDER BY trade_date DESC
+                        LIMIT 1
+                        """,
+                        (benchmark_name,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    return (self._coerce_date(row[0]), float(row[1]))
+        with self._lock:
+            row = self._sqlite.execute(
+                """
+                SELECT trade_date, close_value
+                FROM mutual_fund_benchmark_history
+                WHERE benchmark_name = ?
+                ORDER BY trade_date DESC
+                LIMIT 1
+                """,
+                (benchmark_name,),
+            ).fetchone()
+        if not row:
+            return None
+        return (self._coerce_date(row[0]), float(row[1]))
+
+    def benchmark_history(self, benchmark_name: str, start_date: Optional[date] = None, end_date: Optional[date] = None) -> Dict[date, float]:
+        clauses = ["benchmark_name = ?"] if self._mode == "sqlite" else ["benchmark_name = %s"]
+        params: List[object] = [benchmark_name]
+        if start_date:
+            clauses.append("trade_date >= ?" if self._mode == "sqlite" else "trade_date >= %s")
+            params.append(start_date.isoformat())
+        if end_date:
+            clauses.append("trade_date <= ?" if self._mode == "sqlite" else "trade_date <= %s")
+            params.append(end_date.isoformat())
+        sql = (
+            "SELECT trade_date, close_value FROM mutual_fund_benchmark_history "
+            f"WHERE {' AND '.join(clauses)} ORDER BY trade_date ASC"
+        )
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return {}
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, tuple(params))
+                    rows = cur.fetchall()
+        else:
+            with self._lock:
+                rows = self._sqlite.execute(sql, tuple(params)).fetchall()
+        history: Dict[date, float] = {}
+        for row in rows:
+            dt = self._coerce_date(row[0] if not isinstance(row, sqlite3.Row) else row["trade_date"])
+            val = row[1] if not isinstance(row, sqlite3.Row) else row["close_value"]
+            if dt is None:
+                continue
+            history[dt] = float(val)
+        return history
+
+    def upsert_benchmark_history(self, benchmark_name: str, points: Iterable[Tuple[date, float]]):
+        normalized = []
+        for raw_date, raw_value in points:
+            dt = self._coerce_date(raw_date)
+            if dt is None or raw_value is None:
+                continue
+            normalized.append((benchmark_name, dt.isoformat(), float(raw_value)))
+        if not normalized:
+            return
+        if self._mode == "postgres":
+            if not self._ensure_postgres_ready():
+                return
+            with self._postgres_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO mutual_fund_benchmark_history (benchmark_name, trade_date, close_value)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (benchmark_name, trade_date) DO UPDATE
+                        SET close_value = EXCLUDED.close_value
+                        """,
+                        normalized,
+                    )
+                conn.commit()
+            return
+        with self._lock, self._sqlite:
+            self._sqlite.executemany(
+                """
+                INSERT INTO mutual_fund_benchmark_history (benchmark_name, trade_date, close_value)
+                VALUES (?, ?, ?)
+                ON CONFLICT(benchmark_name, trade_date) DO UPDATE SET
+                    close_value = excluded.close_value
+                """,
+                normalized,
             )
