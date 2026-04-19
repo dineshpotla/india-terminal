@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -205,6 +206,39 @@ def _cache_key(prefix: str, *parts: str) -> str:
     return f"{prefix}:{digest}"
 
 
+def _multi_compare_point_budget(selected_count: int) -> int:
+    count = max(1, int(selected_count or 0))
+    if count <= 2:
+        return MF_MULTI_COMPARE_MAX_RENDER_POINTS
+    if count <= 4:
+        return 144
+    if count <= 6:
+        return 120
+    return 96
+
+
+def _hydrate_master_payload(payload: Optional[dict]) -> dict:
+    payload = payload or {}
+    schemes = payload.get("schemes") or []
+    if not schemes:
+        by_scheme_code = payload.get("by_scheme_code") or {}
+        if isinstance(by_scheme_code, dict):
+            schemes = list(by_scheme_code.values())
+            schemes.sort(key=lambda item: item.get("name") or "")
+    by_scheme_code = {}
+    for scheme in schemes:
+        code = _normalize_scheme_code(scheme.get("scheme_code") or "")
+        if not code:
+            continue
+        by_scheme_code[code] = scheme
+    return {
+        "as_of": payload.get("as_of"),
+        "_saved_at": float(payload.get("_saved_at") or 0.0),
+        "schemes": schemes,
+        "by_scheme_code": by_scheme_code,
+    }
+
+
 def _scheme_search_bucket(name: str, category: Optional[str], category_hints: set[str]) -> tuple:
     text = _normalize_name(name)
     is_direct = " DIRECT " in f" {text} "
@@ -265,6 +299,8 @@ class MutualFundsService:
     def __init__(self, store, watchlist_store):
         self._store = store
         self._watchlist_store = watchlist_store
+        self._master_lock = threading.Lock()
+        self._master_cache: Optional[dict] = None
 
     def search(self, query: str, limit: int = 20) -> List[dict]:
         raw_query = str(query or "").strip()
@@ -388,7 +424,7 @@ class MutualFundsService:
         if not normalized_codes:
             raise RuntimeError("No mutual funds selected")
 
-        cache_key = _cache_key("mf:multi:v1", ",".join(sorted(normalized_codes)), range_key)
+        cache_key = _cache_key("mf:multi:v2", ",".join(sorted(normalized_codes)), range_key)
         cached = _load_snapshot(self._store, cache_key) or {}
         if cached.get("items"):
             return cached
@@ -401,6 +437,7 @@ class MutualFundsService:
         items = []
         earliest = None
         latest = None
+        point_budget = _multi_compare_point_budget(len(normalized_codes))
         for code in normalized_codes:
             target = selected_map.get(code)
             if not target:
@@ -418,7 +455,7 @@ class MutualFundsService:
                 _series_point(dt, 100.0 * history[dt] / base_nav)
                 for dt in dates
             ]
-            chart_data = _downsample_compare_series(chart_data, MF_MULTI_COMPARE_MAX_RENDER_POINTS)
+            chart_data = _downsample_compare_series(chart_data, point_budget)
             items.append(
                 {
                     "scheme_code": target.get("scheme_code"),
@@ -491,12 +528,29 @@ class MutualFundsService:
         return merged
 
     def _amfi_master(self) -> dict:
-        cached = _load_snapshot(self._store, MUTUAL_AMFI_MASTER_KEY) or {}
-        cached_codes = cached.get("by_scheme_code") or {}
-        if cached.get("as_of") and cached_codes and (time.time() - float(cached.get("_saved_at") or 0.0) < 12 * 60 * 60):
+        now = time.time()
+        with self._master_lock:
+            if self._master_cache and self._master_cache.get("schemes") and (now - float(self._master_cache.get("_saved_at") or 0.0) < 12 * 60 * 60):
+                return self._master_cache
+
+        raw_cached = _load_snapshot(self._store, MUTUAL_AMFI_MASTER_KEY) or {}
+        cached = _hydrate_master_payload(raw_cached)
+        if raw_cached.get("by_scheme_code") and cached.get("schemes"):
+            _save_snapshot(
+                self._store,
+                MUTUAL_AMFI_MASTER_KEY,
+                {
+                    "as_of": cached.get("as_of"),
+                    "_saved_at": cached.get("_saved_at") or now,
+                    "schemes": cached.get("schemes") or [],
+                },
+            )
+        if cached.get("as_of") and cached.get("schemes") and (now - float(cached.get("_saved_at") or 0.0) < 12 * 60 * 60):
+            with self._master_lock:
+                self._master_cache = cached
             return cached
+
         text = requests.get(AMFI_NAV_ALL_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=60).text
-        by_scheme_code: Dict[str, dict] = {}
         schemes: List[dict] = []
         current_house = None
         for raw_line in text.splitlines():
@@ -530,17 +584,18 @@ class MutualFundsService:
                 "isin_secondary": isin_two if isin_two and isin_two != "-" else None,
                 "normalized_name": _normalize_name(name),
             }
-            by_scheme_code[scheme_code] = entry
             schemes.append(entry)
         schemes.sort(key=lambda item: item.get("name") or "")
         payload = {
             "as_of": _utc_now_iso(),
-            "_saved_at": time.time(),
-            "by_scheme_code": by_scheme_code,
+            "_saved_at": now,
             "schemes": schemes,
         }
         _save_snapshot(self._store, MUTUAL_AMFI_MASTER_KEY, payload)
-        return payload
+        hydrated = _hydrate_master_payload(payload)
+        with self._master_lock:
+            self._master_cache = hydrated
+        return hydrated
 
     def _resolve_scheme_by_code(self, scheme_code: str) -> dict:
         code = _normalize_scheme_code(scheme_code)

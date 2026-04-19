@@ -178,7 +178,6 @@
                 schemeCode: mutualState.selectedSchemeCode,
                 benchmark: mutualState.selectedBenchmark,
                 range: mutualState.selectedRange,
-                chartSchemeCodes: mutualState.selectedChartSchemeCodes,
             }));
         } catch (err) {}
     }
@@ -776,12 +775,10 @@
             mutualState.selectedRange = "max";
         }
 
-        var requestedChartCodes = opts.chartSchemeCodes || mutualState.selectedChartSchemeCodes || prefs.chartSchemeCodes || [];
+        var requestedChartCodes = opts.chartSchemeCodes || mutualState.selectedChartSchemeCodes || [];
+        if (!Array.isArray(requestedChartCodes)) requestedChartCodes = [];
         mutualState.selectedChartSchemeCodes = requestedChartCodes.slice();
         syncSelectionToChartCodes();
-        if (!mutualState.selectedChartSchemeCodes.length) {
-            mutualState.selectedChartSchemeCodes = [mutualState.selectedSchemeCode];
-        }
 
         saveMutualSelectionPrefs();
         renderMutualPage();
@@ -983,11 +980,10 @@
             });
             applyMutualWatchlist(data, {
                 schemeCode: String(schemeCode),
-                chartSchemeCodes: [String(schemeCode)],
+                chartSchemeCodes: [],
                 forceChart: false,
                 loadChart: false,
             });
-            scheduleDeferredChartLoad(false);
             return data;
         } catch (err) {
             console.error("Mutual add error:", err);
@@ -1169,7 +1165,6 @@
         renderMutualPage();
         markUpdated("Loading shared watchlist");
         await loadMutualWatchlist({ force: true, loadChart: false });
-        scheduleDeferredChartLoad(false);
         startPolling();
         setTimeout(handleResize, 60);
     }
