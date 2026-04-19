@@ -16,6 +16,62 @@
     flex: 1;
 }
 
+.mf-selection-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.mf-selection-actions {
+    display: inline-flex;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.mf-action-btn {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255,255,255,.03);
+    color: var(--text-secondary);
+    font-family: var(--font-data);
+    font-size: 10px;
+    line-height: 1;
+    padding: 7px 10px;
+    cursor: pointer;
+    transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+
+.mf-action-btn:hover {
+    color: var(--text-primary);
+    border-color: rgba(255,140,0,.22);
+    background: rgba(255,140,0,.08);
+}
+
+.mf-holding-card.chart-selected {
+    box-shadow: inset 0 0 0 1px rgba(79,209,197,.18);
+}
+
+.mf-holding-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mf-select-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+    font-family: var(--font-data);
+    font-size: 10px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.mf-select-toggle input {
+    accent-color: #26c6da;
+}
+
 @media (max-width: 960px) {
     .mutual-page-actions {
         gap: 8px;
@@ -23,5 +79,14 @@
 
     .mutual-view--standalone {
         padding-top: 12px;
+    }
+
+    .mf-selection-bar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .mf-selection-actions {
+        margin-left: 0;
     }
 }

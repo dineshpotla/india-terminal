@@ -35,6 +35,21 @@ def _normalize_scheme_code(scheme_code: str) -> str:
     return code
 
 
+def _normalize_scheme_codes(raw_value: str) -> list[str]:
+    items = []
+    seen = set()
+    for raw in (raw_value or "").split(","):
+        code = (raw or "").strip()
+        if not code:
+            continue
+        normalized = _normalize_scheme_code(code)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        items.append(normalized)
+    return items
+
+
 app = FastAPI(title="India Market Mutual Funds")
 app.add_middleware(GZipMiddleware, minimum_size=800)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -99,5 +114,18 @@ async def mf_compare(scheme_code: str, benchmark: str = Query(""), range_key: st
         data = await asyncio.to_thread(mutual_funds.compare, code, benchmark or None, range_key)
     except Exception as exc:
         print(f"[MutualFunds] compare failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(data)
+
+
+@app.get("/api/mf/performance")
+async def mf_performance(scheme_codes: str = Query(""), range_key: str = Query("max", alias="range")):
+    codes = _normalize_scheme_codes(scheme_codes)
+    if not codes:
+        raise HTTPException(status_code=400, detail="No mutual funds selected")
+    try:
+        data = await asyncio.to_thread(mutual_funds.compare_many, codes, range_key)
+    except Exception as exc:
+        print(f"[MutualFunds] performance failed: {exc}")
         raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse(data)

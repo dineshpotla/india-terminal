@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -58,7 +59,8 @@ _INDEX_NAME_CLEANUPS = {
 
 _AMFI_HISTORY_DATE_FMT = "%d-%b-%Y"
 _NSE_HISTORY_DATE_FMT = "%d-%m-%Y"
-MF_COMPARE_MAX_RENDER_POINTS = 420
+MF_COMPARE_MAX_RENDER_POINTS = 240
+MF_MULTI_COMPARE_MAX_RENDER_POINTS = 180
 
 
 def _utc_now_iso() -> str:
@@ -190,6 +192,19 @@ def _downsample_compare_series(points: List[dict], max_points: int = MF_COMPARE_
     return sampled
 
 
+def _series_point(dt: date, value: float) -> dict:
+    return {
+        "time": int(datetime(dt.year, dt.month, dt.day).timestamp()),
+        "value": round(float(value), 2),
+    }
+
+
+def _cache_key(prefix: str, *parts: str) -> str:
+    joined = "|".join(str(part or "").strip() for part in parts)
+    digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()[:16]
+    return f"{prefix}:{digest}"
+
+
 def _scheme_search_bucket(name: str, category: Optional[str], category_hints: set[str]) -> tuple:
     text = _normalize_name(name)
     is_direct = " DIRECT " in f" {text} "
@@ -315,6 +330,10 @@ class MutualFundsService:
         target = self._enrich_tracked_entry(target)
         benchmark_name = benchmark or (target.get("benchmark_options") or ["NIFTY 500"])[0]
         benchmark_name = _INDEX_NAME_CLEANUPS.get(benchmark_name, benchmark_name)
+        cache_key = _cache_key("mf:compare:v2", code, benchmark_name, range_key)
+        cached = _load_snapshot(self._store, cache_key) or {}
+        if cached.get("fund_chart_data") and cached.get("benchmark_chart_data"):
+            return cached
         start_date = self._comparison_start_date(range_key)
         fund_series = self._fund_history(target, start_date)
         benchmark_series = self._benchmark_history(benchmark_name, start_date, date.today())
@@ -323,21 +342,18 @@ class MutualFundsService:
             raise RuntimeError("Not enough overlapping history to compare this fund with the selected benchmark")
         base_fund = fund_series[common_dates[0]]
         base_bm = benchmark_series[common_dates[0]]
-        chart = []
+        fund_chart = []
+        benchmark_chart = []
         for dt in common_dates:
             fund_nav = fund_series[dt]
             bench_close = benchmark_series[dt]
-            chart.append(
-                {
-                    "time": int(datetime(dt.year, dt.month, dt.day).timestamp()),
-                    "fund": round(100.0 * fund_nav / base_fund, 2),
-                    "benchmark": round(100.0 * bench_close / base_bm, 2),
-                }
-            )
-        render_series = _downsample_compare_series(chart)
-        fund_return = round(chart[-1]["fund"] - 100.0, 2)
-        benchmark_return = round(chart[-1]["benchmark"] - 100.0, 2)
-        return {
+            fund_chart.append(_series_point(dt, 100.0 * fund_nav / base_fund))
+            benchmark_chart.append(_series_point(dt, 100.0 * bench_close / base_bm))
+        fund_chart = _downsample_compare_series(fund_chart, MF_COMPARE_MAX_RENDER_POINTS)
+        benchmark_chart = _downsample_compare_series(benchmark_chart, MF_COMPARE_MAX_RENDER_POINTS)
+        fund_return = round(fund_chart[-1]["value"] - 100.0, 2)
+        benchmark_return = round(benchmark_chart[-1]["value"] - 100.0, 2)
+        payload = {
             "fund": target,
             "benchmark": benchmark_name,
             "range": range_key,
@@ -345,9 +361,10 @@ class MutualFundsService:
             "benchmark_options": target.get("benchmark_options") or _benchmark_suggestions(target.get("scheme_name", ""), target.get("category")),
             "from_date": common_dates[0].isoformat(),
             "to_date": common_dates[-1].isoformat(),
-            "points": len(chart),
-            "render_points": len(render_series),
-            "series": render_series,
+            "points": len(common_dates),
+            "render_points": len(fund_chart),
+            "fund_chart_data": fund_chart,
+            "benchmark_chart_data": benchmark_chart,
             "fund_return_pct": fund_return,
             "benchmark_return_pct": benchmark_return,
             "alpha_pct": round(fund_return - benchmark_return, 2),
@@ -356,6 +373,80 @@ class MutualFundsService:
                 "benchmark": "NSE",
             },
         }
+        _save_snapshot(self._store, cache_key, payload)
+        return payload
+
+    def compare_many(self, scheme_codes: List[str], range_key: str = "max") -> dict:
+        normalized_codes = []
+        seen = set()
+        for raw_code in scheme_codes or []:
+            code = _normalize_scheme_code(raw_code)
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            normalized_codes.append(code)
+        if not normalized_codes:
+            raise RuntimeError("No mutual funds selected")
+
+        cache_key = _cache_key("mf:multi:v1", ",".join(sorted(normalized_codes)), range_key)
+        cached = _load_snapshot(self._store, cache_key) or {}
+        if cached.get("items"):
+            return cached
+
+        start_date = self._comparison_start_date(range_key)
+        selected_map = {
+            str(entry.get("scheme_code") or "").strip(): self._enrich_tracked_entry(entry)
+            for entry in self._watchlist_store.list_entries()
+        }
+        items = []
+        earliest = None
+        latest = None
+        for code in normalized_codes:
+            target = selected_map.get(code)
+            if not target:
+                continue
+            history = self._fund_history(target, start_date)
+            dates = sorted(history)
+            if len(dates) < 2:
+                continue
+            first_dt = dates[0]
+            last_dt = dates[-1]
+            earliest = first_dt if earliest is None or first_dt < earliest else earliest
+            latest = last_dt if latest is None or last_dt > latest else latest
+            base_nav = history[first_dt]
+            chart_data = [
+                _series_point(dt, 100.0 * history[dt] / base_nav)
+                for dt in dates
+            ]
+            chart_data = _downsample_compare_series(chart_data, MF_MULTI_COMPARE_MAX_RENDER_POINTS)
+            items.append(
+                {
+                    "scheme_code": target.get("scheme_code"),
+                    "scheme_name": target.get("scheme_name"),
+                    "category": target.get("category"),
+                    "latest_nav": target.get("latest_nav"),
+                    "latest_nav_date": target.get("latest_nav_date"),
+                    "points": len(dates),
+                    "render_points": len(chart_data),
+                    "return_pct": round(chart_data[-1]["value"] - 100.0, 2),
+                    "chart_data": chart_data,
+                }
+            )
+
+        if not items:
+            raise RuntimeError("Not enough NAV history to chart the selected funds")
+
+        payload = {
+            "range": range_key,
+            "range_options": _range_options(),
+            "selected_count": len(items),
+            "from_date": earliest.isoformat() if earliest else None,
+            "to_date": latest.isoformat() if latest else None,
+            "items": items,
+            "source": {"fund": "AMFI"},
+        }
+        _save_snapshot(self._store, cache_key, payload)
+        return payload
 
     def _comparison_start_date(self, range_key: str) -> date:
         today = date.today()

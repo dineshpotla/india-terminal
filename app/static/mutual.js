@@ -1,17 +1,36 @@
 (function () {
     "use strict";
 
+    const MULTI_SERIES_COLORS = [
+        "#ff9d3f",
+        "#4fd1c5",
+        "#7dd3fc",
+        "#c084fc",
+        "#f472b6",
+        "#a3e635",
+        "#fb7185",
+        "#facc15",
+        "#38bdf8",
+        "#34d399",
+        "#f97316",
+        "#818cf8",
+    ];
+
     let mfChart = null;
-    let mfFundSeries = null;
-    let mfBenchmarkSeries = null;
+    let mfChartSeries = [];
     let mutualChartRenderKey = "";
     let mutualHoldingsLoadPromise = null;
     let mutualCompareLoadPromise = null;
-    let mutualCompareRequestSeq = 0;
+    let mutualPerformanceLoadPromise = null;
     let mutualCompareAbortController = null;
+    let mutualPerformanceAbortController = null;
     let mutualSearchAbortController = null;
+    let mutualCompareRequestSeq = 0;
+    let mutualPerformanceRequestSeq = 0;
     let mutualSearchResults = [];
     let mutualPollTimer = null;
+    let deferredChartTimer = null;
+
     let mutualState = {
         watchlist: [],
         storage: null,
@@ -19,9 +38,13 @@
         selectedSchemeCode: null,
         selectedBenchmark: null,
         selectedRange: "max",
+        selectedChartSchemeCodes: [],
         compare: null,
         compareLoading: false,
         compareError: null,
+        multiCompare: null,
+        multiCompareLoading: false,
+        multiCompareError: null,
     };
 
     const $ = (id) => document.getElementById(id);
@@ -41,29 +64,31 @@
     const $mfChartNote = $("mf-chart-note");
     const $mfChartBox = $("mf-chart");
     const $mfPageUpdated = $("mf-page-updated");
+    const $mfSelectAll = $("mf-select-all");
+    const $mfClearAll = $("mf-clear-all");
 
     function el(tag, cls, text) {
-        const e = document.createElement(tag);
-        if (cls) e.className = cls;
-        if (text !== undefined) e.textContent = text;
-        return e;
+        const node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (text !== undefined) node.textContent = text;
+        return node;
     }
 
     function clearChildren(node) {
         while (node && node.firstChild) node.removeChild(node.firstChild);
     }
 
-    function fmtPrice(n) {
-        if (n == null) return "\u2014";
-        return "\u20b9" + Number(n).toLocaleString("en-IN", {
+    function fmtPrice(value) {
+        if (value == null) return "\u2014";
+        return "\u20b9" + Number(value).toLocaleString("en-IN", {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
         });
     }
 
-    function fmtPct(n) {
-        if (n == null) return "\u2014";
-        return (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
+    function fmtPct(value) {
+        if (value == null) return "\u2014";
+        return (value >= 0 ? "+" : "") + Number(value).toFixed(2) + "%";
     }
 
     function fmtDateLabel(value) {
@@ -86,6 +111,10 @@
                 return part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : "";
             })
             .join(" ");
+    }
+
+    function positiveTone(value) {
+        return value > 0 ? "up" : (value < 0 ? "down" : "neutral");
     }
 
     async function fetchJson(url, opts) {
@@ -149,6 +178,7 @@
                 schemeCode: mutualState.selectedSchemeCode,
                 benchmark: mutualState.selectedBenchmark,
                 range: mutualState.selectedRange,
+                chartSchemeCodes: mutualState.selectedChartSchemeCodes,
             }));
         } catch (err) {}
     }
@@ -170,8 +200,8 @@
     }
 
     function mutualRangeOptions() {
-        var compare = mutualState.compare;
-        if (compare && compare.range_options && compare.range_options.length) return compare.range_options;
+        var source = mutualState.multiCompare || mutualState.compare;
+        if (source && source.range_options && source.range_options.length) return source.range_options;
         return [
             { key: "1y", label: "1Y" },
             { key: "3y", label: "3Y" },
@@ -180,23 +210,29 @@
         ];
     }
 
+    function currentChartCodes() {
+        var valid = new Set((mutualState.watchlist || []).map(function (item) {
+            return String(item.scheme_code || "").trim();
+        }));
+        var seen = new Set();
+        var result = [];
+        (mutualState.selectedChartSchemeCodes || []).forEach(function (code) {
+            var key = String(code || "").trim();
+            if (!key || seen.has(key) || !valid.has(key)) return;
+            seen.add(key);
+            result.push(key);
+        });
+        return result;
+    }
+
+    function isMultiChartMode() {
+        return currentChartCodes().length > 1;
+    }
+
     function clearMutualSuggestions() {
         mutualSearchResults = [];
         clearChildren($mfSuggest);
         $mfSuggest.classList.remove("visible");
-    }
-
-    function prepareMutualComparePayload(data) {
-        if (!data || !Array.isArray(data.series)) return data;
-        data.fund_chart_data = data.series.map(function (point) {
-            return { time: point.time, value: point.fund };
-        });
-        data.benchmark_chart_data = data.series.map(function (point) {
-            return { time: point.time, value: point.benchmark };
-        });
-        data.render_points = data.render_points || data.series.length;
-        delete data.series;
-        return data;
     }
 
     function markUpdated(label) {
@@ -207,11 +243,40 @@
         }));
     }
 
+    function cancelSingleCompare() {
+        if (mutualCompareAbortController) {
+            mutualCompareAbortController.abort();
+            mutualCompareAbortController = null;
+        }
+        mutualCompareLoadPromise = null;
+    }
+
+    function cancelMultiCompare() {
+        if (mutualPerformanceAbortController) {
+            mutualPerformanceAbortController.abort();
+            mutualPerformanceAbortController = null;
+        }
+        mutualPerformanceLoadPromise = null;
+    }
+
+    function scheduleDeferredChartLoad(force) {
+        clearTimeout(deferredChartTimer);
+        deferredChartTimer = setTimeout(function () {
+            deferredChartTimer = null;
+            loadActiveChart({ force: !!force });
+        }, 220);
+    }
+
     function renderMutualStatus() {
-        var count = (mutualState.watchlist || []).length;
-        var parts = ["Shared", count + " fund" + (count === 1 ? "" : "s")];
+        var funds = mutualState.watchlist || [];
+        var chartCount = currentChartCodes().length;
+        var parts = [
+            "Shared",
+            funds.length + " fund" + (funds.length === 1 ? "" : "s"),
+            chartCount + " charted",
+        ];
         if (mutualState.storage) parts.push(mutualState.durable ? "saved" : "session");
-        var clsName = "mf-status" + (count ? " is-ready" : " is-muted");
+        var clsName = "mf-status" + (funds.length ? " is-ready" : " is-muted");
         $mfStatus.className = clsName;
         $mfStatus.textContent = parts.join(" · ");
     }
@@ -219,25 +284,48 @@
     function renderMutualWatchlist() {
         clearChildren($mfHoldings);
         var funds = mutualState.watchlist || [];
+        var selectedSet = new Set(currentChartCodes());
         if (!funds.length) {
             $mfHoldings.appendChild(el("div", "mf-list-empty", "No funds tracked yet."));
             return;
         }
         var frag = document.createDocumentFragment();
         funds.forEach(function (fund) {
-            var active = String(fund.scheme_code || "") === String(mutualState.selectedSchemeCode || "");
-            var card = el("button", "mf-holding-card" + (active ? " active" : ""));
-            card.type = "button";
+            var code = String(fund.scheme_code || "");
+            var active = code === String(mutualState.selectedSchemeCode || "");
+            var chartSelected = selectedSet.has(code);
+            var card = el("div", "mf-holding-card" + (active ? " active" : "") + (chartSelected ? " chart-selected" : ""));
+            card.tabIndex = 0;
+            card.setAttribute("role", "button");
 
             var top = el("div", "mf-holding-top");
-            top.appendChild(el("span", "mf-holding-name", fund.scheme_name || fund.scheme_code || "Mutual Fund"));
+            top.appendChild(el("span", "mf-holding-name", fund.scheme_name || code || "Mutual Fund"));
+            var tools = el("div", "mf-holding-tools");
+
+            var toggleLabel = el("label", "mf-select-toggle");
+            var checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = chartSelected;
+            checkbox.addEventListener("click", function (e) {
+                e.stopPropagation();
+            });
+            checkbox.addEventListener("change", function (e) {
+                e.stopPropagation();
+                toggleChartSelection(code, checkbox.checked);
+            });
+            toggleLabel.appendChild(checkbox);
+            toggleLabel.appendChild(el("span", "", "Chart"));
+            tools.appendChild(toggleLabel);
+
             var removeBtn = el("button", "mf-remove", "×");
             removeBtn.type = "button";
             removeBtn.addEventListener("click", function (e) {
                 e.stopPropagation();
-                removeMutualFund(fund.scheme_code);
+                removeMutualFund(code);
             });
-            top.appendChild(removeBtn);
+            tools.appendChild(removeBtn);
+
+            top.appendChild(tools);
             card.appendChild(top);
 
             var meta = el("div", "mf-holding-meta");
@@ -245,7 +333,7 @@
             if (fund.benchmark_options && fund.benchmark_options.length) {
                 meta.appendChild(el("span", "mf-holding-chip muted", fund.benchmark_options[0]));
             }
-            meta.appendChild(el("span", "mf-holding-chip muted", "Code " + (fund.scheme_code || "\u2014")));
+            meta.appendChild(el("span", "mf-holding-chip muted", "Code " + (code || "\u2014")));
             card.appendChild(meta);
 
             var foot = el("div", "mf-holding-foot");
@@ -254,7 +342,13 @@
             card.appendChild(foot);
 
             card.addEventListener("click", function () {
-                setMutualSelection(String(fund.scheme_code || ""));
+                setMutualSelection(code, { loadChart: true });
+            });
+            card.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setMutualSelection(code, { loadChart: true });
+                }
             });
             frag.appendChild(card);
         });
@@ -291,22 +385,15 @@
             handleScroll: true,
             handleScale: true,
         });
-        mfFundSeries = mfChart.addLineSeries({
-            color: "#ff9d3f",
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            title: "Fund",
-        });
-        mfBenchmarkSeries = mfChart.addLineSeries({
-            color: "#4fd1c5",
-            lineWidth: 2,
-            lineStyle: LightweightCharts.LineStyle.Dashed,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            title: "Benchmark",
-        });
         return mfChart;
+    }
+
+    function resetMutualChartSeries() {
+        if (!mfChart) return;
+        mfChartSeries.forEach(function (series) {
+            try { mfChart.removeSeries(series); } catch (err) {}
+        });
+        mfChartSeries = [];
     }
 
     function showMutualChartPlaceholder(message) {
@@ -326,21 +413,20 @@
         if (placeholder) placeholder.hidden = true;
     }
 
-    function renderMutualChart(compare) {
-        if (!compare || !compare.fund_chart_data || !compare.fund_chart_data.length) {
-            if (mfFundSeries) mfFundSeries.setData([]);
-            if (mfBenchmarkSeries) mfBenchmarkSeries.setData([]);
+    function renderSingleChart(compare) {
+        if (!compare || !compare.fund_chart_data || !compare.benchmark_chart_data || !compare.fund_chart_data.length) {
+            resetMutualChartSeries();
             mutualChartRenderKey = "";
             showMutualChartPlaceholder(
                 mutualState.compareLoading
                     ? "Loading official NAV and benchmark history…"
-                    : (mutualState.compareError || ((mutualState.selectedSchemeCode || "").trim() ? "Choose a benchmark and range." : "Select a tracked fund."))
+                    : (mutualState.compareError || "NAV summary loaded. Click a fund or benchmark to build the chart.")
             );
             return;
         }
-        hideMutualChartPlaceholder();
-        var chartRef = ensureMutualChart();
+
         var renderKey = [
+            "single",
             compare.fund && compare.fund.scheme_code,
             compare.benchmark,
             compare.range,
@@ -348,89 +434,91 @@
             compare.to_date || "",
         ].join("|");
         if (mutualChartRenderKey === renderKey) return;
-        mfFundSeries.setData(compare.fund_chart_data || []);
-        mfBenchmarkSeries.setData(compare.benchmark_chart_data || []);
+
+        var chartRef = ensureMutualChart();
+        resetMutualChartSeries();
+        hideMutualChartPlaceholder();
+
+        var fundSeries = chartRef.addLineSeries({
+            color: "#ff9d3f",
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            title: "Fund",
+        });
+        var benchmarkSeries = chartRef.addLineSeries({
+            color: "#4fd1c5",
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            title: "Benchmark",
+        });
+        mfChartSeries = [fundSeries, benchmarkSeries];
+        fundSeries.setData(compare.fund_chart_data || []);
+        benchmarkSeries.setData(compare.benchmark_chart_data || []);
         chartRef.timeScale().fitContent();
         mutualChartRenderKey = renderKey;
     }
 
-    function renderMutualDetail() {
-        var fund = currentMutualFund();
-        if (!fund) {
-            clearChildren($mfHero);
-            clearChildren($mfBenchmarks);
-            clearChildren($mfRanges);
-            clearChildren($mfStats);
-            $mfDetail.classList.add("is-empty");
-            $mfHero.hidden = true;
-            $mfBenchmarkBlock.hidden = true;
-            $mfRangeBlock.hidden = true;
-            $mfStats.hidden = true;
-            $mfChartShell.classList.add("is-empty");
-            $mfChartTitle.textContent = "NAV COMPARISON";
-            $mfChartNote.textContent = "Select a tracked fund";
-            renderMutualChart(null);
+    function renderMultiChart(payload) {
+        if (!payload || !payload.items || !payload.items.length) {
+            resetMutualChartSeries();
+            mutualChartRenderKey = "";
+            showMutualChartPlaceholder(
+                mutualState.multiCompareLoading
+                    ? "Loading normalized NAV performance for selected funds…"
+                    : (mutualState.multiCompareError || "Tick one or more funds to chart them together.")
+            );
             return;
         }
 
-        $mfDetail.classList.remove("is-empty");
-        $mfHero.hidden = false;
-        $mfBenchmarkBlock.hidden = false;
-        $mfRangeBlock.hidden = false;
-        $mfStats.hidden = false;
-        $mfChartShell.classList.remove("is-empty");
-        clearChildren($mfHero);
-        clearChildren($mfBenchmarks);
-        clearChildren($mfRanges);
-        clearChildren($mfStats);
+        var renderKey = [
+            "multi",
+            payload.range,
+            payload.to_date || "",
+            payload.items.map(function (item) {
+                return [item.scheme_code, item.render_points || 0].join(":");
+            }).join("|"),
+        ].join("|");
+        if (mutualChartRenderKey === renderKey) return;
 
-        var heroTop = el("div", "mf-hero-top");
-        var titleWrap = el("div", "mf-hero-copy");
-        titleWrap.appendChild(el("div", "mf-hero-kicker", "OFFICIAL NAV TRACKER"));
-        titleWrap.appendChild(el("h3", "mf-hero-name", fund.scheme_name || fund.scheme_code || "Mutual Fund"));
-        var meta = [];
-        if (fund.category) meta.push(titleCase(fund.category));
-        if (fund.scheme_code) meta.push("Code " + fund.scheme_code);
-        if (fund.latest_nav_date) meta.push("NAV " + fmtDateLabel(fund.latest_nav_date));
-        titleWrap.appendChild(el("div", "mf-hero-meta", meta.join(" · ") || "Comparison against official NSE benchmarks"));
-        heroTop.appendChild(titleWrap);
+        var chartRef = ensureMutualChart();
+        resetMutualChartSeries();
+        hideMutualChartPlaceholder();
 
-        var heroValue = el("div", "mf-hero-value");
-        heroValue.appendChild(el("span", "mf-hero-value-label", "Latest NAV"));
-        heroValue.appendChild(el("span", "mf-hero-value-number", fund.latest_nav != null ? fmtPrice(fund.latest_nav) : "\u2014"));
-        heroValue.appendChild(el("span", "mf-hero-value-change flat", fund.latest_nav_date ? "Updated " + fmtDateLabel(fund.latest_nav_date) : "Official NAV date unavailable"));
-        heroTop.appendChild(heroValue);
-        $mfHero.appendChild(heroTop);
-
-        mutualBenchmarkOptions(fund).forEach(function (benchmark) {
-            var chip = el("button", "mf-chip" + (benchmark === mutualState.selectedBenchmark ? " active" : ""), benchmark);
-            chip.type = "button";
-            chip.addEventListener("click", function () {
-                setMutualSelection(String(fund.scheme_code || ""), {
-                    benchmark: benchmark,
-                    range: mutualState.selectedRange || "max",
-                    forceCompare: true,
-                });
+        payload.items.forEach(function (item, idx) {
+            var color = MULTI_SERIES_COLORS[idx % MULTI_SERIES_COLORS.length];
+            var series = chartRef.addLineSeries({
+                color: color,
+                lineWidth: idx === 0 ? 2.4 : 2,
+                priceLineVisible: false,
+                lastValueVisible: payload.items.length <= 6,
+                title: item.scheme_name || item.scheme_code || ("Fund " + (idx + 1)),
             });
-            $mfBenchmarks.appendChild(chip);
+            series.setData(item.chart_data || []);
+            mfChartSeries.push(series);
         });
+        chartRef.timeScale().fitContent();
+        mutualChartRenderKey = renderKey;
+    }
 
-        mutualRangeOptions().forEach(function (rangeOpt) {
-            var chip = el("button", "mf-chip" + (rangeOpt.key === mutualState.selectedRange ? " active" : ""), rangeOpt.label);
-            chip.type = "button";
-            chip.addEventListener("click", function () {
-                setMutualSelection(String(fund.scheme_code || ""), {
-                    benchmark: mutualState.selectedBenchmark,
-                    range: rangeOpt.key,
-                    forceCompare: true,
-                });
-            });
-            $mfRanges.appendChild(chip);
-        });
+    function renderActiveChart() {
+        var selectedCodes = currentChartCodes();
+        if (!selectedCodes.length) {
+            resetMutualChartSeries();
+            mutualChartRenderKey = "";
+            showMutualChartPlaceholder("Use the checkboxes to chart one or more funds. The page loads NAV summaries first, then charts on demand.");
+            return;
+        }
+        if (selectedCodes.length > 1) {
+            renderMultiChart(mutualState.multiCompare);
+            return;
+        }
+        renderSingleChart(mutualState.compare);
+    }
 
-        var compare = mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code
-            ? mutualState.compare
-            : null;
+    function renderSingleStats(fund, compare) {
         var statCards = [
             ["LATEST NAV", fund.latest_nav != null ? fmtPrice(fund.latest_nav) : "\u2014"],
             ["NAV DATE", fmtDateLabel(fund.latest_nav_date)],
@@ -444,39 +532,169 @@
         statCards.forEach(function (pair) {
             var card = el("div", "mf-stat-card");
             card.appendChild(el("span", "mf-stat-label", pair[0]));
-            var tone = "neutral";
-            if (pair[0] === "FUND RETURN" || pair[0] === "ALPHA") {
-                var numeric = Number(String(pair[1]).replace(/[^0-9.-]/g, ""));
-                tone = numeric > 0 ? "up" : (numeric < 0 ? "down" : "neutral");
-            }
+            var numeric = Number(String(pair[1]).replace(/[^0-9.-]/g, ""));
+            var tone = (pair[0] === "FUND RETURN" || pair[0] === "ALPHA") && !isNaN(numeric)
+                ? positiveTone(numeric)
+                : "neutral";
             card.appendChild(el("span", "mf-stat-value " + tone, pair[1]));
             $mfStats.appendChild(card);
         });
+    }
 
-        $mfChartTitle.textContent = (fund.scheme_name || "Mutual Fund") + " vs " + (mutualState.selectedBenchmark || "Benchmark");
-        if (compare) {
-            $mfChartNote.textContent =
-                "Normalized to 100 from " + fmtDateLabel(compare.from_date) + " · " +
-                ((compare.render_points && compare.render_points < compare.points)
-                    ? (compare.render_points + "/" + compare.points + " points rendered")
-                    : (compare.points + " NAV points")) +
-                " · " + (compare.source && compare.source.fund ? compare.source.fund : "AMFI") +
-                " vs " + (compare.source && compare.source.benchmark ? compare.source.benchmark : "NSE");
-        } else if (mutualState.compareLoading) {
-            $mfChartNote.textContent = "Pulling official NAV and index history…";
-        } else if (mutualState.compareError) {
-            $mfChartNote.textContent = mutualState.compareError;
-        } else {
-            $mfChartNote.textContent = "Pick a benchmark and range to compare normalized NAV performance.";
+    function renderMultiStats(payload) {
+        var items = (payload && payload.items) || [];
+        var sorted = items.slice().sort(function (a, b) {
+            return (b.return_pct || 0) - (a.return_pct || 0);
+        });
+        var leader = sorted[0];
+        var laggard = sorted[sorted.length - 1];
+        [
+            ["SELECTED FUNDS", String(items.length)],
+            ["LEAD RETURN", leader ? fmtPct(leader.return_pct || 0) : "\u2014"],
+            ["LAG RETURN", laggard ? fmtPct(laggard.return_pct || 0) : "\u2014"],
+        ].forEach(function (pair) {
+            var card = el("div", "mf-stat-card");
+            card.appendChild(el("span", "mf-stat-label", pair[0]));
+            var numeric = Number(String(pair[1]).replace(/[^0-9.-]/g, ""));
+            var tone = !isNaN(numeric) ? positiveTone(numeric) : "neutral";
+            card.appendChild(el("span", "mf-stat-value " + tone, pair[1]));
+            $mfStats.appendChild(card);
+        });
+    }
+
+    function renderMutualDetail() {
+        var fund = currentMutualFund();
+        var selectedCodes = currentChartCodes();
+        var multiMode = selectedCodes.length > 1;
+
+        if (!fund) {
+            clearChildren($mfHero);
+            clearChildren($mfBenchmarks);
+            clearChildren($mfRanges);
+            clearChildren($mfStats);
+            $mfDetail.classList.add("is-empty");
+            $mfHero.hidden = true;
+            $mfBenchmarkBlock.hidden = true;
+            $mfRangeBlock.hidden = true;
+            $mfStats.hidden = true;
+            $mfChartShell.classList.add("is-empty");
+            $mfChartTitle.textContent = "NAV COMPARISON";
+            $mfChartNote.textContent = "Select a tracked fund";
+            renderActiveChart();
+            return;
         }
 
-        renderMutualChart(compare);
+        $mfDetail.classList.remove("is-empty");
+        $mfHero.hidden = false;
+        $mfRangeBlock.hidden = false;
+        $mfStats.hidden = false;
+        $mfChartShell.classList.remove("is-empty");
+        $mfBenchmarkBlock.hidden = multiMode;
+        clearChildren($mfHero);
+        clearChildren($mfBenchmarks);
+        clearChildren($mfRanges);
+        clearChildren($mfStats);
+
+        var heroTop = el("div", "mf-hero-top");
+        var titleWrap = el("div", "mf-hero-copy");
+        titleWrap.appendChild(el("div", "mf-hero-kicker", multiMode ? "NAV PERFORMANCE STACK" : "OFFICIAL NAV TRACKER"));
+        titleWrap.appendChild(el("h3", "mf-hero-name", fund.scheme_name || fund.scheme_code || "Mutual Fund"));
+        var meta = [];
+        if (fund.category) meta.push(titleCase(fund.category));
+        if (fund.scheme_code) meta.push("Code " + fund.scheme_code);
+        if (fund.latest_nav_date) meta.push("NAV " + fmtDateLabel(fund.latest_nav_date));
+        if (multiMode) meta.push(selectedCodes.length + " funds selected");
+        titleWrap.appendChild(el("div", "mf-hero-meta", meta.join(" · ")));
+        heroTop.appendChild(titleWrap);
+
+        var heroValue = el("div", "mf-hero-value");
+        heroValue.appendChild(el("span", "mf-hero-value-label", "Latest NAV"));
+        heroValue.appendChild(el("span", "mf-hero-value-number", fund.latest_nav != null ? fmtPrice(fund.latest_nav) : "\u2014"));
+        heroValue.appendChild(el("span", "mf-hero-value-change flat", fund.latest_nav_date ? "Updated " + fmtDateLabel(fund.latest_nav_date) : "Official NAV date unavailable"));
+        heroTop.appendChild(heroValue);
+        $mfHero.appendChild(heroTop);
+
+        if (!multiMode) {
+            mutualBenchmarkOptions(fund).forEach(function (benchmark) {
+                var chip = el("button", "mf-chip" + (benchmark === mutualState.selectedBenchmark ? " active" : ""), benchmark);
+                chip.type = "button";
+                chip.addEventListener("click", function () {
+                    setMutualSelection(String(fund.scheme_code || ""), {
+                        benchmark: benchmark,
+                        range: mutualState.selectedRange || "max",
+                        loadChart: true,
+                        forceChart: true,
+                    });
+                });
+                $mfBenchmarks.appendChild(chip);
+            });
+        }
+
+        mutualRangeOptions().forEach(function (rangeOpt) {
+            var chip = el("button", "mf-chip" + (rangeOpt.key === mutualState.selectedRange ? " active" : ""), rangeOpt.label);
+            chip.type = "button";
+            chip.addEventListener("click", function () {
+                setMutualSelection(String(fund.scheme_code || ""), {
+                    benchmark: mutualState.selectedBenchmark,
+                    range: rangeOpt.key,
+                    loadChart: true,
+                    forceChart: true,
+                    autoInclude: false,
+                });
+            });
+            $mfRanges.appendChild(chip);
+        });
+
+        if (multiMode) {
+            renderMultiStats(mutualState.multiCompare);
+            $mfChartTitle.textContent = selectedCodes.length + " Selected Funds";
+            if (mutualState.multiCompare && mutualState.multiCompare.items && mutualState.multiCompare.items.length) {
+                $mfChartNote.textContent =
+                    "Normalized NAV lines from " + fmtDateLabel(mutualState.multiCompare.from_date) +
+                    " · " + selectedCodes.length + " funds" +
+                    " · " + (mutualState.multiCompare.source && mutualState.multiCompare.source.fund ? mutualState.multiCompare.source.fund : "AMFI");
+            } else if (mutualState.multiCompareLoading) {
+                $mfChartNote.textContent = "Loading normalized NAV performance for selected funds…";
+            } else if (mutualState.multiCompareError) {
+                $mfChartNote.textContent = mutualState.multiCompareError;
+            } else {
+                $mfChartNote.textContent = "NAV summaries are loaded first. Use All or the chart checkboxes to overlay selected funds.";
+            }
+        } else {
+            renderSingleStats(fund, mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code ? mutualState.compare : null);
+            $mfChartTitle.textContent = (fund.scheme_name || "Mutual Fund") + " vs " + (mutualState.selectedBenchmark || "Benchmark");
+            if (mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code) {
+                $mfChartNote.textContent =
+                    "Normalized to 100 from " + fmtDateLabel(mutualState.compare.from_date) +
+                    " · " + (mutualState.compare.render_points || 0) + " points" +
+                    " · " + (mutualState.compare.source && mutualState.compare.source.fund ? mutualState.compare.source.fund : "AMFI") +
+                    " vs " + (mutualState.compare.source && mutualState.compare.source.benchmark ? mutualState.compare.source.benchmark : "NSE");
+            } else if (mutualState.compareLoading) {
+                $mfChartNote.textContent = "Loading official NAV and benchmark history…";
+            } else if (mutualState.compareError) {
+                $mfChartNote.textContent = mutualState.compareError;
+            } else {
+                $mfChartNote.textContent = "NAV summary loaded. Click the selected card, benchmark, or range to build the benchmark chart.";
+            }
+        }
+
+        renderActiveChart();
     }
 
     function renderMutualPage() {
         renderMutualStatus();
         renderMutualWatchlist();
         renderMutualDetail();
+    }
+
+    function syncSelectionToChartCodes() {
+        var chartCodes = currentChartCodes();
+        if (chartCodes.length === 1) {
+            mutualState.selectedSchemeCode = chartCodes[0];
+        } else if (chartCodes.length > 1 && chartCodes.indexOf(String(mutualState.selectedSchemeCode || "")) === -1) {
+            mutualState.selectedSchemeCode = chartCodes[0];
+        }
+        mutualState.selectedChartSchemeCodes = chartCodes;
     }
 
     function setMutualSelection(schemeCode, opts) {
@@ -488,30 +706,33 @@
             renderMutualPage();
             return;
         }
+
         mutualState.selectedSchemeCode = String(fund.scheme_code || "");
+        var chartCodes = currentChartCodes();
+        if (opts.autoInclude !== false && chartCodes.indexOf(mutualState.selectedSchemeCode) === -1) {
+            chartCodes.push(mutualState.selectedSchemeCode);
+        }
+        mutualState.selectedChartSchemeCodes = chartCodes;
+        syncSelectionToChartCodes();
 
         var benchmarks = mutualBenchmarkOptions(fund);
         var benchmark = opts.benchmark || mutualState.selectedBenchmark || benchmarks[0] || "NIFTY 500";
         if (benchmarks.indexOf(benchmark) === -1) benchmark = benchmarks[0] || benchmark;
         mutualState.selectedBenchmark = benchmark;
 
-        var ranges = mutualRangeOptions();
-        var rangeKeys = ranges.map(function (item) { return item.key; });
+        var rangeOptions = mutualRangeOptions();
         var rangeKey = opts.range || mutualState.selectedRange || "max";
-        if (rangeKeys.indexOf(rangeKey) === -1) rangeKey = ranges[0] ? ranges[0].key : "max";
+        if (!rangeOptions.some(function (item) { return item.key === rangeKey; })) rangeKey = "max";
         mutualState.selectedRange = rangeKey;
+
         mutualState.compareError = null;
+        mutualState.multiCompareError = null;
         saveMutualSelectionPrefs();
         renderMutualPage();
 
-        var compare = mutualState.compare;
-        var needsCompare = opts.forceCompare
-            || !compare
-            || !compare.fund
-            || compare.fund.scheme_code !== mutualState.selectedSchemeCode
-            || compare.benchmark !== mutualState.selectedBenchmark
-            || compare.range !== mutualState.selectedRange;
-        if (needsCompare) loadMutualComparison({ force: true });
+        if (opts.loadChart === false) return;
+        if (opts.deferChart) scheduleDeferredChartLoad(!!opts.forceChart);
+        else loadActiveChart({ force: !!opts.forceChart });
     }
 
     function applyMutualWatchlist(data, opts) {
@@ -524,9 +745,13 @@
             mutualState.selectedSchemeCode = null;
             mutualState.selectedBenchmark = null;
             mutualState.selectedRange = "max";
+            mutualState.selectedChartSchemeCodes = [];
             mutualState.compare = null;
             mutualState.compareLoading = false;
             mutualState.compareError = null;
+            mutualState.multiCompare = null;
+            mutualState.multiCompareLoading = false;
+            mutualState.multiCompareError = null;
             mutualChartRenderKey = "";
             renderMutualPage();
             markUpdated("Shared watchlist");
@@ -544,22 +769,24 @@
         if (benchmarkOptions.indexOf(mutualState.selectedBenchmark) === -1) {
             mutualState.selectedBenchmark = benchmarkOptions[0] || mutualState.selectedBenchmark;
         }
+
+        var rangeOptions = mutualRangeOptions();
         mutualState.selectedRange = opts.range || mutualState.selectedRange || prefs.range || "max";
-        if (!mutualRangeOptions().some(function (item) { return item.key === mutualState.selectedRange; })) {
+        if (!rangeOptions.some(function (item) { return item.key === mutualState.selectedRange; })) {
             mutualState.selectedRange = "max";
         }
-        mutualState.compareError = null;
+
+        var requestedChartCodes = opts.chartSchemeCodes || mutualState.selectedChartSchemeCodes || prefs.chartSchemeCodes || [];
+        mutualState.selectedChartSchemeCodes = requestedChartCodes.slice();
+        syncSelectionToChartCodes();
+        if (!mutualState.selectedChartSchemeCodes.length) {
+            mutualState.selectedChartSchemeCodes = [mutualState.selectedSchemeCode];
+        }
+
         saveMutualSelectionPrefs();
         renderMutualPage();
         markUpdated("Updated " + new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }));
-
-        var compare = mutualState.compare;
-        var compareMatches = compare
-            && compare.fund
-            && compare.fund.scheme_code === mutualState.selectedSchemeCode
-            && compare.benchmark === mutualState.selectedBenchmark
-            && compare.range === mutualState.selectedRange;
-        if (!compareMatches || opts.forceCompare) loadMutualComparison({ force: true });
+        if (opts.loadChart !== false) scheduleDeferredChartLoad(!!opts.forceChart);
     }
 
     async function loadMutualWatchlist(opts) {
@@ -585,30 +812,39 @@
     async function loadMutualComparison(opts) {
         opts = opts || {};
         var fund = currentMutualFund();
-        if (!fund) return null;
+        var selectedCodes = currentChartCodes();
+        if (!fund || selectedCodes.length !== 1 || selectedCodes[0] !== String(fund.scheme_code || "")) return null;
+
         var benchmark = opts.benchmark || mutualState.selectedBenchmark || (fund.benchmark_options && fund.benchmark_options[0]) || "NIFTY 500";
         var rangeKey = opts.range || mutualState.selectedRange || "max";
         if (!opts.force && mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code && mutualState.compare.benchmark === benchmark && mutualState.compare.range === rangeKey) {
             return mutualState.compare;
         }
+
+        cancelMultiCompare();
+        mutualState.multiCompare = null;
+        mutualState.multiCompareLoading = false;
+        mutualState.multiCompareError = null;
+
         mutualState.compareLoading = true;
         mutualState.compareError = null;
         renderMutualPage();
+
         var requestSeq = ++mutualCompareRequestSeq;
-        if (mutualCompareAbortController) mutualCompareAbortController.abort();
+        cancelSingleCompare();
         mutualCompareAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
         var compareController = mutualCompareAbortController;
+
         mutualCompareLoadPromise = (async function () {
             try {
                 var data = await fetchJson(
                     "/api/mf/compare/" + encodeURIComponent(String(fund.scheme_code || "")) +
                     "?benchmark=" + encodeURIComponent(benchmark) +
                     "&range=" + encodeURIComponent(rangeKey),
-                    { timeoutMs: 45000, signal: compareController ? compareController.signal : null }
+                    { timeoutMs: 32000, signal: compareController ? compareController.signal : null }
                 );
                 if (compareController && compareController.signal.aborted) return null;
                 if (requestSeq !== mutualCompareRequestSeq) return data;
-                data = prepareMutualComparePayload(data);
                 mutualState.compare = data;
                 mutualState.compareLoading = false;
                 mutualState.selectedBenchmark = data.benchmark || benchmark;
@@ -633,6 +869,111 @@
         return mutualCompareLoadPromise;
     }
 
+    async function loadMutualPerformance(opts) {
+        opts = opts || {};
+        var selectedCodes = currentChartCodes();
+        if (selectedCodes.length < 2) return null;
+        var rangeKey = opts.range || mutualState.selectedRange || "max";
+        if (!opts.force && mutualState.multiCompare && mutualState.multiCompare.range === rangeKey) {
+            var existingCodes = (mutualState.multiCompare.items || []).map(function (item) { return item.scheme_code; }).sort().join(",");
+            var requestedCodes = selectedCodes.slice().sort().join(",");
+            if (existingCodes === requestedCodes) return mutualState.multiCompare;
+        }
+
+        cancelSingleCompare();
+        mutualState.compareLoading = false;
+        mutualState.compareError = null;
+
+        mutualState.multiCompareLoading = true;
+        mutualState.multiCompareError = null;
+        renderMutualPage();
+
+        var requestSeq = ++mutualPerformanceRequestSeq;
+        cancelMultiCompare();
+        mutualPerformanceAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+        var perfController = mutualPerformanceAbortController;
+        mutualPerformanceLoadPromise = (async function () {
+            try {
+                var data = await fetchJson(
+                    "/api/mf/performance?scheme_codes=" + encodeURIComponent(selectedCodes.join(",")) +
+                    "&range=" + encodeURIComponent(rangeKey),
+                    { timeoutMs: 32000, signal: perfController ? perfController.signal : null }
+                );
+                if (perfController && perfController.signal.aborted) return null;
+                if (requestSeq !== mutualPerformanceRequestSeq) return data;
+                mutualState.multiCompare = data;
+                mutualState.multiCompareLoading = false;
+                mutualState.selectedRange = data.range || rangeKey;
+                saveMutualSelectionPrefs();
+                renderMutualPage();
+                markUpdated("Stacked " + String((data.items || []).length) + " funds");
+                return data;
+            } catch (err) {
+                if (perfController && perfController.signal.aborted) return null;
+                if (requestSeq !== mutualPerformanceRequestSeq) return null;
+                console.error("Mutual performance fetch error:", err);
+                mutualState.multiCompareLoading = false;
+                mutualState.multiCompareError = err.message || "Unable to build multi-fund chart";
+                renderMutualPage();
+                return null;
+            } finally {
+                if (mutualPerformanceAbortController === perfController) mutualPerformanceAbortController = null;
+                if (requestSeq === mutualPerformanceRequestSeq) mutualPerformanceLoadPromise = null;
+            }
+        })();
+        return mutualPerformanceLoadPromise;
+    }
+
+    function loadActiveChart(opts) {
+        opts = opts || {};
+        var selectedCodes = currentChartCodes();
+        if (!selectedCodes.length) {
+            renderMutualPage();
+            return null;
+        }
+        if (selectedCodes.length > 1) {
+            return loadMutualPerformance(opts);
+        }
+        return loadMutualComparison(opts);
+    }
+
+    function toggleChartSelection(schemeCode, checked) {
+        var codes = currentChartCodes();
+        if (checked) {
+            if (codes.indexOf(schemeCode) === -1) codes.push(schemeCode);
+        } else {
+            codes = codes.filter(function (code) { return code !== schemeCode; });
+        }
+        mutualState.selectedChartSchemeCodes = codes;
+        syncSelectionToChartCodes();
+        saveMutualSelectionPrefs();
+        renderMutualPage();
+        if (!codes.length) {
+            cancelSingleCompare();
+            cancelMultiCompare();
+            return;
+        }
+        loadActiveChart({ force: true });
+    }
+
+    function selectAllChartFunds() {
+        mutualState.selectedChartSchemeCodes = (mutualState.watchlist || []).map(function (item) {
+            return String(item.scheme_code || "").trim();
+        }).filter(Boolean);
+        syncSelectionToChartCodes();
+        saveMutualSelectionPrefs();
+        renderMutualPage();
+        loadActiveChart({ force: true });
+    }
+
+    function clearAllChartFunds() {
+        mutualState.selectedChartSchemeCodes = [];
+        saveMutualSelectionPrefs();
+        cancelSingleCompare();
+        cancelMultiCompare();
+        renderMutualPage();
+    }
+
     async function addMutualFund(schemeCode) {
         if (!schemeCode) return null;
         try {
@@ -640,7 +981,13 @@
                 method: "PUT",
                 timeoutMs: 20000,
             });
-            applyMutualWatchlist(data, { schemeCode: String(schemeCode), forceCompare: true });
+            applyMutualWatchlist(data, {
+                schemeCode: String(schemeCode),
+                chartSchemeCodes: [String(schemeCode)],
+                forceChart: false,
+                loadChart: false,
+            });
+            scheduleDeferredChartLoad(false);
             return data;
         } catch (err) {
             console.error("Mutual add error:", err);
@@ -661,14 +1008,17 @@
         if (!schemeCode) return null;
         try {
             var selectedCode = mutualState.selectedSchemeCode;
+            var chartCodes = currentChartCodes().filter(function (code) { return code !== schemeCode; });
             var data = await fetchJson("/api/mf/watchlist/" + encodeURIComponent(String(schemeCode)), {
                 method: "DELETE",
                 timeoutMs: 20000,
             });
             applyMutualWatchlist(data, {
                 schemeCode: selectedCode === schemeCode ? null : selectedCode,
-                forceCompare: selectedCode !== schemeCode,
+                chartSchemeCodes: chartCodes,
+                loadChart: false,
             });
+            if (chartCodes.length) scheduleDeferredChartLoad(false);
             return data;
         } catch (err) {
             console.error("Mutual remove error:", err);
@@ -693,15 +1043,23 @@
             head.appendChild(el("span", "mf-suggest-name", item.scheme_name || item.scheme_code));
             if (item.latest_nav != null) head.appendChild(el("span", "mf-suggest-nav", fmtPrice(item.latest_nav)));
             row.appendChild(head);
+
             var meta = el("div", "mf-suggest-meta");
             meta.appendChild(el("span", "mf-holding-chip", item.category ? titleCase(item.category) : "Unclassified"));
             if (item.benchmark_options && item.benchmark_options.length) {
                 meta.appendChild(el("span", "mf-holding-chip muted", item.benchmark_options[0]));
             }
-            if (item.latest_nav_date) meta.appendChild(el("span", "mf-holding-chip muted", fmtDateLabel(item.latest_nav_date)));
+            if (item.latest_nav_date) {
+                meta.appendChild(el("span", "mf-holding-chip muted", fmtDateLabel(item.latest_nav_date)));
+            }
             row.appendChild(meta);
+
             if (item.tracked) row.disabled = true;
-            else row.addEventListener("click", function () { addMutualFund(item.scheme_code); });
+            else {
+                row.addEventListener("click", function () {
+                    addMutualFund(item.scheme_code);
+                });
+            }
             frag.appendChild(row);
         });
         $mfSuggest.appendChild(frag);
@@ -777,6 +1135,18 @@
         }
     });
 
+    if ($mfSelectAll) {
+        $mfSelectAll.addEventListener("click", function () {
+            selectAllChartFunds();
+        });
+    }
+
+    if ($mfClearAll) {
+        $mfClearAll.addEventListener("click", function () {
+            clearAllChartFunds();
+        });
+    }
+
     function handleResize() {
         if (mfChart && $mfChartBox) {
             mfChart.applyOptions({ width: $mfChartBox.clientWidth, height: $mfChartBox.clientHeight });
@@ -786,19 +1156,20 @@
     function startPolling() {
         if (mutualPollTimer) clearInterval(mutualPollTimer);
         mutualPollTimer = setInterval(function () {
-            if (!document.hidden) loadMutualWatchlist({ force: true });
+            if (!document.hidden) loadMutualWatchlist({ force: true, loadChart: false });
         }, 120000);
     }
 
     document.addEventListener("visibilitychange", function () {
-        if (!document.hidden) loadMutualWatchlist({ force: true });
+        if (!document.hidden) loadMutualWatchlist({ force: true, loadChart: false });
     });
     window.addEventListener("resize", handleResize);
 
     async function initialLoad() {
         renderMutualPage();
         markUpdated("Loading shared watchlist");
-        await loadMutualWatchlist({ force: true });
+        await loadMutualWatchlist({ force: true, loadChart: false });
+        scheduleDeferredChartLoad(false);
         startPolling();
         setTimeout(handleResize, 60);
     }
