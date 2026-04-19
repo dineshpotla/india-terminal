@@ -30,6 +30,8 @@
     let mutualSearchResults = [];
     let mutualPollTimer = null;
     let deferredChartTimer = null;
+    let mutualCompareBaseCache = new Map();
+    let mutualPerformanceBaseCache = new Map();
 
     let mutualState = {
         watchlist: [],
@@ -115,6 +117,108 @@
 
     function positiveTone(value) {
         return value > 0 ? "up" : (value < 0 ? "down" : "neutral");
+    }
+
+    function roundChartValue(value) {
+        return Math.round(Number(value || 0) * 100) / 100;
+    }
+
+    function isoFromUnixTime(seconds) {
+        if (!Number.isFinite(Number(seconds))) return null;
+        return new Date(Number(seconds) * 1000).toISOString().slice(0, 10);
+    }
+
+    function rangeCutoffUnix(rangeKey, lastTime) {
+        if (!lastTime || rangeKey === "max") return null;
+        var dt = new Date(Number(lastTime) * 1000);
+        if (rangeKey === "1y") dt.setFullYear(dt.getFullYear() - 1);
+        else if (rangeKey === "3y") dt.setFullYear(dt.getFullYear() - 3);
+        else if (rangeKey === "5y") dt.setFullYear(dt.getFullYear() - 5);
+        else return null;
+        return Math.floor(dt.getTime() / 1000);
+    }
+
+    function rebaseSeriesForRange(points, rangeKey) {
+        var source = Array.isArray(points) ? points : [];
+        if (!source.length) return [];
+        if (rangeKey === "max") {
+            return source.map(function (point) {
+                return { time: point.time, value: roundChartValue(point.value) };
+            });
+        }
+        var cutoff = rangeCutoffUnix(rangeKey, source[source.length - 1] && source[source.length - 1].time);
+        var subset = source.filter(function (point) {
+            return !cutoff || Number(point.time) >= cutoff;
+        });
+        if (!subset.length) subset = source.slice();
+        var base = Number(subset[0] && subset[0].value) || 100;
+        if (!base) base = 100;
+        return subset.map(function (point) {
+            return {
+                time: point.time,
+                value: roundChartValue((Number(point.value) / base) * 100),
+            };
+        });
+    }
+
+    function compareBaseCacheKey(schemeCode, benchmark) {
+        return String(schemeCode || "").trim() + "|" + String(benchmark || "").trim();
+    }
+
+    function performanceBaseCacheKey(schemeCodes) {
+        return (schemeCodes || []).map(function (code) {
+            return String(code || "").trim();
+        }).filter(Boolean).sort().join(",");
+    }
+
+    function deriveSingleCompareForRange(baseCompare, rangeKey) {
+        if (!baseCompare) return null;
+        if (rangeKey === "max") return baseCompare;
+        var fundChart = rebaseSeriesForRange(baseCompare.fund_chart_data, rangeKey);
+        var benchmarkChart = rebaseSeriesForRange(baseCompare.benchmark_chart_data, rangeKey);
+        if (!fundChart.length || !benchmarkChart.length) return baseCompare;
+        var fundReturn = roundChartValue((fundChart[fundChart.length - 1] && fundChart[fundChart.length - 1].value) - 100);
+        var benchmarkReturn = roundChartValue((benchmarkChart[benchmarkChart.length - 1] && benchmarkChart[benchmarkChart.length - 1].value) - 100);
+        return Object.assign({}, baseCompare, {
+            range: rangeKey,
+            from_date: isoFromUnixTime(fundChart[0] && fundChart[0].time),
+            to_date: isoFromUnixTime(fundChart[fundChart.length - 1] && fundChart[fundChart.length - 1].time),
+            points: fundChart.length,
+            render_points: fundChart.length,
+            fund_chart_data: fundChart,
+            benchmark_chart_data: benchmarkChart,
+            fund_return_pct: fundReturn,
+            benchmark_return_pct: benchmarkReturn,
+            alpha_pct: roundChartValue(fundReturn - benchmarkReturn),
+        });
+    }
+
+    function deriveMultiCompareForRange(basePayload, rangeKey) {
+        if (!basePayload) return null;
+        if (rangeKey === "max") return basePayload;
+        var earliest = null;
+        var latest = null;
+        var items = ((basePayload && basePayload.items) || []).map(function (item) {
+            var chartData = rebaseSeriesForRange(item.chart_data, rangeKey);
+            if (!chartData.length) return null;
+            var fromDate = isoFromUnixTime(chartData[0] && chartData[0].time);
+            var toDate = isoFromUnixTime(chartData[chartData.length - 1] && chartData[chartData.length - 1].time);
+            if (fromDate && (!earliest || fromDate < earliest)) earliest = fromDate;
+            if (toDate && (!latest || toDate > latest)) latest = toDate;
+            return Object.assign({}, item, {
+                points: chartData.length,
+                render_points: chartData.length,
+                return_pct: roundChartValue((chartData[chartData.length - 1] && chartData[chartData.length - 1].value) - 100),
+                chart_data: chartData,
+            });
+        }).filter(Boolean);
+        if (!items.length) return basePayload;
+        return Object.assign({}, basePayload, {
+            range: rangeKey,
+            from_date: earliest,
+            to_date: latest,
+            items: items,
+        });
     }
 
     async function fetchJson(url, opts) {
@@ -736,9 +840,29 @@
 
     function applyMutualWatchlist(data, opts) {
         opts = opts || {};
+        var previousFunds = Array.isArray(mutualState.watchlist) ? mutualState.watchlist.slice() : [];
         mutualState.watchlist = (data && data.items) || [];
         mutualState.storage = data ? data.storage : null;
         mutualState.durable = !!(data && data.durable);
+
+        var previousMeta = new Map(previousFunds.map(function (item) {
+            return [
+                String(item.scheme_code || "").trim(),
+                [item.latest_nav_date || "", item.latest_nav == null ? "" : String(item.latest_nav)].join("|"),
+            ];
+        }));
+        var cacheDirty = previousFunds.length !== mutualState.watchlist.length;
+        if (!cacheDirty) {
+            cacheDirty = mutualState.watchlist.some(function (item) {
+                var code = String(item.scheme_code || "").trim();
+                var nextMeta = [item.latest_nav_date || "", item.latest_nav == null ? "" : String(item.latest_nav)].join("|");
+                return previousMeta.get(code) !== nextMeta;
+            });
+        }
+        if (cacheDirty) {
+            mutualCompareBaseCache.clear();
+            mutualPerformanceBaseCache.clear();
+        }
 
         if (!mutualState.watchlist.length) {
             mutualState.selectedSchemeCode = null;
@@ -817,6 +941,26 @@
         if (!opts.force && mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code && mutualState.compare.benchmark === benchmark && mutualState.compare.range === rangeKey) {
             return mutualState.compare;
         }
+        var baseKey = compareBaseCacheKey(fund.scheme_code, benchmark);
+        var cachedBase = mutualCompareBaseCache.get(baseKey);
+        if (cachedBase) {
+            var cachedCompare = deriveSingleCompareForRange(cachedBase, rangeKey);
+            if (cachedCompare) {
+                cancelMultiCompare();
+                mutualState.multiCompare = null;
+                mutualState.multiCompareLoading = false;
+                mutualState.multiCompareError = null;
+                mutualState.compare = cachedCompare;
+                mutualState.compareLoading = false;
+                mutualState.compareError = null;
+                mutualState.selectedBenchmark = cachedCompare.benchmark || benchmark;
+                mutualState.selectedRange = cachedCompare.range || rangeKey;
+                saveMutualSelectionPrefs();
+                renderMutualPage();
+                markUpdated("Compared " + fmtDateLabel(cachedCompare.to_date));
+                return cachedCompare;
+            }
+        }
 
         cancelMultiCompare();
         mutualState.multiCompare = null;
@@ -834,14 +978,16 @@
 
         mutualCompareLoadPromise = (async function () {
             try {
-                var data = await fetchJson(
+                var baseData = await fetchJson(
                     "/api/mf/compare/" + encodeURIComponent(String(fund.scheme_code || "")) +
                     "?benchmark=" + encodeURIComponent(benchmark) +
-                    "&range=" + encodeURIComponent(rangeKey),
+                    "&range=max",
                     { timeoutMs: 32000, signal: compareController ? compareController.signal : null }
                 );
                 if (compareController && compareController.signal.aborted) return null;
-                if (requestSeq !== mutualCompareRequestSeq) return data;
+                if (requestSeq !== mutualCompareRequestSeq) return baseData;
+                mutualCompareBaseCache.set(baseKey, baseData);
+                var data = deriveSingleCompareForRange(baseData, rangeKey) || baseData;
                 mutualState.compare = data;
                 mutualState.compareLoading = false;
                 mutualState.selectedBenchmark = data.benchmark || benchmark;
@@ -876,6 +1022,24 @@
             var requestedCodes = selectedCodes.slice().sort().join(",");
             if (existingCodes === requestedCodes) return mutualState.multiCompare;
         }
+        var baseKey = performanceBaseCacheKey(selectedCodes);
+        var cachedBase = mutualPerformanceBaseCache.get(baseKey);
+        if (cachedBase) {
+            var cachedPayload = deriveMultiCompareForRange(cachedBase, rangeKey);
+            if (cachedPayload) {
+                cancelSingleCompare();
+                mutualState.compareLoading = false;
+                mutualState.compareError = null;
+                mutualState.multiCompare = cachedPayload;
+                mutualState.multiCompareLoading = false;
+                mutualState.multiCompareError = null;
+                mutualState.selectedRange = cachedPayload.range || rangeKey;
+                saveMutualSelectionPrefs();
+                renderMutualPage();
+                markUpdated("Stacked " + String((cachedPayload.items || []).length) + " funds");
+                return cachedPayload;
+            }
+        }
 
         cancelSingleCompare();
         mutualState.compareLoading = false;
@@ -891,13 +1055,15 @@
         var perfController = mutualPerformanceAbortController;
         mutualPerformanceLoadPromise = (async function () {
             try {
-                var data = await fetchJson(
+                var baseData = await fetchJson(
                     "/api/mf/performance?scheme_codes=" + encodeURIComponent(selectedCodes.join(",")) +
-                    "&range=" + encodeURIComponent(rangeKey),
+                    "&range=max",
                     { timeoutMs: 32000, signal: perfController ? perfController.signal : null }
                 );
                 if (perfController && perfController.signal.aborted) return null;
-                if (requestSeq !== mutualPerformanceRequestSeq) return data;
+                if (requestSeq !== mutualPerformanceRequestSeq) return baseData;
+                mutualPerformanceBaseCache.set(baseKey, baseData);
+                var data = deriveMultiCompareForRange(baseData, rangeKey) || baseData;
                 mutualState.multiCompare = data;
                 mutualState.multiCompareLoading = false;
                 mutualState.selectedRange = data.range || rangeKey;
