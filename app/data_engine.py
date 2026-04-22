@@ -615,8 +615,8 @@ TWELVE_DATA_STOCK_FALLBACK_CAP = max(
     int(os.getenv("TWELVE_DATA_STOCK_FALLBACK_CAP", "3" if _TWELVE_FREE else "50")),
 )
 TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
-NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "moonshotai/kimi-k2.5")
-NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", "nvidia/llama-3.3-nemotron-super-49b-v1.5")
+NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "z-ai/glm-5.1")
+NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", "z-ai/glm-5.1")
 RENDER_MINIMAL_MODE = os.getenv("RENDER_MINIMAL_MODE", "1" if IS_RENDER else "0").strip().lower() in ("1", "true", "yes", "on")
 BACKGROUND_NEWS_ENABLED = os.getenv("BACKGROUND_NEWS_ENABLED", "0" if RENDER_MINIMAL_MODE else "1").strip().lower() in ("1", "true", "yes", "on")
 BACKGROUND_LLM_ENABLED = os.getenv("BACKGROUND_LLM_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
@@ -1484,6 +1484,10 @@ class DataEngine:
             "messages": cls._prepare_nv_messages(model, messages),
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "chat_template_kwargs": {
+                "enable_thinking": False,
+                "clear_thinking": True,
+            },
         }
         if model.startswith("moonshotai/kimi-k2.5"):
             payload["thinking"] = {"type": "disabled"}

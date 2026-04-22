@@ -26,7 +26,7 @@ This repo is configured for Render with [`render.yaml`](render.yaml) (Blueprint)
    - Health: `GET /health`
 6. Logs: `PYTHONUNBUFFERED=1` is set so stdout/stderr appear immediately in the Render log stream.
 
-Optional env vars (set in the service **Environment** tab): `NV_API_KEY`, `TWELVE_DATA_API_KEY`, `WATCHLIST_SEED_SYMBOLS`, `WATCHLIST_DB_PATH` (SQLite only; Postgres uses `DATABASE_URL`).
+Optional env vars (set in the service **Environment** tab): `NV_API_KEY`, `NV_NEWS_MODEL`, `NV_FAST_MODEL`, `TWELVE_DATA_API_KEY`, `WATCHLIST_SEED_SYMBOLS`, `WATCHLIST_DB_PATH` (SQLite only; Postgres uses `DATABASE_URL`).
 
 ## Mutual funds
 
