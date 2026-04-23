@@ -639,6 +639,8 @@ GLOBAL_STALE_SECS = max(30, min(1800, int(os.getenv("GLOBAL_STALE_SECS", "300" i
 NEWS_STALE_SECS = max(60, min(3600, int(os.getenv("NEWS_STALE_SECS", "600" if RENDER_MINIMAL_MODE else "180"))))
 LLM_BATCH_THRESHOLD = max(2, min(64, int(os.getenv("LLM_BATCH_THRESHOLD", "8"))))
 LLM_BATCH_SIZE = max(2, min(16, int(os.getenv("LLM_BATCH_SIZE", "6"))))
+NV_REQUESTS_PER_MINUTE = max(1, min(240, int(os.getenv("NV_REQUESTS_PER_MINUTE", "40"))))
+NV_MAX_PARALLEL = max(1, min(8, int(os.getenv("NV_MAX_PARALLEL", "3" if IS_RENDER else "4"))))
 REQUEST_LLM_SYNC_MAX_ITEMS = max(
     4,
     min(24, int(os.getenv("REQUEST_LLM_SYNC_MAX_ITEMS", "12" if IS_RENDER else "16"))),
@@ -1063,6 +1065,9 @@ class DataEngine:
         self._llm_stack: List[dict] = []
         self._llm_pending: Set[str] = set()
         self._llm_lock = threading.Lock()
+        self._nv_rate_lock = threading.Lock()
+        self._nv_call_times: deque = deque()
+        self._nv_parallel_sem = threading.BoundedSemaphore(NV_MAX_PARALLEL)
         self._watchlist_article_lock = threading.Lock()
         self._watchlist_article_cache: OrderedDict = OrderedDict()
         self._watchlist_article_body_cache: OrderedDict = OrderedDict()
@@ -1436,6 +1441,55 @@ class DataEngine:
         with self._llm_lock:
             self._llm_pending.discard(cache_key)
 
+    def _await_nv_request_budget(self):
+        while True:
+            wait_for = 0.0
+            with self._nv_rate_lock:
+                now = time.monotonic()
+                while self._nv_call_times and now - self._nv_call_times[0] >= 60.0:
+                    self._nv_call_times.popleft()
+                if len(self._nv_call_times) < NV_REQUESTS_PER_MINUTE:
+                    self._nv_call_times.append(now)
+                    return
+                wait_for = max(0.05, 60.0 - (now - self._nv_call_times[0]) + 0.05)
+            time.sleep(wait_for)
+
+    def _nv_post_json(self, payload: dict, timeout: float) -> Optional[requests.Response]:
+        if not NV_API_KEY:
+            return None
+        self._nv_parallel_sem.acquire()
+        try:
+            self._await_nv_request_budget()
+            return requests.post(
+                NV_API_URL,
+                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+        except Exception:
+            return None
+        finally:
+            self._nv_parallel_sem.release()
+
+    @staticmethod
+    def _split_llm_jobs(jobs: List[dict], max_parallel: int) -> List[List[dict]]:
+        if not jobs:
+            return []
+        lane_count = max(1, min(max_parallel, len(jobs)))
+        if len(jobs) <= 1:
+            return [jobs]
+        lane_count = min(lane_count, max(1, (len(jobs) + LLM_BATCH_SIZE - 1) // LLM_BATCH_SIZE))
+        chunk_size = max(1, min(LLM_BATCH_SIZE, (len(jobs) + lane_count - 1) // lane_count))
+        return [jobs[idx:idx + chunk_size] for idx in range(0, len(jobs), chunk_size)]
+
+    def _llm_run_chunk(self, jobs: List[dict], model: str) -> List[Optional[dict]]:
+        titles = [job["title"] for job in jobs]
+        if not titles:
+            return []
+        if len(titles) == 1:
+            return [self._llm_call_one(titles[0], model)]
+        return self._llm_call_many(titles, model)
+
     def _apply_llm_result_to_news(self, cache_key: str, result: dict):
         """Apply cached LLM result to any matching items in current news list."""
         for item in self._news:
@@ -1554,27 +1608,30 @@ class DataEngine:
             while self._running:
                 with self._llm_lock:
                     backlog = len(self._llm_stack)
-                batch_size = min(LLM_BATCH_SIZE, backlog) if backlog >= LLM_BATCH_THRESHOLD else 1
-                jobs = self._pop_llm_stack_batch(batch_size)
+                dispatch_size = min(backlog, max(1, LLM_BATCH_SIZE * NV_MAX_PARALLEL)) if backlog >= LLM_BATCH_THRESHOLD else 1
+                jobs = self._pop_llm_stack_batch(dispatch_size)
                 if not jobs:
                     await asyncio.sleep(0.25)
                     continue
                 await self._broadcast("llm_queue")
-                titles = [job["title"] for job in jobs]
                 model = NV_FAST_MODEL if len(jobs) > 1 or backlog > LLM_BATCH_THRESHOLD else NV_API_MODEL
+                chunks = self._split_llm_jobs(jobs, NV_MAX_PARALLEL)
                 try:
-                    if len(jobs) == 1:
-                        entries = [await asyncio.to_thread(self._llm_call_one, titles[0], model)]
-                    else:
-                        entries = await asyncio.to_thread(self._llm_call_many, titles, model)
                     valid_syms = self._valid_equity_symbols()
-                    for job, entry in zip(jobs, entries):
-                        cache_key = job["cache_key"]
-                        result = self._normalize_llm_entry(job, entry, valid_syms)
-                        self._llm_cache[cache_key] = result
-                        while len(self._llm_cache) > LLM_CACHE_SIZE:
-                            self._llm_cache.popitem(last=False)
-                        self._apply_llm_result_to_news(cache_key, result)
+                    chunk_results = await asyncio.gather(
+                        *(asyncio.to_thread(self._llm_run_chunk, chunk, model) for chunk in chunks),
+                        return_exceptions=True,
+                    )
+                    for chunk, entries in zip(chunks, chunk_results):
+                        if isinstance(entries, Exception) or not isinstance(entries, list):
+                            entries = [None] * len(chunk)
+                        for job, entry in zip(chunk, entries):
+                            cache_key = job["cache_key"]
+                            result = self._normalize_llm_entry(job, entry, valid_syms)
+                            self._llm_cache[cache_key] = result
+                            while len(self._llm_cache) > LLM_CACHE_SIZE:
+                                self._llm_cache.popitem(last=False)
+                            self._apply_llm_result_to_news(cache_key, result)
                     await self._broadcast("news")
                 except Exception:
                     traceback.print_exc()
@@ -1592,27 +1649,31 @@ class DataEngine:
                 backlog = len(self._llm_stack)
             if backlog <= 0:
                 break
-            batch_size = min(LLM_BATCH_SIZE, backlog, max_items - processed) if backlog >= LLM_BATCH_THRESHOLD else 1
-            jobs = self._pop_llm_stack_batch(batch_size)
+            dispatch_cap = min(backlog, max_items - processed)
+            dispatch_size = min(dispatch_cap, max(1, LLM_BATCH_SIZE * NV_MAX_PARALLEL)) if backlog >= LLM_BATCH_THRESHOLD else 1
+            jobs = self._pop_llm_stack_batch(dispatch_size)
             if not jobs:
                 break
-            titles = [job["title"] for job in jobs]
             model = NV_FAST_MODEL if len(jobs) > 1 or backlog > LLM_BATCH_THRESHOLD else NV_API_MODEL
+            chunks = self._split_llm_jobs(jobs, NV_MAX_PARALLEL)
             try:
-                if len(jobs) == 1:
-                    entries = [self._llm_call_one(titles[0], model)]
-                else:
-                    entries = self._llm_call_many(titles, model)
                 valid_syms = self._valid_equity_symbols()
-                for job, entry in zip(jobs, entries):
-                    cache_key = job["cache_key"]
-                    result = self._normalize_llm_entry(job, entry, valid_syms)
-                    self._llm_cache[cache_key] = result
-                    while len(self._llm_cache) > LLM_CACHE_SIZE:
-                        self._llm_cache.popitem(last=False)
-                    self._apply_llm_result_to_news(cache_key, result)
-                    self._mark_llm_done(cache_key)
-                    processed += 1
+                with ThreadPoolExecutor(max_workers=max(1, min(len(chunks), NV_MAX_PARALLEL))) as pool:
+                    future_map = {pool.submit(self._llm_run_chunk, chunk, model): chunk for chunk in chunks}
+                    for future, chunk in future_map.items():
+                        try:
+                            entries = future.result()
+                        except Exception:
+                            entries = [None] * len(chunk)
+                        for job, entry in zip(chunk, entries):
+                            cache_key = job["cache_key"]
+                            result = self._normalize_llm_entry(job, entry, valid_syms)
+                            self._llm_cache[cache_key] = result
+                            while len(self._llm_cache) > LLM_CACHE_SIZE:
+                                self._llm_cache.popitem(last=False)
+                            self._apply_llm_result_to_news(cache_key, result)
+                            self._mark_llm_done(cache_key)
+                            processed += 1
             except Exception:
                 traceback.print_exc()
                 for job in jobs:
@@ -2018,10 +2079,8 @@ class DataEngine:
             + article_text[:WATCHLIST_ARTICLE_BODY_MAX_CHARS]
         )
         try:
-            r = requests.post(
-                NV_API_URL,
-                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                json=self._build_nv_payload(
+            r = self._nv_post_json(
+                self._build_nv_payload(
                     model,
                     [
                         {"role": "system", "content": _WATCHLIST_LLM_SYSTEM},
@@ -2032,7 +2091,7 @@ class DataEngine:
                 ),
                 timeout=WATCHLIST_LLM_TIMEOUT_SECS,
             )
-            if r.status_code != 200:
+            if not r or r.status_code != 200:
                 return None
             text = self._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
             arr = json.loads(text)
@@ -2932,10 +2991,8 @@ class DataEngine:
         )
         user_msg = f"Source: {source_brand}\n\nArticle text:\n{truncated}"
         try:
-            r = requests.post(
-                NV_API_URL,
-                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                json=self._build_nv_payload(
+            r = self._nv_post_json(
+                self._build_nv_payload(
                     NV_FAST_MODEL,
                     [
                         {"role": "system", "content": system_prompt},
@@ -2946,7 +3003,7 @@ class DataEngine:
                 ),
                 timeout=30,
             )
-            if r.status_code != 200:
+            if not r or r.status_code != 200:
                 return []
             text = r.json()["choices"][0]["message"]["content"].strip()
             text = self._extract_json_array_text(text)
@@ -3858,15 +3915,12 @@ class DataEngine:
             return lvl[:20]
         return "News"[:20]
 
-    @staticmethod
-    def _llm_call_one(headline: str, model: str) -> Optional[dict]:
+    def _llm_call_one(self, headline: str, model: str) -> Optional[dict]:
         """Classify a single headline via NVIDIA API. Returns parsed dict or None."""
         user_msg = _LLM_PROMPT_PREFIX + f'1. "{headline}"'
         try:
-            r = requests.post(
-                NV_API_URL,
-                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                json=DataEngine._build_nv_payload(
+            r = self._nv_post_json(
+                self._build_nv_payload(
                     model,
                     [
                         {"role": "system", "content": _LLM_SYSTEM},
@@ -3877,16 +3931,15 @@ class DataEngine:
                 ),
                 timeout=30,
             )
-            if r.status_code != 200:
+            if not r or r.status_code != 200:
                 return None
-            text = DataEngine._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
+            text = self._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
             arr = json.loads(text)
             return arr[0] if arr else None
         except Exception:
             return None
 
-    @staticmethod
-    def _llm_call_many(headlines: List[str], model: str) -> List[Optional[dict]]:
+    def _llm_call_many(self, headlines: List[str], model: str) -> List[Optional[dict]]:
         """Classify multiple headlines in one request. Returns results aligned with input order."""
         if not headlines:
             return []
@@ -3894,10 +3947,8 @@ class DataEngine:
             f'{idx + 1}. "{headline}"' for idx, headline in enumerate(headlines)
         )
         try:
-            r = requests.post(
-                NV_API_URL,
-                headers={"Authorization": f"Bearer {NV_API_KEY}", "Content-Type": "application/json"},
-                json=DataEngine._build_nv_payload(
+            r = self._nv_post_json(
+                self._build_nv_payload(
                     model,
                     [
                         {"role": "system", "content": _LLM_SYSTEM},
@@ -3908,9 +3959,9 @@ class DataEngine:
                 ),
                 timeout=max(30, min(60, 12 + 5 * len(headlines))),
             )
-            if r.status_code != 200:
+            if not r or r.status_code != 200:
                 return [None] * len(headlines)
-            text = DataEngine._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
+            text = self._extract_json_array_text(r.json()["choices"][0]["message"]["content"].strip())
             arr = json.loads(text)
             out: List[Optional[dict]] = [None] * len(headlines)
             if isinstance(arr, dict):
@@ -3962,49 +4013,43 @@ class DataEngine:
 
         model = NV_FAST_MODEL if len(uncached) > 10 else NV_API_MODEL
         ok = 0
-        for item in uncached:
-            entry = self._llm_call_one(item["title"], model)
-            if not entry or not isinstance(entry, dict):
-                # LLM must decide India impact for BREAKING; fail closed.
-                item["india_market_impact"] = False
-                item["breaking"] = False
-                continue
-            stocks = [s for s in entry.get("stocks", []) if s in valid_syms]
-            sentiment = entry.get("sentiment", "neutral")
-            if sentiment not in ("bullish", "bearish", "neutral"):
-                sentiment = "neutral"
-            impact = entry.get("impact", "low")
-            if impact not in ("high", "medium", "low"):
-                impact = "low"
-            is_brk = bool(entry.get("breaking", False))
-            if item.get("stock_event"):
-                is_brk = False
-            is_gs = bool(entry.get("gold_silver", False)) or item.get("gold_silver", False)
-            is_india_impact = bool(entry.get("india_market_impact", False))
-            # BREAKING is strictly India-market-impacting only (LLM-gated).
-            is_brk = is_brk and is_india_impact
-            result = {
-                "stocks": stocks,
-                "sentiment": sentiment,
-                "impact": impact,
-                "breaking": is_brk,
-                "gold_silver": is_gs,
-                "india_market_impact": is_india_impact,
+        chunks = self._split_llm_jobs(
+            [{"title": item["title"], "company_specific": item.get("company_specific", False), "stock_event": item.get("stock_event", False)} for item in uncached],
+            NV_MAX_PARALLEL,
+        )
+        chunk_items = []
+        start = 0
+        for chunk in chunks:
+            chunk_items.append(uncached[start:start + len(chunk)])
+            start += len(chunk)
+        with ThreadPoolExecutor(max_workers=max(1, min(len(chunks), NV_MAX_PARALLEL))) as pool:
+            future_map = {
+                pool.submit(self._llm_run_chunk, chunk, model): (chunk, items_chunk)
+                for chunk, items_chunk in zip(chunks, chunk_items)
             }
-
-            cache_key = item["title"][:80].lower()
-            self._llm_cache[cache_key] = result
-            while len(self._llm_cache) > LLM_CACHE_SIZE:
-                self._llm_cache.popitem(last=False)
-
-            if stocks:
-                item["watchlist_stocks"] = list(dict.fromkeys(stocks))
-            item["sentiment"] = sentiment
-            item["impact"] = impact
-            item["breaking"] = is_brk
-            item["gold_silver"] = is_gs
-            item["india_market_impact"] = is_india_impact
-            ok += 1
+            for future, (chunk, items_chunk) in future_map.items():
+                try:
+                    entries = future.result()
+                except Exception:
+                    entries = [None] * len(chunk)
+                for item, job, entry in zip(items_chunk, chunk, entries):
+                    if not entry or not isinstance(entry, dict):
+                        item["india_market_impact"] = False
+                        item["breaking"] = False
+                        continue
+                    result = self._normalize_llm_entry(job, entry, valid_syms)
+                    cache_key = item["title"][:80].lower()
+                    self._llm_cache[cache_key] = result
+                    while len(self._llm_cache) > LLM_CACHE_SIZE:
+                        self._llm_cache.popitem(last=False)
+                    if result["stocks"]:
+                        item["watchlist_stocks"] = list(dict.fromkeys(result["stocks"]))
+                    item["sentiment"] = result["sentiment"]
+                    item["impact"] = result["impact"]
+                    item["breaking"] = result["breaking"]
+                    item["gold_silver"] = result["gold_silver"] or item.get("gold_silver", False)
+                    item["india_market_impact"] = result["india_market_impact"]
+                    ok += 1
 
         print(f"[LLM] {ok}/{len(uncached)} new via {model.split('/')[-1]}, "
               f"{len(items)-len(uncached)} cached")
