@@ -32,6 +32,9 @@
     let deferredChartTimer = null;
     let mutualCompareBaseCache = new Map();
     let mutualPerformanceBaseCache = new Map();
+    let mutualWorker = null;
+    let mutualWorkerSeq = 0;
+    const mutualWorkerPending = new Map();
 
     let mutualState = {
         watchlist: [],
@@ -138,26 +141,150 @@
         return Math.floor(dt.getTime() / 1000);
     }
 
-    function rebaseSeriesForRange(points, rangeKey) {
+    function downsampleSeries(points, maxPoints) {
         var source = Array.isArray(points) ? points : [];
-        if (!source.length) return [];
-        if (rangeKey === "max") {
-            return source.map(function (point) {
-                return { time: point.time, value: roundChartValue(point.value) };
-            });
+        if (source.length <= maxPoints) return source.slice();
+        if (maxPoints <= 2) return [source[0], source[source.length - 1]];
+        var sampled = [];
+        var seen = new Set();
+        var step = (source.length - 1) / (maxPoints - 1);
+        for (var idx = 0; idx < maxPoints; idx += 1) {
+            var point = source[Math.round(idx * step)];
+            var key = point && point.time;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            sampled.push(point);
         }
-        var cutoff = rangeCutoffUnix(rangeKey, source[source.length - 1] && source[source.length - 1].time);
+        if (sampled.length && sampled[sampled.length - 1].time !== source[source.length - 1].time) {
+            sampled[sampled.length - 1] = source[source.length - 1];
+        }
+        return sampled;
+    }
+
+    function rebaseRawSeries(rawSeries, rangeKey) {
+        var source = Array.isArray(rawSeries) ? rawSeries : [];
+        if (!source.length) return [];
+        var cutoff = rangeCutoffUnix(rangeKey, source[source.length - 1] && source[source.length - 1][0]);
         var subset = source.filter(function (point) {
-            return !cutoff || Number(point.time) >= cutoff;
+            return !cutoff || Number(point[0]) >= cutoff;
         });
         if (!subset.length) subset = source.slice();
-        var base = Number(subset[0] && subset[0].value) || 100;
-        if (!base) base = 100;
+        var base = Number(subset[0] && subset[0][1]) || 0;
+        if (!base) return [];
         return subset.map(function (point) {
             return {
-                time: point.time,
-                value: roundChartValue((Number(point.value) / base) * 100),
+                time: Number(point[0]),
+                value: roundChartValue((Number(point[1]) / base) * 100),
             };
+        });
+    }
+
+    function multiComparePointBudget(selectedCount) {
+        var count = Math.max(1, Number(selectedCount || 0));
+        if (count <= 2) return 180;
+        if (count <= 4) return 144;
+        if (count <= 6) return 120;
+        return 96;
+    }
+
+    function computeSingleComparePayload(baseCompare, rangeKey) {
+        if (!baseCompare) return null;
+        var fundChart = downsampleSeries(rebaseRawSeries(baseCompare.fund_history, rangeKey), 240);
+        var benchmarkChart = downsampleSeries(rebaseRawSeries(baseCompare.benchmark_history, rangeKey), 240);
+        if (!fundChart.length || !benchmarkChart.length) throw new Error("Unable to build comparison series");
+        var fundReturn = roundChartValue((fundChart[fundChart.length - 1] && fundChart[fundChart.length - 1].value) - 100);
+        var benchmarkReturn = roundChartValue((benchmarkChart[benchmarkChart.length - 1] && benchmarkChart[benchmarkChart.length - 1].value) - 100);
+        return {
+            fund: baseCompare.fund,
+            benchmark: baseCompare.benchmark,
+            range: rangeKey,
+            range_options: baseCompare.range_options || [],
+            benchmark_options: baseCompare.benchmark_options || [],
+            from_date: isoFromUnixTime(fundChart[0] && fundChart[0].time),
+            to_date: isoFromUnixTime(fundChart[fundChart.length - 1] && fundChart[fundChart.length - 1].time),
+            points: fundChart.length,
+            render_points: fundChart.length,
+            fund_chart_data: fundChart,
+            benchmark_chart_data: benchmarkChart,
+            fund_return_pct: fundReturn,
+            benchmark_return_pct: benchmarkReturn,
+            alpha_pct: roundChartValue(fundReturn - benchmarkReturn),
+            source: baseCompare.source || {},
+        };
+    }
+
+    function computeMultiComparePayload(basePayload, rangeKey) {
+        if (!basePayload) return null;
+        var earliest = null;
+        var latest = null;
+        var pointBudget = multiComparePointBudget((basePayload.items || []).length);
+        var items = ((basePayload.items) || []).map(function (item) {
+            var chartData = downsampleSeries(rebaseRawSeries(item.nav_history, rangeKey), pointBudget);
+            if (!chartData.length) return null;
+            var fromDate = isoFromUnixTime(chartData[0] && chartData[0].time);
+            var toDate = isoFromUnixTime(chartData[chartData.length - 1] && chartData[chartData.length - 1].time);
+            if (fromDate && (!earliest || fromDate < earliest)) earliest = fromDate;
+            if (toDate && (!latest || toDate > latest)) latest = toDate;
+            return {
+                scheme_code: item.scheme_code,
+                scheme_name: item.scheme_name,
+                category: item.category,
+                latest_nav: item.latest_nav,
+                latest_nav_date: item.latest_nav_date,
+                points: chartData.length,
+                render_points: chartData.length,
+                return_pct: roundChartValue((chartData[chartData.length - 1] && chartData[chartData.length - 1].value) - 100),
+                chart_data: chartData,
+            };
+        }).filter(Boolean);
+        if (!items.length) throw new Error("Not enough NAV history to chart the selected funds");
+        return {
+            range: rangeKey,
+            range_options: basePayload.range_options || [],
+            selected_count: items.length,
+            from_date: earliest,
+            to_date: latest,
+            items: items,
+            source: basePayload.source || {},
+        };
+    }
+
+    function ensureMutualWorker() {
+        if (mutualWorker || typeof Worker === "undefined") return mutualWorker;
+        try {
+            mutualWorker = new Worker("/static/mutual-worker.js");
+            mutualWorker.addEventListener("message", function (event) {
+                var data = event && event.data ? event.data : {};
+                var pending = mutualWorkerPending.get(data.id);
+                if (!pending) return;
+                mutualWorkerPending.delete(data.id);
+                if (data.ok) pending.resolve(data.payload);
+                else pending.reject(new Error(data.error || "Mutual worker failed"));
+            });
+            mutualWorker.addEventListener("error", function () {
+                mutualWorkerPending.forEach(function (pending) {
+                    pending.reject(new Error("Mutual worker crashed"));
+                });
+                mutualWorkerPending.clear();
+                mutualWorker = null;
+            });
+        } catch (err) {
+            mutualWorker = null;
+        }
+        return mutualWorker;
+    }
+
+    function runMutualWorker(type, payload) {
+        var worker = ensureMutualWorker();
+        if (!worker) {
+            return Promise.resolve(type === "single"
+                ? computeSingleComparePayload(payload, payload && payload.range ? payload.range : "max")
+                : computeMultiComparePayload(payload, payload && payload.range ? payload.range : "max"));
+        }
+        return new Promise(function (resolve, reject) {
+            var id = ++mutualWorkerSeq;
+            mutualWorkerPending.set(id, { resolve: resolve, reject: reject });
+            worker.postMessage({ id: id, type: type, payload: payload });
         });
     }
 
@@ -169,56 +296,6 @@
         return (schemeCodes || []).map(function (code) {
             return String(code || "").trim();
         }).filter(Boolean).sort().join(",");
-    }
-
-    function deriveSingleCompareForRange(baseCompare, rangeKey) {
-        if (!baseCompare) return null;
-        if (rangeKey === "max") return baseCompare;
-        var fundChart = rebaseSeriesForRange(baseCompare.fund_chart_data, rangeKey);
-        var benchmarkChart = rebaseSeriesForRange(baseCompare.benchmark_chart_data, rangeKey);
-        if (!fundChart.length || !benchmarkChart.length) return baseCompare;
-        var fundReturn = roundChartValue((fundChart[fundChart.length - 1] && fundChart[fundChart.length - 1].value) - 100);
-        var benchmarkReturn = roundChartValue((benchmarkChart[benchmarkChart.length - 1] && benchmarkChart[benchmarkChart.length - 1].value) - 100);
-        return Object.assign({}, baseCompare, {
-            range: rangeKey,
-            from_date: isoFromUnixTime(fundChart[0] && fundChart[0].time),
-            to_date: isoFromUnixTime(fundChart[fundChart.length - 1] && fundChart[fundChart.length - 1].time),
-            points: fundChart.length,
-            render_points: fundChart.length,
-            fund_chart_data: fundChart,
-            benchmark_chart_data: benchmarkChart,
-            fund_return_pct: fundReturn,
-            benchmark_return_pct: benchmarkReturn,
-            alpha_pct: roundChartValue(fundReturn - benchmarkReturn),
-        });
-    }
-
-    function deriveMultiCompareForRange(basePayload, rangeKey) {
-        if (!basePayload) return null;
-        if (rangeKey === "max") return basePayload;
-        var earliest = null;
-        var latest = null;
-        var items = ((basePayload && basePayload.items) || []).map(function (item) {
-            var chartData = rebaseSeriesForRange(item.chart_data, rangeKey);
-            if (!chartData.length) return null;
-            var fromDate = isoFromUnixTime(chartData[0] && chartData[0].time);
-            var toDate = isoFromUnixTime(chartData[chartData.length - 1] && chartData[chartData.length - 1].time);
-            if (fromDate && (!earliest || fromDate < earliest)) earliest = fromDate;
-            if (toDate && (!latest || toDate > latest)) latest = toDate;
-            return Object.assign({}, item, {
-                points: chartData.length,
-                render_points: chartData.length,
-                return_pct: roundChartValue((chartData[chartData.length - 1] && chartData[chartData.length - 1].value) - 100),
-                chart_data: chartData,
-            });
-        }).filter(Boolean);
-        if (!items.length) return basePayload;
-        return Object.assign({}, basePayload, {
-            range: rangeKey,
-            from_date: earliest,
-            to_date: latest,
-            items: items,
-        });
     }
 
     async function fetchJson(url, opts) {
@@ -944,8 +1021,8 @@
         var baseKey = compareBaseCacheKey(fund.scheme_code, benchmark);
         var cachedBase = mutualCompareBaseCache.get(baseKey);
         if (cachedBase) {
-            var cachedCompare = deriveSingleCompareForRange(cachedBase, rangeKey);
-            if (cachedCompare) {
+            try {
+                var cachedCompare = await runMutualWorker("single", Object.assign({}, cachedBase, { range: rangeKey }));
                 cancelMultiCompare();
                 mutualState.multiCompare = null;
                 mutualState.multiCompareLoading = false;
@@ -959,6 +1036,8 @@
                 renderMutualPage();
                 markUpdated("Compared " + fmtDateLabel(cachedCompare.to_date));
                 return cachedCompare;
+            } catch (err) {
+                console.error("Mutual compare derive error:", err);
             }
         }
 
@@ -987,7 +1066,9 @@
                 if (compareController && compareController.signal.aborted) return null;
                 if (requestSeq !== mutualCompareRequestSeq) return baseData;
                 mutualCompareBaseCache.set(baseKey, baseData);
-                var data = deriveSingleCompareForRange(baseData, rangeKey) || baseData;
+                var data = await runMutualWorker("single", Object.assign({}, baseData, { range: rangeKey }));
+                if (compareController && compareController.signal.aborted) return null;
+                if (requestSeq !== mutualCompareRequestSeq) return data;
                 mutualState.compare = data;
                 mutualState.compareLoading = false;
                 mutualState.selectedBenchmark = data.benchmark || benchmark;
@@ -1025,8 +1106,8 @@
         var baseKey = performanceBaseCacheKey(selectedCodes);
         var cachedBase = mutualPerformanceBaseCache.get(baseKey);
         if (cachedBase) {
-            var cachedPayload = deriveMultiCompareForRange(cachedBase, rangeKey);
-            if (cachedPayload) {
+            try {
+                var cachedPayload = await runMutualWorker("multi", Object.assign({}, cachedBase, { range: rangeKey }));
                 cancelSingleCompare();
                 mutualState.compareLoading = false;
                 mutualState.compareError = null;
@@ -1038,6 +1119,8 @@
                 renderMutualPage();
                 markUpdated("Stacked " + String((cachedPayload.items || []).length) + " funds");
                 return cachedPayload;
+            } catch (err) {
+                console.error("Mutual performance derive error:", err);
             }
         }
 
@@ -1063,7 +1146,9 @@
                 if (perfController && perfController.signal.aborted) return null;
                 if (requestSeq !== mutualPerformanceRequestSeq) return baseData;
                 mutualPerformanceBaseCache.set(baseKey, baseData);
-                var data = deriveMultiCompareForRange(baseData, rangeKey) || baseData;
+                var data = await runMutualWorker("multi", Object.assign({}, baseData, { range: rangeKey }));
+                if (perfController && perfController.signal.aborted) return null;
+                if (requestSeq !== mutualPerformanceRequestSeq) return data;
                 mutualState.multiCompare = data;
                 mutualState.multiCompareLoading = false;
                 mutualState.selectedRange = data.range || rangeKey;

@@ -217,6 +217,10 @@ def _series_point(dt: date, value: float) -> dict:
     }
 
 
+def _raw_series_row(dt: date, value: float) -> list:
+    return [int(datetime(dt.year, dt.month, dt.day).timestamp()), round(float(value), 4)]
+
+
 def _cache_key(prefix: str, *parts: str) -> str:
     joined = "|".join(str(part or "").strip() for part in parts)
     digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()[:16]
@@ -398,19 +402,8 @@ class MutualFundsService:
         common_dates = sorted(set(fund_series) & set(benchmark_series))
         if len(common_dates) < 2:
             raise RuntimeError("Not enough overlapping history to compare this fund with the selected benchmark")
-        base_fund = fund_series[common_dates[0]]
-        base_bm = benchmark_series[common_dates[0]]
-        fund_chart = []
-        benchmark_chart = []
-        for dt in common_dates:
-            fund_nav = fund_series[dt]
-            bench_close = benchmark_series[dt]
-            fund_chart.append(_series_point(dt, 100.0 * fund_nav / base_fund))
-            benchmark_chart.append(_series_point(dt, 100.0 * bench_close / base_bm))
-        fund_chart = _downsample_compare_series(fund_chart, MF_COMPARE_MAX_RENDER_POINTS)
-        benchmark_chart = _downsample_compare_series(benchmark_chart, MF_COMPARE_MAX_RENDER_POINTS)
-        fund_return = round(fund_chart[-1]["value"] - 100.0, 2)
-        benchmark_return = round(benchmark_chart[-1]["value"] - 100.0, 2)
+        fund_history = [_raw_series_row(dt, fund_series[dt]) for dt in common_dates]
+        benchmark_history = [_raw_series_row(dt, benchmark_series[dt]) for dt in common_dates]
         payload = {
             "fund": target,
             "benchmark": benchmark_name,
@@ -420,12 +413,8 @@ class MutualFundsService:
             "from_date": common_dates[0].isoformat(),
             "to_date": common_dates[-1].isoformat(),
             "points": len(common_dates),
-            "render_points": len(fund_chart),
-            "fund_chart_data": fund_chart,
-            "benchmark_chart_data": benchmark_chart,
-            "fund_return_pct": fund_return,
-            "benchmark_return_pct": benchmark_return,
-            "alpha_pct": round(fund_return - benchmark_return, 2),
+            "fund_history": fund_history,
+            "benchmark_history": benchmark_history,
             "source": {
                 "fund": "Stored NAV",
                 "benchmark": "Stored Benchmark",
@@ -453,7 +442,6 @@ class MutualFundsService:
         items = []
         earliest = None
         latest = None
-        point_budget = _multi_compare_point_budget(len(normalized_codes))
         for code in normalized_codes:
             target = selected_map.get(code)
             if not target:
@@ -466,12 +454,6 @@ class MutualFundsService:
             last_dt = dates[-1]
             earliest = first_dt if earliest is None or first_dt < earliest else earliest
             latest = last_dt if latest is None or last_dt > latest else latest
-            base_nav = history[first_dt]
-            chart_data = [
-                _series_point(dt, 100.0 * history[dt] / base_nav)
-                for dt in dates
-            ]
-            chart_data = _downsample_compare_series(chart_data, point_budget)
             items.append(
                 {
                     "scheme_code": target.get("scheme_code"),
@@ -480,9 +462,7 @@ class MutualFundsService:
                     "latest_nav": target.get("latest_nav"),
                     "latest_nav_date": target.get("latest_nav_date"),
                     "points": len(dates),
-                    "render_points": len(chart_data),
-                    "return_pct": round(chart_data[-1]["value"] - 100.0, 2),
-                    "chart_data": chart_data,
+                    "nav_history": [_raw_series_row(dt, history[dt]) for dt in dates],
                 }
             )
 
