@@ -80,7 +80,9 @@ class WatchlistStore:
 
     @property
     def durable(self) -> bool:
-        return self._mode == "postgres"
+        return self._mode == "postgres" or (
+            self._mode == "sqlite" and self._sqlite_path.parent != Path("/tmp")
+        )
 
     @property
     def initialized(self) -> bool:

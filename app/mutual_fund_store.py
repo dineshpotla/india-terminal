@@ -65,7 +65,9 @@ class MutualFundWatchlistStore:
 
     @property
     def durable(self) -> bool:
-        return self._mode == "postgres"
+        return self._mode == "postgres" or (
+            self._mode == "sqlite" and self._sqlite_path.parent != Path("/tmp")
+        )
 
     def _init_sqlite(self):
         with self._lock, self._sqlite:
