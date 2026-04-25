@@ -1,0 +1,56 @@
+services:
+  terminal:
+    build:
+      context: .
+    image: india-terminal:coolify
+    container_name: india-terminal
+    restart: unless-stopped
+    env_file:
+      - .env.coolify
+    environment:
+      APP_ROLE: combined
+      DASHBOARD_DB_PATH: /app/data/dashboard.db
+      WATCHLIST_DB_PATH: /app/data/watchlist.db
+      MUTUAL_FUND_DB_PATH: /app/data/mutual_funds.db
+      NEWS_FEED_TIMEOUT_SECS: "5"
+      NEWS_FEED_WORKERS: "6"
+      NEWS_REFRESH_SECS: "90"
+      NV_REQUESTS_PER_MINUTE: "40"
+      NV_MAX_PARALLEL: "4"
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mutual-funds:
+    build:
+      context: .
+    image: india-terminal:coolify
+    container_name: india-terminal-mf
+    restart: unless-stopped
+    depends_on:
+      terminal:
+        condition: service_started
+    env_file:
+      - .env.coolify
+    environment:
+      DASHBOARD_DB_PATH: /app/data/dashboard.db
+      WATCHLIST_DB_PATH: /app/data/watchlist.db
+      MUTUAL_FUND_DB_PATH: /app/data/mutual_funds.db
+    command: ["uvicorn", "app.mutual_server:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips=*", "--timeout-keep-alive", "75", "--log-level", "info"]
+    ports:
+      - "18081:8080"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
