@@ -232,7 +232,7 @@ async def index():
 
 @app.get("/mutual")
 async def mutual_index():
-    return FileResponse(STATIC / "mutual.html")
+    return FileResponse(STATIC / "index.html")
 
 
 @app.head("/")

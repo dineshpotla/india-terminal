@@ -2783,6 +2783,14 @@
     var $terminal = document.querySelector(".terminal");
     var navTabs = document.querySelectorAll(".nav-tab[data-view]");
 
+    if (window.location.pathname === "/mutual") {
+        currentView = "mutual";
+    }
+    navTabs.forEach(function (b) {
+        b.classList.toggle("active", b.dataset.view === currentView);
+    });
+    $terminal.setAttribute("data-view", currentView);
+
     navTabs.forEach(function (btn) {
         btn.addEventListener("click", function () {
             var view = btn.dataset.view;
@@ -2790,6 +2798,12 @@
             currentView = view;
             navTabs.forEach(function (b) { b.classList.toggle("active", b.dataset.view === view); });
             $terminal.setAttribute("data-view", view);
+            if (window.history && window.history.pushState) {
+                var targetPath = view === "mutual" ? "/mutual" : "/";
+                if (window.location.pathname !== targetPath) {
+                    window.history.pushState({ view: view }, "", targetPath);
+                }
+            }
             if (view === "options") {
                 fetchOptionChain();
                 ocRefreshTimer = setInterval(fetchOptionChain, 30000);
