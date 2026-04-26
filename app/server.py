@@ -15,11 +15,14 @@ from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
 
 from .data_engine import DataEngine, IST, SECTOR_MAP
+from .mutual_fund_store import MutualFundWatchlistStore
+from .mutual_funds import MutualFundsService
 from .panel_cache import PanelCacheManager
 from .watchlist_store import WatchlistStore
 
 STATIC = Path(__file__).parent / "static"
 _WATCHLIST_SYMBOL_RE = re.compile(r"^[A-Z0-9&.-]{1,20}$")
+_MF_SCHEME_CODE_RE = re.compile(r"^[0-9]{1,20}$")
 PANEL_OVERVIEW_KEY = "panel:overview"
 PANEL_GLOBAL_KEY = "panel:global"
 PANEL_NEWS_ALL_KEY = "panel:news:all"
@@ -39,6 +42,8 @@ WATCHLIST_NEWS_STALE_TTL = 12 * 60 * 60.0
 
 engine = DataEngine()
 watchlist_store = WatchlistStore()
+mutual_fund_store = MutualFundWatchlistStore()
+mutual_funds = MutualFundsService(engine._dashboard_store, mutual_fund_store)
 panel_cache = PanelCacheManager(engine._dashboard_store)
 
 
@@ -74,6 +79,28 @@ def _normalize_symbols(symbols: list[str]) -> list[str]:
         seen.add(sym)
         valid.append(sym)
     return valid
+
+
+def _normalize_scheme_code(scheme_code: str) -> str:
+    code = (scheme_code or "").strip()
+    if not code or not _MF_SCHEME_CODE_RE.fullmatch(code):
+        raise HTTPException(status_code=400, detail="Invalid scheme code")
+    return code
+
+
+def _normalize_scheme_codes(raw_value: str) -> list[str]:
+    items = []
+    seen = set()
+    for raw in (raw_value or "").split(","):
+        code = (raw or "").strip()
+        if not code:
+            continue
+        normalized = _normalize_scheme_code(code)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        items.append(normalized)
+    return items
 
 
 def _watchlist_response() -> dict:
@@ -201,6 +228,11 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 @app.get("/")
 async def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/mutual")
+async def mutual_index():
+    return FileResponse(STATIC / "mutual.html")
 
 
 @app.head("/")
@@ -396,6 +428,62 @@ async def delete_watchlist_symbol(symbol: str):
 @app.get("/api/options/{symbol}")
 async def options(symbol: str, expiry: str = Query("")):
     data = await asyncio.to_thread(engine.get_option_chain, symbol, expiry or None)
+    return JSONResponse(data)
+
+
+@app.get("/api/mf/search")
+async def mf_search(q: str = Query("")):
+    return JSONResponse(await asyncio.to_thread(mutual_funds.search, q))
+
+
+@app.get("/api/mf/watchlist")
+async def mf_watchlist():
+    return JSONResponse(await asyncio.to_thread(mutual_funds.list_watchlist))
+
+
+@app.put("/api/mf/watchlist/{scheme_code}")
+async def add_mf_watchlist_item(scheme_code: str):
+    code = _normalize_scheme_code(scheme_code)
+    try:
+        data = await asyncio.to_thread(mutual_funds.add, code)
+    except Exception as exc:
+        print(f"[MutualFunds] add failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(data)
+
+
+@app.delete("/api/mf/watchlist/{scheme_code}")
+async def delete_mf_watchlist_item(scheme_code: str):
+    code = _normalize_scheme_code(scheme_code)
+    try:
+        data = await asyncio.to_thread(mutual_funds.remove, code)
+    except Exception as exc:
+        print(f"[MutualFunds] delete failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(data)
+
+
+@app.get("/api/mf/compare/{scheme_code}")
+async def mf_compare(scheme_code: str, benchmark: str = Query(""), range_key: str = Query("max", alias="range")):
+    code = _normalize_scheme_code(scheme_code)
+    try:
+        data = await asyncio.to_thread(mutual_funds.compare, code, benchmark or None, range_key)
+    except Exception as exc:
+        print(f"[MutualFunds] compare failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(data)
+
+
+@app.get("/api/mf/performance")
+async def mf_performance(scheme_codes: str = Query(""), range_key: str = Query("max", alias="range")):
+    codes = _normalize_scheme_codes(scheme_codes)
+    if not codes:
+        raise HTTPException(status_code=400, detail="No mutual funds selected")
+    try:
+        data = await asyncio.to_thread(mutual_funds.compare_many, codes, range_key)
+    except Exception as exc:
+        print(f"[MutualFunds] performance failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse(data)
 
 
