@@ -15,9 +15,10 @@ import requests
 
 AMFI_NAV_ALL_URL = "https://portal.amfiindia.com/spages/NAVAll.txt"
 AMFI_NAV_HISTORY_URL = "https://portal.amfiindia.com/DownloadNAVHistoryReport_Po.aspx"
+AMFI_NAV_SOURCE_URL = "https://www.amfiindia.com/net-asset-value/nav-download"
 NSE_INDEX_HISTORY_URL = "https://www.nseindia.com/api/historicalOR/indicesHistory"
 NSE_BASE_URL = "https://www.nseindia.com"
-MFAPI_HISTORY_URL = "https://api.mfapi.in/mf/{scheme_code}"
+NSE_INDEX_SOURCE_URL = "https://www.nseindia.com/reports-indices-historical-index-data"
 
 MUTUAL_AMFI_MASTER_KEY = "mf:amfi:navall"
 MUTUAL_AMFI_AMC_CODES_KEY = "mf:amfi:amc_codes"
@@ -65,6 +66,8 @@ MF_COMPARE_MAX_RENDER_POINTS = 240
 MF_MULTI_COMPARE_MAX_RENDER_POINTS = 180
 MF_WATCHLIST_SYNC_INTERVAL_SECONDS = 15 * 60
 MF_INCREMENTAL_HISTORY_LOOKBACK_DAYS = 7
+AMFI_HISTORY_CHUNK_DAYS = 90
+NSE_HISTORY_CHUNK_DAYS = 95
 
 
 def _utc_now_iso() -> str:
@@ -391,6 +394,12 @@ class MutualFundsService:
             "storage": self._watchlist_store.storage_mode,
             "durable": self._watchlist_store.durable,
             "shared": True,
+            "source": {
+                "nav": "AMFI official NAVAll",
+                "nav_url": AMFI_NAV_ALL_URL,
+                "history": "AMFI official NAV history",
+                "history_url": AMFI_NAV_SOURCE_URL,
+            },
         }
 
     def add(self, scheme_code: str) -> dict:
@@ -447,8 +456,10 @@ class MutualFundsService:
             "benchmark_return_pct": benchmark_return_pct,
             "alpha_pct": round(fund_return_pct - benchmark_return_pct, 2),
             "source": {
-                "fund": "Stored NAV",
-                "benchmark": "Stored Benchmark",
+                "fund": "AMFI official NAV history",
+                "fund_url": AMFI_NAV_SOURCE_URL,
+                "benchmark": "NSE official index history",
+                "benchmark_url": NSE_INDEX_SOURCE_URL,
             },
         }
         return payload
@@ -470,36 +481,53 @@ class MutualFundsService:
             str(entry.get("scheme_code") or "").strip(): self._enrich_tracked_entry(entry)
             for entry in self._watchlist_store.list_entries()
         }
-        items = []
-        earliest = None
-        latest = None
+        histories: Dict[str, Dict[date, float]] = {}
+        targets: Dict[str, dict] = {}
         for code in normalized_codes:
             target = selected_map.get(code)
             if not target:
                 continue
             history = self._ensure_fund_history_current(target, start_date)
-            dates = sorted(history)
-            if len(dates) < 2:
+            if len(history) < 2:
+                continue
+            histories[code] = history
+            targets[code] = target
+
+        if not histories:
+            raise RuntimeError("Not enough AMFI NAV history to chart the selected funds")
+
+        benchmark_name = "NIFTY 50"
+        benchmark_series = self._ensure_benchmark_history_current(benchmark_name, start_date, date.today())
+        common_dates_set = set(benchmark_series)
+        for history in histories.values():
+            common_dates_set &= set(history)
+        common_dates = sorted(common_dates_set)
+        if len(common_dates) < 2:
+            raise RuntimeError("Not enough overlapping AMFI NAV and NIFTY 50 history for the selected funds")
+
+        point_budget = _multi_compare_point_budget(len(histories) + 1)
+        items = []
+        for code in normalized_codes:
+            target = targets.get(code)
+            history = histories.get(code)
+            if not target or not history:
                 continue
             chart_data = _rebased_chart_data(
-                dates,
+                common_dates,
                 history,
-                _multi_compare_point_budget(len(normalized_codes)),
+                point_budget,
             )
             if len(chart_data) < 2:
                 continue
-            first_dt = dates[0]
-            last_dt = dates[-1]
-            earliest = first_dt if earliest is None or first_dt < earliest else earliest
-            latest = last_dt if latest is None or last_dt > latest else latest
             items.append(
                 {
+                    "kind": "fund",
                     "scheme_code": target.get("scheme_code"),
                     "scheme_name": target.get("scheme_name"),
                     "category": target.get("category"),
                     "latest_nav": target.get("latest_nav"),
                     "latest_nav_date": target.get("latest_nav_date"),
-                    "points": len(dates),
+                    "points": len(common_dates),
                     "render_points": len(chart_data),
                     "return_pct": _chart_return_pct(chart_data),
                     "chart_data": chart_data,
@@ -507,16 +535,39 @@ class MutualFundsService:
             )
 
         if not items:
-            raise RuntimeError("Not enough NAV history to chart the selected funds")
+            raise RuntimeError("Not enough AMFI NAV history to chart the selected funds")
+
+        benchmark_chart_data = _rebased_chart_data(common_dates, benchmark_series, point_budget)
+        if len(benchmark_chart_data) >= 2:
+            items.append(
+                {
+                    "kind": "benchmark",
+                    "scheme_code": "__NIFTY50__",
+                    "scheme_name": benchmark_name,
+                    "category": "benchmark",
+                    "latest_nav": benchmark_series.get(common_dates[-1]),
+                    "latest_nav_date": common_dates[-1].isoformat(),
+                    "points": len(common_dates),
+                    "render_points": len(benchmark_chart_data),
+                    "return_pct": _chart_return_pct(benchmark_chart_data),
+                    "chart_data": benchmark_chart_data,
+                }
+            )
 
         payload = {
             "range": range_key,
             "range_options": _range_options(),
-            "selected_count": len(items),
-            "from_date": earliest.isoformat() if earliest else None,
-            "to_date": latest.isoformat() if latest else None,
+            "benchmark": benchmark_name,
+            "selected_count": len([item for item in items if item.get("kind") != "benchmark"]),
+            "from_date": common_dates[0].isoformat(),
+            "to_date": common_dates[-1].isoformat(),
             "items": items,
-            "source": {"fund": "Stored NAV"},
+            "source": {
+                "fund": "AMFI official NAV history",
+                "fund_url": AMFI_NAV_SOURCE_URL,
+                "benchmark": "NSE official index history",
+                "benchmark_url": NSE_INDEX_SOURCE_URL,
+            },
         }
         return payload
 
@@ -546,12 +597,23 @@ class MutualFundsService:
         scheme = self._resolve_scheme_by_code(entry.get("scheme_code") or "")
         merged = dict(entry)
         latest_db = self._watchlist_store.latest_nav_point(str(entry.get("scheme_code") or "").strip())
+        master_nav = _clean_float(scheme.get("nav"))
+        master_date = _parse_date_value(scheme.get("date"))
+        if master_date and master_nav is not None and (not latest_db or not latest_db[0] or latest_db[0] <= master_date):
+            latest_nav = master_nav
+            latest_nav_date = scheme.get("date")
+        elif latest_db:
+            latest_nav = float(latest_db[1])
+            latest_nav_date = latest_db[0].isoformat() if latest_db[0] else None
+        else:
+            latest_nav = master_nav
+            latest_nav_date = scheme.get("date")
         merged.update(
             {
                 "scheme_name": scheme.get("name"),
                 "isin_primary": scheme.get("isin_primary"),
-                "latest_nav": float(latest_db[1]) if latest_db else scheme.get("nav"),
-                "latest_nav_date": latest_db[0].isoformat() if latest_db and latest_db[0] else scheme.get("date"),
+                "latest_nav": latest_nav,
+                "latest_nav_date": latest_nav_date,
             }
         )
         if not merged.get("category"):
@@ -740,27 +802,47 @@ class MutualFundsService:
         latest = dates[-1]
         coverage_days = max(0, (latest - earliest).days)
         requested_days = max(0, (date.today() - start_date).days)
+        max_gap_days = max(
+            ((dates[idx] - dates[idx - 1]).days for idx in range(1, len(dates))),
+            default=0,
+        )
+        if max_gap_days > 21:
+            return True
         if requested_days <= 40:
             return coverage_days + 7 < requested_days
+        min_expected_points = min(160, max(20, int(requested_days * 0.45)))
+        if len(dates) < min_expected_points:
+            return True
         if coverage_days < min(120, requested_days // 2):
             return True
         return False
 
     def _fetch_and_store_fund_history(self, scheme: dict, start_date: date, end_date: date):
         history: List[tuple[date, float]] = []
-        try:
-            amc_code = self._resolve_amc_code(scheme.get("house") or "", scheme.get("scheme_code") or "")
-            resp = requests.get(
-                AMFI_NAV_HISTORY_URL,
-                params={
-                    "mf": amc_code,
-                    "frmdt": start_date.strftime(_AMFI_HISTORY_DATE_FMT),
-                    "todt": end_date.strftime(_AMFI_HISTORY_DATE_FMT),
-                },
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=90,
-            )
-            resp.raise_for_status()
+        amc_code = self._resolve_amc_code(scheme.get("house") or "", scheme.get("scheme_code") or "")
+        session = requests.Session()
+        cursor = start_date
+        while cursor <= end_date:
+            chunk_end = min(cursor + timedelta(days=AMFI_HISTORY_CHUNK_DAYS - 1), end_date)
+            try:
+                resp = session.get(
+                    AMFI_NAV_HISTORY_URL,
+                    params={
+                        "mf": amc_code,
+                        "frmdt": cursor.strftime(_AMFI_HISTORY_DATE_FMT),
+                        "todt": chunk_end.strftime(_AMFI_HISTORY_DATE_FMT),
+                    },
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=45,
+                )
+                resp.raise_for_status()
+            except Exception as exc:
+                print(
+                    f"[MutualFunds] AMFI history chunk failed for "
+                    f"{scheme.get('scheme_code')} {cursor}..{chunk_end}: {exc}"
+                )
+                cursor = chunk_end + timedelta(days=1)
+                continue
             prefix = f"{scheme.get('scheme_code')};"
             for raw_line in resp.text.splitlines():
                 line = raw_line.strip()
@@ -777,36 +859,10 @@ class MutualFundsService:
                 if nav is None:
                     continue
                 history.append((dt, nav))
-        except Exception as exc:
-            print(f"[MutualFunds] AMFI history fallback for {scheme.get('scheme_code')}: {exc}")
-        if not history:
-            history = self._fetch_mfapi_history(str(scheme.get("scheme_code") or "").strip(), start_date, end_date)
+            cursor = chunk_end + timedelta(days=1)
         if not history:
             raise RuntimeError(f"No AMFI history returned for {scheme.get('name')}")
         self._watchlist_store.upsert_nav_history(str(scheme.get("scheme_code") or "").strip(), history)
-
-    def _fetch_mfapi_history(self, scheme_code: str, start_date: date, end_date: date) -> List[tuple[date, float]]:
-        resp = requests.get(
-            MFAPI_HISTORY_URL.format(scheme_code=scheme_code),
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        history: List[tuple[date, float]] = []
-        for row in payload.get("data") or []:
-            raw_date = row.get("date")
-            nav = _clean_float(row.get("nav"))
-            if not raw_date or nav is None:
-                continue
-            try:
-                dt = datetime.strptime(raw_date, "%d-%m-%Y").date()
-            except Exception:
-                continue
-            if dt < start_date or dt > end_date:
-                continue
-            history.append((dt, nav))
-        return history
 
     def _ensure_benchmark_history_current(self, benchmark_name: str, start_date: date, end_date: date) -> Dict[date, float]:
         clean_name = _INDEX_NAME_CLEANUPS.get(benchmark_name, benchmark_name)
@@ -817,6 +873,15 @@ class MutualFundsService:
             dates = sorted(history)
             coverage_days = max(0, (dates[-1] - dates[0]).days)
             requested_days = max(0, (end_date - start_date).days)
+            max_gap_days = max(
+                ((dates[idx] - dates[idx - 1]).days for idx in range(1, len(dates))),
+                default=0,
+            )
+            if max_gap_days > 21:
+                needs_backfill = True
+            min_expected_points = min(160, max(20, int(requested_days * 0.45)))
+            if requested_days > 40 and len(dates) < min_expected_points:
+                needs_backfill = True
             if requested_days > 40 and coverage_days < min(120, requested_days // 2):
                 needs_backfill = True
         if needs_backfill:
@@ -840,7 +905,7 @@ class MutualFundsService:
         cursor = start_date
         history: List[tuple[date, float]] = []
         while cursor <= end_date:
-            chunk_end = min(cursor + timedelta(days=360), end_date)
+            chunk_end = min(cursor + timedelta(days=NSE_HISTORY_CHUNK_DAYS - 1), end_date)
             resp = session.get(
                 NSE_INDEX_HISTORY_URL,
                 params={

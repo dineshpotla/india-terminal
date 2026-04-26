@@ -230,11 +230,6 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
-@app.get("/mutual")
-async def mutual_index():
-    return FileResponse(STATIC / "index.html")
-
-
 @app.head("/")
 async def index_head():
     return JSONResponse({})

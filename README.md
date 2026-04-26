@@ -30,11 +30,11 @@ Optional env vars (set in the service **Environment** tab): `NV_API_KEY`, `NV_NE
 
 ## Mutual funds
 
-The `MUTUAL FUNDS` page is a manual shared watchlist.
+The `MUTUAL FUNDS` tab is embedded inside the main terminal as a manual shared watchlist.
 
-- AMFI is used for scheme search and official NAV history.
+- AMFI is used for scheme search, current NAV, and official NAV history.
 - NSE historical index data is used for benchmark comparisons.
-- Mutual funds stay on the dedicated mutual-funds page and do not alter the stock watchlist.
+- Mutual funds stay separate from the stock watchlist and do not alter stock symbols.
 
 ## Watchlist persistence
 
