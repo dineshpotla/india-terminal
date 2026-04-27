@@ -402,6 +402,23 @@ class MutualFundsService:
             },
         }
 
+    def sync_watchlist_navs(self, force: bool = False) -> dict:
+        self._sync_watchlist_daily(force=force)
+        entries = self._watchlist_store.list_entries()
+        items = [self._enrich_tracked_entry(entry) for entry in entries]
+        return {
+            "synced": len(items),
+            "items": items,
+            "storage": self._watchlist_store.storage_mode,
+            "durable": self._watchlist_store.durable,
+            "source": {
+                "nav": "AMFI official NAVAll",
+                "nav_url": AMFI_NAV_ALL_URL,
+                "history": "AMFI official NAV history",
+                "history_url": AMFI_NAV_SOURCE_URL,
+            },
+        }
+
     def add(self, scheme_code: str) -> dict:
         scheme = self._resolve_scheme_by_code(scheme_code)
         entry = self._tracked_entry_from_scheme(scheme)

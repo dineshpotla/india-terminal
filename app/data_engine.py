@@ -779,16 +779,19 @@ _GLOBAL_MARKET_KW = {
     "bonds", "yield", "yields", "treasury", "gilts", "bund", "credit", "spread",
     "dow", "nasdaq", "s&p", "ftse", "dax", "nikkei", "hang seng", "sensex", "nifty",
     # macro
-    "fed", "federal reserve", "ecb", "boe", "boj", "pbo", "central bank",
+    "fed", "federal reserve", "ecb", "boe", "boj", "pboc", "central bank", "central banks",
     "rate cut", "rate hike", "interest rate", "inflation", "cpi", "ppi", "pce",
     "gdp", "pmi", "unemployment", "jobs report", "recession", "growth",
     # fx / commodities
     "forex", "fx", "currency", "dollar", "usd", "eur", "yen", "rupee", "inr",
     "oil", "crude", "brent", "wti", "gas", "lng", "gold", "silver", "copper",
     # risk / geopolitics that moves markets
-    "sanction", "tariff", "embargo", "war", "geopolit", "strait of hormuz",
+    "sanction", "sanctions", "tariff", "tariffs", "embargo", "war", "geopolit",
+    "strait of hormuz", "hormuz", "middle east", "red sea", "iran", "israel",
+    "missile strike", "missile strikes", "drone attack", "drone attacks", "hostile drone",
+    "oil tanker", "shipping lane",
     # company/market structure
-    "earnings", "profit", "revenue", "guidance", "ipo", "listing", "buyback",
+    "earnings", "profit", "profits", "revenue", "guidance", "ipo", "listing", "buyback",
     "downgrade", "upgrade", "rating", "bank", "banking",
 }
 
@@ -822,8 +825,10 @@ _INDIA_IMPACT_HINT_KW = {
     "adani", "reliance", "tata", "infosys", "tcs", "hdfc",
     "oil price", "crude oil", "brent", "opec",
     "fed rate", "rate cut", "rate hike", "federal reserve",
-    "tariff", "trade war", "sanction",
-    "iran", "strait of hormuz", "war escalat",
+    "tariff", "tariffs", "trade war", "sanction", "sanctions",
+    "iran", "israel", "middle east", "red sea", "strait of hormuz", "hormuz",
+    "war escalat", "missile strike", "missile strikes", "drone attack", "drone attacks",
+    "hostile drone", "oil tanker", "shipping lane",
     "global selloff", "risk-off", "emerging market",
     "gold price", "silver price",
 }
@@ -844,6 +849,36 @@ _INDIA_NEWS_KW = {
     "dalal street", "bombay stock",
 }
 
+_KEYWORD_REGEX_CACHE: Dict[tuple[str, bool], re.Pattern] = {}
+_KEYWORD_STEMS = {
+    "sanction", "tariff", "geopolit", "war escalat", "central bank",
+}
+
+
+def _keyword_pattern(keyword: str) -> re.Pattern:
+    """Match standalone keywords so short tokens like `nfl` do not hit `inflation`."""
+    normalized = str(keyword or "").strip().lower()
+    if not normalized:
+        return re.compile(r"a^")
+    stem = normalized in _KEYWORD_STEMS
+    cache_key = (normalized, stem)
+    cached = _KEYWORD_REGEX_CACHE.get(cache_key)
+    if cached:
+        return cached
+    escaped = re.escape(normalized)
+    right_boundary = "" if stem else r"(?![a-z0-9])"
+    pattern = re.compile(r"(?<![a-z0-9])" + escaped + right_boundary, re.IGNORECASE)
+    _KEYWORD_REGEX_CACHE[cache_key] = pattern
+    return pattern
+
+
+def _has_keyword(text: str, keywords) -> bool:
+    haystack = str(text or "")
+    if not haystack:
+        return False
+    return any(_keyword_pattern(kw).search(haystack) for kw in keywords)
+
+
 _TICKER_PAREN_RE = re.compile(r"\([A-Z]{1,5}(?:[:.][A-Z]{1,5})?\)")
 _SHARES_MOVE_RE = re.compile(
     r"\b(shares?|stock)\b.*\b(rise|rises|rose|fall|falls|fell|drop|drops|dropped|"
@@ -861,7 +896,9 @@ _BREAKING_MARKET_KW = {
     "sensex crash", "nifty crash", "market crash", "flash crash",
     "rally", "surge", "soar", "record high", "all-time high",
     "fraud", "scam", "default", "crisis",
-    "war", "sanction", "tariff", "embargo", "geopolit",
+    "war", "sanction", "sanctions", "tariff", "tariffs", "embargo", "geopolit",
+    "missile strike", "missile strikes", "drone attack", "drone attacks",
+    "hostile drone", "hormuz", "red sea", "middle east",
     "fii", "dii", "fpi", "inflation", "gdp",
     "crude oil", "brent", "oil price", "gold price", "dollar index",
     "fed ", "federal reserve", "treasury yield",
@@ -872,7 +909,8 @@ _BREAKING_MARKET_KW = {
 _STOCK_EVENT_KW = {
     "acquisition", "merger", "buyback", "dividend", "bonus", "split",
     "results", "q1", "q2", "q3", "q4", "profit", "loss", "revenue",
-    "upgrade", "downgrade", "target", "rating", "ipo", "listing",
+    "upgrade", "downgrade", "price target", "target price", "target raised", "target cut",
+    "rating", "ipo", "listing",
     "block deal", "bulk deal", "stake",
     # Corporate filings / compliance noise (should NEVER be macro breaking)
     "sebi compliance", "compliance certificate", "compliance cert",
@@ -1504,6 +1542,7 @@ class DataEngine:
             item["india_market_impact"] = bool(result.get("india_market_impact", False))
             item["market_relevant"] = bool(result.get("market_relevant", item.get("market_relevant", False)))
             item["company_specific"] = bool(result.get("company_specific", item.get("company_specific", False)))
+            item["llm_classified"] = True
             # BREAKING is India-impact-only and never stock-event.
             brk = item.get("india_market_impact", False)
             if item.get("stock_event"):
@@ -1591,6 +1630,7 @@ class DataEngine:
         is_brk = is_india
         if job.get("stock_event") or is_comp or job.get("company_specific"):
             is_brk = False
+        is_market_rel = bool(is_market_rel or stocks or is_india or is_gs or is_brk)
         return {
             "stocks": stocks,
             "sentiment": sentiment,
@@ -2245,8 +2285,8 @@ class DataEngine:
                     age_secs = int((now - pub_dt).total_seconds()) if pub_dt else 999999
                     display_src = self._display_news_source(url, "Google News", title, entry)
                     combined_text = title.lower() + (" " + summary.lower() if summary else "")
-                    india_hint = any(kw in combined_text for kw in _INDIA_IMPACT_HINT_KW)
-                    india_news = any(kw in combined_text for kw in _INDIA_NEWS_KW)
+                    india_hint = _has_keyword(combined_text, _INDIA_IMPACT_HINT_KW)
+                    india_news = _has_keyword(combined_text, _INDIA_NEWS_KW)
                     cache_key = title[:80].lower()
                     with self._llm_lock:
                         self._llm_cache[cache_key] = {
@@ -3074,8 +3114,8 @@ class DataEngine:
         now = datetime.now(IST)
         tags = self._classify_news(title, "")
         combined = title.lower()
-        india_hint = any(kw in combined for kw in _INDIA_IMPACT_HINT_KW)
-        india_news = any(kw in combined for kw in _INDIA_NEWS_KW)
+        india_hint = _has_keyword(combined, _INDIA_IMPACT_HINT_KW)
+        india_news = _has_keyword(combined, _INDIA_NEWS_KW)
         brk_pre = india_hint and not tags.get("stock_event", False) and not tags.get("company_specific", False)
         return {
             "title": title,
@@ -3824,16 +3864,14 @@ class DataEngine:
     def _classify_news(title: str, body: str = "") -> dict:
         lower = title.lower()
         combined = lower + " " + body.lower() if body else lower
-        is_breaking = any(kw in lower for kw in _BREAKING_MARKET_KW)
-        is_stock_event = any(kw in combined for kw in _STOCK_EVENT_KW)
+        is_breaking = _has_keyword(lower, _BREAKING_MARKET_KW)
+        is_stock_event = _has_keyword(combined, _STOCK_EVENT_KW)
         if is_stock_event:
             is_breaking = False
-        is_gold_silver = any(kw in combined for kw in _GOLD_SILVER_KW)
+        is_gold_silver = _has_keyword(combined, _GOLD_SILVER_KW)
         is_company_specific = bool(_TICKER_PAREN_RE.search(title)) or bool(_SHARES_MOVE_RE.search(combined)) or is_stock_event
         # Generic market relevance: used for GLOBAL tab filtering
-        is_market_rel = any(kw in combined for kw in _GLOBAL_MARKET_KW) and not any(
-            kw in combined for kw in _GLOBAL_EXCLUDE_KW
-        )
+        is_market_rel = _has_keyword(combined, _GLOBAL_MARKET_KW) and not _has_keyword(combined, _GLOBAL_EXCLUDE_KW)
         matched = []
         for alias, sym in _LONG_ALIASES.items():
             if alias in combined and sym not in matched:
@@ -3855,6 +3893,27 @@ class DataEngine:
             "company_specific": is_company_specific,
             "keyword_stocks": matched,
         }
+
+    @staticmethod
+    def _is_tradable_news_item(item: dict) -> bool:
+        """Return True only for news worth surfacing in a market terminal panel."""
+        if not isinstance(item, dict):
+            return False
+        if item.get("watchlist_stocks") or item.get("watchlist_important"):
+            return True
+        if item.get("gold_silver") or item.get("india_market_impact") or item.get("market_relevant"):
+            return True
+        if item.get("keyword_stocks"):
+            return True
+        if item.get("stock_event"):
+            combined = f"{item.get('title') or ''} {item.get('source') or ''}"
+            title_tags = DataEngine._classify_news(item.get("title") or "", "")
+            if not title_tags.get("stock_event"):
+                return False
+            return not _has_keyword(combined, _GLOBAL_EXCLUDE_KW)
+        if item.get("llm_classified"):
+            return False
+        return bool(item.get("breaking"))
 
     @staticmethod
     def _parse_pub_time(entry) -> Optional[datetime]:
@@ -4000,6 +4059,9 @@ class DataEngine:
                 item["breaking"] = cached.get("breaking", item.get("breaking", False))
                 item["gold_silver"] = cached.get("gold_silver", False) or item.get("gold_silver", False)
                 item["india_market_impact"] = cached.get("india_market_impact", False)
+                item["market_relevant"] = cached.get("market_relevant", item.get("market_relevant", False))
+                item["company_specific"] = cached.get("company_specific", item.get("company_specific", False))
+                item["llm_classified"] = True
                 # BREAKING is India-impact-only.
                 if not item["india_market_impact"]:
                     item["breaking"] = False
@@ -4049,6 +4111,9 @@ class DataEngine:
                     item["breaking"] = result["breaking"]
                     item["gold_silver"] = result["gold_silver"] or item.get("gold_silver", False)
                     item["india_market_impact"] = result["india_market_impact"]
+                    item["market_relevant"] = result["market_relevant"]
+                    item["company_specific"] = result["company_specific"]
+                    item["llm_classified"] = True
                     ok += 1
 
         print(f"[LLM] {ok}/{len(uncached)} new via {model.split('/')[-1]}, "
@@ -4114,8 +4179,8 @@ class DataEngine:
                     age_secs = int((now - pub_dt).total_seconds()) if pub_dt else 999999
                     display_src = self._display_news_source(url, source, title, entry)
                     combined_text = title.lower() + (" " + summary.lower() if summary else "")
-                    india_hint = any(kw in combined_text for kw in _INDIA_IMPACT_HINT_KW)
-                    india_news = is_india_feed or any(kw in combined_text for kw in _INDIA_NEWS_KW)
+                    india_hint = _has_keyword(combined_text, _INDIA_IMPACT_HINT_KW)
+                    india_news = is_india_feed or _has_keyword(combined_text, _INDIA_NEWS_KW)
                     brk_pre = india_hint and not tags.get("stock_event", False) and not tags.get("company_specific", False)
                     raw.append({
                         "title": title,
@@ -4172,10 +4237,13 @@ class DataEngine:
             ]
         if not unique and not prior_live and not prior_watchlist:
             return
-        # Reserve slots for gold/silver items so they don't get crowded out
-        gold_items = [u for u in unique if u.get("gold_silver")]
-        other_items = [u for u in unique if not u.get("gold_silver")]
-        unique_trim = (gold_items[:20] + other_items)[:100]
+        # Reserve visible slots for market-relevant items, while keeping a bounded
+        # pending tail so LLM classification can still rescue semantic headlines.
+        display_ready = [u for u in unique if self._is_tradable_news_item(u)]
+        pending_llm = [u for u in unique if not self._is_tradable_news_item(u)]
+        gold_items = [u for u in display_ready if u.get("gold_silver")]
+        other_items = [u for u in display_ready if not u.get("gold_silver")]
+        unique_trim = (gold_items[:20] + other_items + pending_llm[:40])[:100]
         live_cap = min(len(prior_live), 30)
         capped_live = prior_live[:live_cap]
         combined: List[dict] = []
@@ -4222,7 +4290,7 @@ class DataEngine:
                 # Provide a safe fallback link so items are clickable.
                 link = "https://www.google.com/search?q=" + quote_plus(title)
                 trad_combined = (title + " " + body + " " + stock).lower()
-                trad_india_hint = any(kw in trad_combined for kw in _INDIA_IMPACT_HINT_KW)
+                trad_india_hint = _has_keyword(trad_combined, _INDIA_IMPACT_HINT_KW)
                 trad_brk = trad_india_hint and not tags.get("stock_event", False) and not tags.get("company_specific", False)
                 raw.append({
                     "title": title,
@@ -4342,7 +4410,7 @@ class DataEngine:
             }
         if normalized_tab in {"all", "breaking"} and self._llm_stack_pending_count() and not self.background_enabled:
             self.process_llm_queue_sync(REQUEST_LLM_SYNC_MAX_ITEMS)
-        items = list(self._news)
+        items = [item for item in self._news if self._is_tradable_news_item(item)]
         if normalized_tab == "breaking":
             items = [
                 item

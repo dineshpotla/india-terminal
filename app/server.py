@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -25,8 +26,8 @@ _WATCHLIST_SYMBOL_RE = re.compile(r"^[A-Z0-9&.-]{1,20}$")
 _MF_SCHEME_CODE_RE = re.compile(r"^[0-9]{1,20}$")
 PANEL_OVERVIEW_KEY = "panel:overview"
 PANEL_GLOBAL_KEY = "panel:global"
-PANEL_NEWS_ALL_KEY = "panel:news:all"
-PANEL_NEWS_BREAKING_KEY = "panel:news:breaking"
+PANEL_NEWS_ALL_KEY = "panel:news:all:v2"
+PANEL_NEWS_BREAKING_KEY = "panel:news:breaking:v2"
 PANEL_WATCHLIST_QUOTES_KEY = "panel:watchlist:quotes"
 
 OVERVIEW_TTL = 60.0
@@ -39,6 +40,10 @@ WATCHLIST_QUOTES_TTL = 60.0
 WATCHLIST_QUOTES_STALE_TTL = 10 * 60.0
 WATCHLIST_NEWS_TTL = 120.0
 WATCHLIST_NEWS_STALE_TTL = 12 * 60 * 60.0
+MF_NAV_BACKGROUND_SYNC_ENABLED = os.getenv("MF_NAV_BACKGROUND_SYNC_ENABLED", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+MF_NAV_SYNC_SECS = max(3600, min(24 * 60 * 60, int(os.getenv("MF_NAV_SYNC_SECS", "21600"))))
 
 engine = DataEngine()
 watchlist_store = WatchlistStore()
@@ -211,11 +216,34 @@ def _compose_cached_dashboard(
     return data
 
 
+async def _mutual_fund_nav_sync_loop():
+    await asyncio.sleep(10)
+    while True:
+        try:
+            result = await asyncio.to_thread(mutual_funds.sync_watchlist_navs)
+            count = int((result or {}).get("synced") or 0)
+            if count:
+                print(f"[MutualFunds] stored latest AMFI NAV for {count} watchlisted scheme(s)")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[MutualFunds] background NAV sync failed: {exc}")
+        await asyncio.sleep(MF_NAV_SYNC_SECS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await engine.start()
-    yield
-    await engine.stop()
+    mf_nav_task = None
+    if MF_NAV_BACKGROUND_SYNC_ENABLED and getattr(engine, "background_enabled", False):
+        mf_nav_task = asyncio.create_task(_mutual_fund_nav_sync_loop())
+    try:
+        yield
+    finally:
+        if mf_nav_task:
+            mf_nav_task.cancel()
+            await asyncio.gather(mf_nav_task, return_exceptions=True)
+        await engine.stop()
 
 
 app = FastAPI(title="India Market Terminal", lifespan=lifespan)
