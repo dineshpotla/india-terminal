@@ -386,124 +386,71 @@ YF_COMPANY_NAMES = {
     "WIPRO": "Wipro Limited",
 }
 
+def _gdelt_doc_rss_url(query: str, hours: int = 3, max_records: int = 40) -> str:
+    params = {
+        "query": query,
+        "mode": "artlist",
+        "maxrecords": str(max_records),
+        "timespan": f"{hours}h",
+        "sort": "datedesc",
+        "format": "rssarchive",
+    }
+    return "https://api.gdeltproject.org/api/v2/doc/doc?" + urlencode(params)
+
+
+GDELT_NEWS_ENABLED = os.getenv("GDELT_NEWS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
 NEWS_FEEDS_INDIA = [
-    "https://feeds.feedburner.com/ndtvprofit-latest",
     "https://www.livemint.com/rss/markets",
-    "https://www.livemint.com/rss/news",
     "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-    "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
-    "https://www.moneycontrol.com/rss/MCtopnews.xml",
-    "https://www.moneycontrol.com/rss/latestnews.xml",
     "https://www.thehindubusinessline.com/markets/feeder/default.rss",
-    "https://news.google.com/rss/search?q=NSE+OR+NIFTY+OR+SENSEX+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=RBI+OR+SEBI+OR+%22rate+cut%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=india+IPO+OR+%22quarterly+results%22+OR+%22Q4+results%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=Adani+OR+Tata+OR+Reliance+stock+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=india+market+OR+nifty+OR+sensex+site:reuters.com+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=india+market+OR+nifty+OR+sensex+site:bloomberg.com+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://www.business-standard.com/rss/markets/news.xml",
+    "https://news.google.com/rss/search?q=(NIFTY+OR+SENSEX+OR+%22GIFT+Nifty%22+OR+%22Indian+rupee%22+OR+%22India+stocks%22)+when:2h&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=(RBI+OR+SEBI+OR+%22repo+rate%22+OR+%22rate+cut%22+OR+%22rate+hike%22+OR+FII+OR+FPI)+when:2h&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=(%22India+market%22+OR+Nifty+OR+Sensex+OR+%22Indian+rupee%22)+site:reuters.com+when:3h&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=(%22India+market%22+OR+Nifty+OR+Sensex+OR+%22Indian+rupee%22)+site:bloomberg.com+when:3h&hl=en-IN&gl=IN&ceid=IN:en",
 ]
 NEWS_FEEDS_GLOBAL = [
-    # Direct RSS (fast, real-time)
+    # Direct market/economy RSS only. Broad world/topstory feeds are intentionally excluded.
     "https://feeds.bloomberg.com/markets/news.rss",
     "https://feeds.bloomberg.com/economics/news.rss",
-    "https://feeds.bloomberg.com/politics/news.rss",
     "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "https://www.cnbc.com/id/100727362/device/rss/rss.html",
-    "http://feeds.marketwatch.com/marketwatch/topstories/",
-    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-    "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
     "https://www.investing.com/rss/news_25.rss",
     "https://www.investing.com/rss/news_95.rss",
     "https://www.investing.com/rss/news_11.rss",
     "https://www.forexlive.com/feed/",
-    "https://www.aljazeera.com/xml/rss/all.xml",
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
-    "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://feeds.finance.yahoo.com/rss/2.0/headline",
     "https://seekingalpha.com/market_currents.xml",
-    "https://www.livemint.com/rss/news",
 
-    # Major global publishers / wires (direct RSS)
-    "http://rss.cnn.com/rss/edition.rss",
-    "http://feeds.foxnews.com/foxnews/latest",
-    "https://abcnews.go.com/abcnews/topstories",
-    "https://feeds.nbcnews.com/feeds/topstories",
-    "https://www.cbsnews.com/latest/rss/main",
-    # AP RSS domain sometimes fails DNS in some environments; keep it disabled for now.
-    # "https://feeds.apnews.com/rss/apf-topnews",
-    "https://www.theguardian.com/world/rss",
-    "https://rss.dw.com/xml/rss-en-all",
-    "https://www.france24.com/en/rss",
-    "https://www3.nhk.or.jp/rss/news/cat0.xml",
-
-    # Google News macro queries (tight windows to reduce backlog)
-    "https://news.google.com/rss/search?q=crude+oil+brent+price+when:6h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=federal+reserve+OR+dollar+index+OR+treasury+yield+when:6h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=iran+war+OR+sanctions+OR+tariff+trade+war+when:6h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=iran+ceasefire+OR+pakistan+iran+OR+%22ceasefire+talks%22+OR+%22peace+talks%22+iran+OR+%22middle+east+ceasefire%22+when:6h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=ceasefire+OR+truce+OR+negotiations+iran+when:6h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=S%26P+500+OR+Nasdaq+OR+Dow+Jones+when:6h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=global+selloff+OR+risk-off+OR+credit+spreads+OR+treasury+auction+when:6h&hl=en&gl=US&ceid=US:en",
-
-    # Reuters (broad site coverage; avoids direct reuters.com feeds that datacenters often block)
-    "https://news.google.com/rss/search?q=site:reuters.com+when:1h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=site:reuters.com+when:6h&hl=en&gl=US&ceid=US:en",
+    # Google News macro queries use short windows and exact market-moving terms only.
+    "https://news.google.com/rss/search?q=(%22crude+oil%22+OR+%22Brent+crude%22+OR+OPEC+OR+%22oil+prices%22)+when:2h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=(%22Federal+Reserve%22+OR+%22dollar+index%22+OR+%22treasury+yields%22+OR+%22bond+yields%22)+when:2h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=((tariffs+OR+%22trade+war%22+OR+%22oil+sanctions%22+OR+%22iran+sanctions%22+OR+%22russia+sanctions%22+OR+%22risk-off%22)+(%22stock+market%22+OR+stocks+OR+oil+OR+bonds))+when:2h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=((%22Strait+of+Hormuz%22+OR+%22Red+Sea%22+OR+%22oil+tanker%22+OR+%22Middle+East%22)+(oil+OR+shipping+OR+markets))+when:3h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=(%22S%26P+500%22+OR+Nasdaq+OR+%22Dow+Jones%22+OR+%22VIX%22+OR+%22stock+futures%22)+when:2h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=(%22market+moving%22+OR+%22markets+fall%22+OR+%22stocks+sink%22+OR+%22stocks+rally%22+OR+%22futures+fall%22+OR+%22futures+rise%22)+site:reuters.com+when:3h&hl=en&gl=US&ceid=US:en",
 ]
 NEWS_FEEDS_GOLD_SILVER = [
-    # ── Direct RSS (institutional + mining / silver industry) ─────────
-    # World Gold Council (demand trends, industry research, policy)
-    "https://www.gold.org/rss.xml",
-    # Silver Institute (supply/demand, market commentary)
-    "https://www.silverinstitute.org/feed/",
-    # Broad mining wire (filter with gold/silver keywords + LLM downstream)
-    "https://www.mining.com/feed/",
-
-    # ── India retail / exchange context ───────────────────────────────
-    "https://news.google.com/rss/search?q=gold+price+OR+%22gold+rate%22+OR+%22gold+today%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=silver+price+OR+%22silver+rate%22+OR+%22silver+today%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=%22MCX+gold%22+OR+%22MCX+silver%22+OR+%22COMEX+gold%22+OR+%22COMEX+silver%22+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=%22precious+metals%22+OR+%22gold+jewellery%22+OR+%22gold+import%22+india+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=site:economictimes.indiatimes.com+gold+OR+silver+OR+bullion+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-    "https://news.google.com/rss/search?q=site:moneycontrol.com+gold+OR+silver+OR+MCX+OR+bullion+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-
-    # ── Global price / market structure ────────────────────────────────
-    "https://news.google.com/rss/search?q=gold+price+OR+silver+price+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=XAUUSD+OR+XAGUSD+OR+%22spot+gold%22+OR+%22spot+silver%22+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+futures+OR+silver+futures+OR+%22COMEX+gold%22+OR+%22COMEX+silver%22+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+ETF+OR+GLD+OR+IAU+OR+SLV+OR+%22gld+etf%22+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+rally+OR+gold+crash+OR+gold+forecast+OR+silver+rally+OR+silver+forecast+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=LBMA+OR+%22london+bullion%22+OR+%22fixes+gold%22+OR+%22gold+fix%22+when:2d&hl=en&gl=UK&ceid=GB:en",
-    "https://news.google.com/rss/search?q=Shanghai+Gold+Exchange+OR+SGE+gold+when:2d&hl=en&gl=US&ceid=US:en",
-
-    # ── Official sector: reserves, PBOC, IMF, sovereign buying ─────────
-    "https://news.google.com/rss/search?q=PBOC+gold+OR+%22People%27s+Bank+of+China%22+gold+OR+%22China+gold+reserves%22+OR+%22Chinese+central+bank%22+gold+when:3d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=central+bank+gold+OR+%22gold+reserves%22+OR+%22official+gold%22+OR+%22sovereign+gold%22+when:2d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=IMF+gold+OR+%22IMF+gold+sale%22+OR+%22IMF+gold+sales%22+OR+World+Bank+gold+when:3d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=site:imf.org+gold+when:14d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=site:worldbank.org+gold+OR+silver+OR+bullion+when:14d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=Poland+gold+OR+Turkey+gold+OR+India+gold+reserves+OR+Russia+gold+reserves+when:3d&hl=en&gl=US&ceid=US:en",
-
-    # ── Silver fundamentals / industry (beyond spot price) ────────────
-    "https://news.google.com/rss/search?q=%22silver+supply%22+OR+%22silver+deficit%22+OR+%22silver+demand%22+OR+photovoltaic+silver+when:3d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=%22World+Gold+Council%22+OR+%22gold+demand+trends%22+OR+wgc+gold+when:7d&hl=en&gl=US&ceid=US:en",
-
-    # ── Tier-1 publishers (Google News site filters) ────────────────
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:reuters.com+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:bloomberg.com+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:cnbc.com+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:ft.com+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:marketwatch.com+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:barrons.com+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:investing.com+when:1d&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:fxstreet.com+when:1d&hl=en&gl=US&ceid=US:en",
-    # Kitco site search only — direct /news/*.rss URLs now serve HTML shells
-    "https://news.google.com/rss/search?q=gold+OR+silver+site:kitco.com+when:1d&hl=en&gl=US&ceid=US:en",
+    # No retail city-rate feeds. Keep only market-moving bullion context.
+    "https://news.google.com/rss/search?q=(%22MCX+gold%22+OR+%22MCX+silver%22+OR+%22COMEX+gold%22+OR+%22COMEX+silver%22)+when:2h&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=(%22spot+gold%22+OR+%22spot+silver%22+OR+XAUUSD+OR+XAGUSD+OR+%22gold+futures%22+OR+%22silver+futures%22)+when:2h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=(%22central+bank+gold%22+OR+%22gold+reserves%22+OR+PBOC+gold+OR+%22World+Gold+Council%22)+when:6h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=(%22gold+prices%22+OR+%22spot+gold%22+OR+%22gold+futures%22+OR+%22silver+prices%22+OR+%22silver+futures%22)+site:reuters.com+when:3h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=(%22gold+prices%22+OR+%22spot+gold%22+OR+%22gold+futures%22+OR+%22silver+prices%22+OR+%22silver+futures%22)+site:bloomberg.com+when:3h&hl=en&gl=US&ceid=US:en",
 ]
-NEWS_FEEDS = NEWS_FEEDS_INDIA + NEWS_FEEDS_GLOBAL + NEWS_FEEDS_GOLD_SILVER
+NEWS_FEEDS_GDELT = [
+    _gdelt_doc_rss_url(
+        '("RBI" OR "SEBI" OR "Nifty" OR "Sensex" OR "Indian rupee" OR "India stocks" OR '
+        '"Federal Reserve" OR "treasury yields" OR "dollar index" OR "Brent crude" OR "OPEC" OR '
+        '"tariff" OR "sanctions" OR "Strait of Hormuz" OR "risk-off")',
+        hours=3,
+        max_records=50,
+    )
+] if GDELT_NEWS_ENABLED else []
+NEWS_FEEDS = NEWS_FEEDS_INDIA + NEWS_FEEDS_GLOBAL + NEWS_FEEDS_GOLD_SILVER + NEWS_FEEDS_GDELT
 _GLOBAL_FEEDS_SET = set(NEWS_FEEDS_GLOBAL + NEWS_FEEDS_GOLD_SILVER)
 _GOLD_FEEDS_SET = set(NEWS_FEEDS_GOLD_SILVER)
 _INDIA_FEEDS_SET = set(NEWS_FEEDS_INDIA)
+_GDELT_FEEDS_SET = set(NEWS_FEEDS_GDELT)
 
 TRADIENT_NEWS_URL = "https://api.tradient.org/v1/api/market/news"
 
@@ -515,11 +462,11 @@ _LIVE_TITLE_BAD = (
     "privacy policy", "ad choices", "terms of use", "copyright",
 )
 
-# Topic-agnostic discovery: “live” page patterns on major wires / broadcasters.
+# Market-event live discovery only. Broad world-live pages are too noisy for the terminal.
 LIVE_DISCOVERY_FEEDS = [
-    "https://news.google.com/rss/search?q=site:reuters.com+(live+OR+%22live+updates%22)+when:6h&hl=en&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=site:bbc.co.uk+(news+live+OR+%2Flive%2F)+when:6h&hl=en&gl=UK&ceid=GB:en",
-    "https://news.google.com/rss/search?q=site:theguardian.com+live+when:6h&hl=en&gl=UK&ceid=GB:en",
+    "https://news.google.com/rss/search?q=site:reuters.com+(markets+OR+stocks+OR+oil+OR+Fed+OR+Iran+OR+tariff)+(live+OR+%22live+updates%22)+when:3h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site:cnbc.com+(markets+OR+stocks+OR+oil+OR+Fed+OR+inflation)+(live+OR+%22live+updates%22)+when:3h&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site:bbc.co.uk+(oil+OR+markets+OR+Iran+OR+tariff+OR+inflation)+(live+OR+%22live+updates%22)+when:3h&hl=en&gl=UK&ceid=GB:en",
 ]
 
 _LIVE_PATH_HINTS = (
@@ -527,7 +474,7 @@ _LIVE_PATH_HINTS = (
 )
 
 _DEFAULT_LIVE_DISCOVERY_DOMAINS = (
-    "reuters.com", "bbc.co.uk", "bbc.com", "theguardian.com",
+    "reuters.com", "cnbc.com", "bbc.co.uk", "bbc.com",
 )
 
 
@@ -587,6 +534,10 @@ def _live_title_ok(title: str) -> bool:
 
 NV_API_KEY = os.getenv("NV_API_KEY") or os.getenv("NVIDIA_API_KEY", "")
 NV_API_URL = os.getenv("NV_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
+ALPHA_VANTAGE_NEWS_ENABLED = bool(ALPHA_VANTAGE_API_KEY) and os.getenv(
+    "ALPHA_VANTAGE_NEWS_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes", "on")
 IS_RENDER = os.getenv("RENDER", "").strip().lower() == "true"
 # Optional backup for global **index** rows Yahoo sometimes throttles or omits. Twelve Data returns
 # spot indices (not exchange-traded futures). EU/Asia equity index futures (Eurex/ICE/HKFE) are not
@@ -625,7 +576,12 @@ GLOBAL_STREAM_ENABLED = os.getenv("GLOBAL_STREAM_ENABLED", "0" if RENDER_MINIMAL
 NEWS_FEED_TIMEOUT_SECS = max(2, min(12, int(os.getenv("NEWS_FEED_TIMEOUT_SECS", "4" if IS_RENDER else "6"))))
 NEWS_FEED_WORKERS = max(2, min(12, int(os.getenv("NEWS_FEED_WORKERS", "4" if IS_RENDER else "8"))))
 MARKET_REFRESH_SECS = max(45, min(600, int(os.getenv("MARKET_REFRESH_SECS", "90" if IS_RENDER else "60"))))
-NEWS_REFRESH_SECS = max(60, min(600, int(os.getenv("NEWS_REFRESH_SECS", "120" if RENDER_MINIMAL_MODE else ("90" if IS_RENDER else "60")))))
+NEWS_REFRESH_SECS = max(20, min(600, int(os.getenv("NEWS_REFRESH_SECS", "90" if RENDER_MINIMAL_MODE else ("60" if IS_RENDER else "30")))))
+NEWS_LOOKBACK_HOURS = max(1, min(18, int(os.getenv("NEWS_LOOKBACK_HOURS", "2"))))
+NEWS_GLOBAL_LOOKBACK_HOURS = max(1, min(12, int(os.getenv("NEWS_GLOBAL_LOOKBACK_HOURS", "2"))))
+NEWS_GOLD_LOOKBACK_HOURS = max(1, min(24, int(os.getenv("NEWS_GOLD_LOOKBACK_HOURS", "2"))))
+NEWS_MAX_VISIBLE_AGE_SECS = max(600, min(24 * 3600, int(os.getenv("NEWS_MAX_VISIBLE_AGE_SECS", str(2 * 3600)))))
+NEWS_PENDING_LLM_TAIL = max(0, min(40, int(os.getenv("NEWS_PENDING_LLM_TAIL", "8"))))
 BREAKING_CLUSTER_MIN_SOURCES = max(2, min(5, int(os.getenv("BREAKING_CLUSTER_MIN_SOURCES", "2"))))
 BREAKING_CLUSTER_WINDOW_SECS = max(300, min(7200, int(os.getenv("BREAKING_CLUSTER_WINDOW_SECS", "5400"))))
 BREAKING_PIN_TTL_SECS = max(300, min(7200, int(os.getenv("BREAKING_PIN_TTL_SECS", "5400"))))
@@ -640,7 +596,7 @@ RENDER_NEWS_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_NEWS_BOOT_DELAY_SECS"
 RENDER_LIVE_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_LIVE_BOOT_DELAY_SECS", "45" if IS_RENDER else "0")))
 RENDER_LLM_BOOT_DELAY_SECS = max(0, int(os.getenv("RENDER_LLM_BOOT_DELAY_SECS", "10" if IS_RENDER else "0")))
 GLOBAL_STALE_SECS = max(30, min(1800, int(os.getenv("GLOBAL_STALE_SECS", "300" if RENDER_MINIMAL_MODE else "120"))))
-NEWS_STALE_SECS = max(60, min(3600, int(os.getenv("NEWS_STALE_SECS", "600" if RENDER_MINIMAL_MODE else "180"))))
+NEWS_STALE_SECS = max(20, min(900, int(os.getenv("NEWS_STALE_SECS", "60" if RENDER_MINIMAL_MODE else "30"))))
 LLM_BATCH_THRESHOLD = max(2, min(64, int(os.getenv("LLM_BATCH_THRESHOLD", "8"))))
 LLM_BATCH_SIZE = max(2, min(16, int(os.getenv("LLM_BATCH_SIZE", "6"))))
 NV_REQUESTS_PER_MINUTE = max(1, min(240, int(os.getenv("NV_REQUESTS_PER_MINUTE", "40"))))
@@ -803,6 +759,8 @@ _GLOBAL_EXCLUDE_KW = {
     # obvious non-market categories that flood general news feeds
     "nasa", "space", "rocket", "astronaut", "mars", "moon", "spacex",
     "sports", "football", "soccer", "nba", "nfl", "mlb", "tennis", "cricket",
+    "baseball", "inning", "innings", "guardians", "twins", "buxton",
+    "rbi double", "go-ahead rbi", "runs batted", "homer",
     "celebrity", "movie", "music", "tv", "hollywood", "fashion",
     "recipe", "cooking", "travel", "weather",
     # general human-interest / politics noise
@@ -822,14 +780,65 @@ _GLOBAL_EXCLUDE_KW = {
     "dog", "cat", "pet", "puppy", "kitten",
 }
 
+_LOW_SIGNAL_NEWS_KW = {
+    "happy mother's day", "mothers day", "quotes", "wishes", "whatsapp status",
+    "price today", "rate today", "rates today", "city-wise", "city wise",
+    "check latest", "what to know", "what it means", "explained", "opinion",
+    "next move", "make or break", "over the next", "portfolio", "stocks to buy",
+    "best stocks", "should you buy", "should investors", "watchlist stocks",
+    "week in focus", "weekly preview", "week ahead", "technical analysis",
+    "price prediction", "forecast", "outlook", "recap",
+    "final score", "match preview", "team news", "injury report",
+    "goes yard", "home run", "runway", "class-action lawsuit",
+    "covers latest", "the war today", "newsletter",
+    "petrol, diesel prices", "fuel prices hiked or unchanged",
+    "personal finance", "daily voice", "stock trader's guide",
+    "guide to navigating", "speech full text", "full text",
+    "closing bell", "top gainers & losers", "why yellow metal",
+    "how will this impact", "could be confirmed next week",
+    "closed in red", "closed higher", "closed lower", "ended higher",
+    "ended lower", "says experts", "traders looking for",
+    "senate candidate", "war spending",
+    "officers' union", "officers’ union", "promotion system",
+    "promotion policy", "time-bound promotion",
+    "buy areas", "will the rupee hit", "by year-end",
+}
+
+_LOW_SIGNAL_SOURCE_KW = {
+    "msn", "aol", "india.com", "indexbox", "whalesbook",
+    "discoveryalert", "chosunbiz", "dailyhunt", "yeni safak",
+    "espn", "toronto star", "killeen", "journal gazette",
+    "daily pioneer", "magzter", "voice of alexandria", "news.com.au",
+    "israel defense", "bitcoin news", "cryptonews", "lokmattimes",
+    "citizen digital",
+}
+
+_MARKET_MOVING_KW = {
+    "rbi", "sebi", "repo rate", "monetary policy", "rate cut", "rate hike",
+    "inflation", "cpi", "ppi", "pce", "gdp", "pmi", "jobs report",
+    "fii", "fpi", "dii", "foreign flows", "msci india",
+    "nifty", "sensex", "gift nifty", "india vix", "rupee", "inr",
+    "crude oil", "brent", "wti", "opec", "oil prices", "natural gas",
+    "fed", "federal reserve", "treasury yield", "bond yields", "dollar index",
+    "dxy", "yen", "yuan", "carry trade",
+    "tariff", "tariffs", "trade war", "embargo", "iran sanctions",
+    "russia sanctions", "oil sanctions", "missile strike", "drone attack", "ceasefire",
+    "strait of hormuz", "hormuz", "red sea", "oil tanker", "shipping lane",
+    "global selloff", "sell-off", "risk-off", "risk on", "risk-on",
+    "market crash", "flash crash", "stocks sink", "stocks rally", "futures fall",
+    "futures rise", "record high", "all-time high", "vix",
+    "mcx", "comex", "spot gold", "spot silver", "gold futures", "silver futures",
+    "central bank gold", "gold reserves",
+}
+
 _INDIA_IMPACT_HINT_KW = {
-    "india", "indian", "nifty", "sensex", "bse", "nse", "rupee", "inr",
+    "nifty", "sensex", "bse", "nse", "rupee", "inr",
     "rbi", "sebi ban", "sebi order", "sebi probe",
     "fii", "fpi", "dii", "msci india",
     "adani", "reliance", "tata", "infosys", "tcs", "hdfc",
     "oil price", "crude oil", "brent", "opec",
     "fed rate", "rate cut", "rate hike", "federal reserve",
-    "tariff", "tariffs", "trade war", "sanction", "sanctions",
+    "tariff", "tariffs", "trade war", "iran sanctions", "russia sanctions", "oil sanctions",
     "iran", "israel", "middle east", "red sea", "strait of hormuz", "hormuz",
     "war escalat", "missile strike", "missile strikes", "drone attack", "drone attacks",
     "hostile drone", "oil tanker", "shipping lane",
@@ -884,7 +893,7 @@ _BREAKING_CLUSTER_EVENT_KW = {
     "fed", "federal reserve", "inflation", "cpi", "gdp",
     "rupee", "inr", "dollar index", "dxy", "treasury yield", "bond yield",
     "crude", "brent", "oil price", "hormuz", "red sea",
-    "war", "missile", "drone", "attack", "strike", "ceasefire",
+    "missile strike", "drone attack", "hostile drone", "ceasefire",
     "sanction", "tariff", "embargo", "nuclear",
     "nifty", "sensex", "futures", "crash", "plunge", "sell-off",
     "surge", "soar", "record high", "all-time high",
@@ -1176,6 +1185,7 @@ class DataEngine:
         # Live prices from streaming (symbol -> {price, change, change_pct, ...})
         self._global_live: Dict[str, dict] = {}
         self._global_dirty = False  # True when new ticks arrived since last broadcast
+        self._news_refresh_lock = threading.Lock()
         _gift_secs = int(os.getenv("GIFT_NIFTY_REFRESH_SECS", "15"))
         self._gift_refresh_secs = max(8, min(300, _gift_secs))
         _bcast_ms = int(os.getenv("GLOBAL_BROADCAST_MS", "1000"))
@@ -2407,6 +2417,7 @@ class DataEngine:
                         "link": analysis.get("link") or entry.get("link", ""),
                         "source": display_src,
                         "age_secs": age_secs,
+                        "published_at_ts": pub_dt.timestamp() if pub_dt else None,
                         "time": self._relative_time(pub_dt) if pub_dt else "",
                         "is_fresh": age_secs < 900,
                         "global_news": False,
@@ -2709,7 +2720,7 @@ class DataEngine:
             while self._running:
                 t0 = time.time()
                 try:
-                    await asyncio.to_thread(self._fetch_all_news)
+                    await asyncio.to_thread(self._refresh_news_if_stale, True)
                     elapsed = round(time.time() - t0, 1)
                     print(f"[News] {len(self._news)} headlines in {elapsed}s")
                     await self._broadcast("news")
@@ -2857,7 +2868,7 @@ class DataEngine:
         return None
 
     def _discover_live_pages_from_rss(self):
-        """Refresh candidate live URLs from generic RSS searches (any major breaking story, any topic)."""
+        """Refresh candidate live URLs from market-event RSS searches only."""
         domains = _live_discovery_domains()
         feeds: List[str] = list(LIVE_DISCOVERY_FEEDS)
         extra = os.getenv("LIVE_DISCOVERY_FEEDS", "").strip()
@@ -2883,6 +2894,11 @@ class DataEngine:
                     continue
                 title_lower = (entry.get("title") or "").lower()
                 if not any(h in title_lower for h in ("live", "updates", "as it happened")):
+                    continue
+                if not (
+                    _has_keyword(title_lower, _MARKET_MOVING_KW)
+                    or _has_keyword(title_lower, _INDIA_IMPACT_HINT_KW)
+                ):
                     continue
                 canon = self._resolve_google_news_link(link)
                 resolved_count += 1
@@ -3223,6 +3239,7 @@ class DataEngine:
             "source": f"{_live_brand_from_url(page_url)} LIVE",
             "live_story": True,
             "age_secs": 0,
+            "published_at_ts": now.timestamp(),
             "time": "just now",
             "is_fresh": True,
             "global_news": True,
@@ -3255,6 +3272,8 @@ class DataEngine:
             keys = {n["title"][:50].lower() for n in self._news}
             prefix: List[dict] = []
             for it in fresh:
+                if not (self._is_tradable_news_item(it) or self._should_llm_classify_news_item(it)):
+                    continue
                 k = it["title"][:50].lower()
                 if k in keys:
                     continue
@@ -3995,13 +4014,60 @@ class DataEngine:
         }
 
     @staticmethod
+    def _news_combined_text(item: dict) -> str:
+        return f"{item.get('title') or ''} {item.get('summary') or ''}".lower()
+
+    @classmethod
+    def _is_low_signal_news(cls, item: dict) -> bool:
+        combined = cls._news_combined_text(item)
+        if _has_keyword(combined, _GLOBAL_EXCLUDE_KW) or _has_keyword(combined, _LOW_SIGNAL_NEWS_KW):
+            return True
+        source = str((item or {}).get("source") or "").lower()
+        if _has_keyword(source, _LOW_SIGNAL_SOURCE_KW) and not item.get("breaking_confirmed"):
+            return True
+        return False
+
+    @classmethod
+    def _has_market_moving_signal(cls, item: dict) -> bool:
+        combined = cls._news_combined_text(item)
+        if item.get("breaking") or item.get("breaking_hint") or item.get("breaking_confirmed"):
+            return True
+        if item.get("india_market_impact") or item.get("keyword_stocks"):
+            return True
+        if _has_keyword(combined, _MARKET_MOVING_KW):
+            return True
+        return bool(item.get("market_relevant") and _has_keyword(combined, _BREAKING_CLUSTER_EVENT_KW))
+
+    @classmethod
+    def _should_llm_classify_news_item(cls, item: dict) -> bool:
+        if not isinstance(item, dict):
+            return False
+        if int(item.get("age_secs", 999999) or 999999) > NEWS_MAX_VISIBLE_AGE_SECS:
+            return False
+        if cls._is_low_signal_news(item):
+            return False
+        if item.get("company_specific") and not item.get("keyword_stocks"):
+            return False
+        return cls._has_market_moving_signal(item)
+
+    @staticmethod
     def _is_tradable_news_item(item: dict) -> bool:
         """Return True only for news worth surfacing in a market terminal panel."""
         if not isinstance(item, dict):
             return False
+        if int(item.get("age_secs", 999999) or 999999) > NEWS_MAX_VISIBLE_AGE_SECS:
+            return False
+        if DataEngine._is_low_signal_news(item):
+            return False
         if item.get("watchlist_stocks") or item.get("watchlist_important"):
             return True
-        if item.get("gold_silver") or item.get("india_market_impact") or item.get("market_relevant"):
+        if (item.get("company_specific") or item.get("stock_event")) and not item.get("keyword_stocks"):
+            return False
+        if item.get("gold_silver") and DataEngine._has_market_moving_signal(item):
+            return True
+        if item.get("india_market_impact") and DataEngine._has_market_moving_signal(item):
+            return True
+        if item.get("market_relevant") and DataEngine._has_market_moving_signal(item):
             return True
         if item.get("keyword_stocks"):
             return True
@@ -4155,6 +4221,8 @@ class DataEngine:
 
     @classmethod
     def _sort_news_with_breaking_pins(cls, items: List[dict]) -> List[dict]:
+        for item in items:
+            cls._refresh_news_item_age(item)
         cls._refresh_breaking_flags(items)
         pinned = sorted(
             [item for item in items if item.get("breaking") and item.get("breaking_pinned")],
@@ -4193,6 +4261,23 @@ class DataEngine:
         if days == 1:
             return "1d ago"
         return f"{days}d ago"
+
+    @staticmethod
+    def _refresh_news_item_age(item: dict):
+        """Keep cached/live news age honest so old items do not stay pinned as fresh."""
+        if not isinstance(item, dict):
+            return
+        ts = item.get("published_at_ts")
+        if not ts:
+            return
+        try:
+            pub_ts = float(ts)
+        except (TypeError, ValueError):
+            return
+        age_secs = max(0, int(time.time() - pub_ts))
+        item["age_secs"] = age_secs
+        item["time"] = DataEngine._relative_time(datetime.fromtimestamp(pub_ts, tz=IST))
+        item["is_fresh"] = age_secs < 900
 
     @staticmethod
     def _display_news_source(feed_url: str, feed_level_source: str, entry_title: str, entry) -> str:
@@ -4385,12 +4470,90 @@ class DataEngine:
             raise requests.HTTPError(f"HTTP {r.status_code}", response=r)
         return feedparser.parse(r.content)
 
+    @staticmethod
+    def _parse_alpha_vantage_time(value: str) -> Optional[datetime]:
+        try:
+            dt = datetime.strptime(str(value or ""), "%Y%m%dT%H%M%S")
+            return pytz.utc.localize(dt).astimezone(IST)
+        except Exception:
+            return None
+
+    def _fetch_alpha_vantage_news(self, raw: List[dict], now: datetime):
+        """Optional low-lag market news source when ALPHA_VANTAGE_API_KEY is configured."""
+        if not ALPHA_VANTAGE_NEWS_ENABLED:
+            return
+        time_from = (datetime.utcnow() - timedelta(hours=NEWS_LOOKBACK_HOURS)).strftime("%Y%m%dT%H%M")
+        params = {
+            "function": "NEWS_SENTIMENT",
+            "topics": "financial_markets,economy_monetary,economy_macro,energy_transportation",
+            "time_from": time_from,
+            "sort": "LATEST",
+            "limit": "50",
+            "apikey": ALPHA_VANTAGE_API_KEY,
+        }
+        try:
+            r = requests.get(
+                "https://www.alphavantage.co/query",
+                params=params,
+                timeout=NEWS_FEED_TIMEOUT_SECS,
+                headers={"User-Agent": random.choice(_USER_AGENTS)},
+            )
+            if r.status_code != 200:
+                print(f"[News] Alpha Vantage error: HTTP {r.status_code}")
+                return
+            data = r.json()
+        except Exception as e:
+            print(f"[News] Alpha Vantage error: {e}")
+            return
+        for entry in (data.get("feed") or [])[:50]:
+            title = str(entry.get("title") or "").strip()
+            if not title:
+                continue
+            pub_dt = self._parse_alpha_vantage_time(entry.get("time_published", ""))
+            if not pub_dt:
+                continue
+            age_secs = int((now - pub_dt).total_seconds())
+            if age_secs < 0:
+                age_secs = 0
+            if age_secs > NEWS_MAX_VISIBLE_AGE_SECS:
+                continue
+            summary = str(entry.get("summary") or "").strip()[:300]
+            tags = self._classify_news(title, summary)
+            url = str(entry.get("url") or "").strip()
+            source = str(entry.get("source") or "").strip()
+            if not source and url:
+                source = urlparse(url).netloc.replace("www.", "")[:20]
+            combined_text = (title + " " + summary).lower()
+            india_hint = _has_keyword(combined_text, _INDIA_IMPACT_HINT_KW)
+            raw.append({
+                "title": title,
+                "summary": summary,
+                "link": url,
+                "source": (source or "Alpha Vantage")[:20],
+                "age_secs": age_secs,
+                "published_at_ts": pub_dt.timestamp(),
+                "time": self._relative_time(pub_dt),
+                "is_fresh": age_secs < 900,
+                "global_news": True,
+                "india_news": _has_keyword(combined_text, _INDIA_NEWS_KW),
+                "breaking": False,
+                "breaking_hint": bool(tags["breaking"] or india_hint),
+                "stock_event": tags["stock_event"],
+                "gold_silver": tags["gold_silver"],
+                "india_market_impact": india_hint,
+                "market_relevant": tags.get("market_relevant", False),
+                "company_specific": tags.get("company_specific", False),
+                "keyword_stocks": tags["keyword_stocks"],
+                "watchlist_stocks": [],
+                "sentiment": str(entry.get("overall_sentiment_label") or "").lower() or "neutral",
+            })
+
     def _fetch_all_news(self):
         """Fetch RSS feeds + Tradient API, merge, sort by recency."""
         now = datetime.now(IST)
-        cutoff = now - timedelta(hours=18)
-        global_cutoff = now - timedelta(hours=6)
-        gold_cutoff = now - timedelta(hours=24)
+        cutoff = now - timedelta(hours=NEWS_LOOKBACK_HOURS)
+        global_cutoff = now - timedelta(hours=NEWS_GLOBAL_LOOKBACK_HOURS)
+        gold_cutoff = now - timedelta(hours=NEWS_GOLD_LOOKBACK_HOURS)
         raw: List[dict] = []
 
         with ThreadPoolExecutor(max_workers=NEWS_FEED_WORKERS) as pool:
@@ -4405,6 +4568,7 @@ class DataEngine:
                 is_global_feed = url in _GLOBAL_FEEDS_SET
                 is_gold_feed = url in _GOLD_FEEDS_SET
                 is_india_feed = url in _INDIA_FEEDS_SET
+                is_gdelt_feed = url in _GDELT_FEEDS_SET
                 source = feed.feed.get("title", "")
                 if " - " in source:
                     parts = source.split(" - ")
@@ -4413,7 +4577,8 @@ class DataEngine:
                     else:
                         source = parts[0]
                 source = source.strip()[:20]
-                for entry in feed.entries[:30]:
+                entry_cap = 12 if ("news.google.com" in url or is_gdelt_feed) else 15
+                for entry in feed.entries[:entry_cap]:
                     pub_dt = self._parse_pub_time(entry)
                     if pub_dt:
                         if is_gold_feed and pub_dt < gold_cutoff:
@@ -4432,6 +4597,10 @@ class DataEngine:
                     summary = entry.get("summary", "").strip()[:300]
                     tags = self._classify_news(title, summary)
                     age_secs = int((now - pub_dt).total_seconds()) if pub_dt else 999999
+                    if age_secs < 0:
+                        age_secs = 0
+                    if age_secs > NEWS_MAX_VISIBLE_AGE_SECS:
+                        continue
                     display_src = self._display_news_source(url, source, title, entry)
                     combined_text = title.lower() + (" " + summary.lower() if summary else "")
                     india_hint = _has_keyword(combined_text, _INDIA_IMPACT_HINT_KW)
@@ -4439,12 +4608,14 @@ class DataEngine:
                     brk_pre = india_hint and not tags.get("stock_event", False) and not tags.get("company_specific", False)
                     raw.append({
                         "title": title,
+                        "summary": summary,
                         "link": entry.get("link", ""),
                         "source": display_src,
                         "age_secs": age_secs,
+                        "published_at_ts": pub_dt.timestamp() if pub_dt else None,
                         "time": self._relative_time(pub_dt) if pub_dt else "",
                         "is_fresh": age_secs < 900,
-                        "global_news": is_global_feed,
+                        "global_news": is_global_feed or is_gdelt_feed,
                         "india_news": india_news,
                         "breaking": brk_pre,
                         "breaking_hint": tags["breaking"],
@@ -4457,49 +4628,54 @@ class DataEngine:
                         "watchlist_stocks": [],
                     })
 
+        self._fetch_alpha_vantage_news(raw, now)
         self._fetch_tradient_news(raw, now, cutoff)
         self._apply_breaking_clusters(raw)
 
         raw.sort(key=lambda x: x["age_secs"])
 
         seen_keys: Set[str] = set()
+        seen_fuzzy: Set[str] = set()
         unique: List[dict] = []
         for item in raw:
             title_lower = item["title"].lower()
             words = set(re.findall(r"[a-z]{4,}", title_lower))
-            exact_key = title_lower[:50]
+            exact_key = re.sub(r"\s+", " ", title_lower)[:80]
             if exact_key in seen_keys:
                 continue
-            is_dup = False
-            for prev_key in list(seen_keys):
-                prev_words = set(re.findall(r"[a-z]{4,}", prev_key))
-                if prev_words and words:
-                    overlap = len(words & prev_words) / max(len(words | prev_words), 1)
-                    if overlap > 0.6:
-                        is_dup = True
-                        break
-            if not is_dup:
-                seen_keys.add(exact_key)
-                unique.append(item)
+            fuzzy_key = " ".join(sorted(w for w in words if w not in _BREAKING_CLUSTER_STOPWORDS)[:10])
+            if fuzzy_key and fuzzy_key in seen_fuzzy:
+                continue
+            seen_keys.add(exact_key)
+            if fuzzy_key:
+                seen_fuzzy.add(fuzzy_key)
+            unique.append(item)
         with self._news_lock:
-            prior_live = [
-                n for n in self._news
-                if n.get("live_story") and n.get("age_secs", 999999) < 12 * 3600
-            ]
-            prior_watchlist = [
-                n for n in self._news
-                if n.get("watchlist_stocks")
-                and n.get("watchlist_injected_at", 0) > time.time() - 12 * 3600
-            ]
+            prior_live = []
+            prior_watchlist = []
+            for n in self._news:
+                self._refresh_news_item_age(n)
+                age_secs = int(n.get("age_secs", 999999) or 999999)
+                if n.get("live_story") and age_secs <= NEWS_MAX_VISIBLE_AGE_SECS:
+                    prior_live.append(n)
+                elif (
+                    n.get("watchlist_stocks")
+                    and age_secs <= NEWS_MAX_VISIBLE_AGE_SECS
+                    and n.get("watchlist_injected_at", 0) > time.time() - 12 * 3600
+                ):
+                    prior_watchlist.append(n)
         if not unique and not prior_live and not prior_watchlist:
+            self._last_news_refresh_ts = time.time()
             return
         # Reserve visible slots for market-relevant items, while keeping a bounded
         # pending tail so LLM classification can still rescue semantic headlines.
         display_ready = [u for u in unique if self._is_tradable_news_item(u)]
-        pending_llm = [u for u in unique if not self._is_tradable_news_item(u)]
-        gold_items = [u for u in display_ready if u.get("gold_silver")]
-        other_items = [u for u in display_ready if not u.get("gold_silver")]
-        unique_trim = (gold_items[:20] + other_items + pending_llm[:40])[:100]
+        pending_llm = [
+            u for u in unique
+            if not self._is_tradable_news_item(u) and self._should_llm_classify_news_item(u)
+        ]
+        display_ready.sort(key=lambda item: int(item.get("age_secs", 999999) or 999999))
+        unique_trim = (display_ready + pending_llm[:NEWS_PENDING_LLM_TAIL])[:100]
         live_cap = min(len(prior_live), 30)
         capped_live = prior_live[:live_cap]
         combined: List[dict] = []
@@ -4513,8 +4689,26 @@ class DataEngine:
         combined = self._sort_news_with_breaking_pins(combined)
         with self._news_lock:
             self._news = combined[:130]
-        if unique_trim:
-            self._push_llm_stack(unique_trim)
+            self._last_news_refresh_ts = time.time()
+        llm_candidates = [
+            item for item in unique_trim
+            if self._should_llm_classify_news_item(item)
+        ][:NEWS_PENDING_LLM_TAIL]
+        if llm_candidates:
+            self._push_llm_stack(llm_candidates)
+
+    def _refresh_news_if_stale(self, force: bool = False):
+        now_ts = time.time()
+        if not force and self._news and now_ts - self._last_news_refresh_ts < NEWS_STALE_SECS:
+            return
+        if not self._news_refresh_lock.acquire(blocking=False):
+            return
+        try:
+            now_ts = time.time()
+            if force or not self._news or now_ts - self._last_news_refresh_ts >= NEWS_STALE_SECS:
+                self._fetch_all_news()
+        finally:
+            self._news_refresh_lock.release()
 
     def _fetch_tradient_news(self, raw: list, now: datetime, cutoff: datetime):
         """Pull corporate filings from Tradient and append to raw list."""
@@ -4554,6 +4748,7 @@ class DataEngine:
                     "link": link,
                     "source": source,
                     "age_secs": age_secs,
+                    "published_at_ts": pub_dt.timestamp() if pub_dt else None,
                     "time": self._relative_time(pub_dt) if pub_dt else "",
                     "is_fresh": age_secs < 900,
                     "global_news": False,
@@ -4631,8 +4826,8 @@ class DataEngine:
 
     def build_news_panel(self, tab: str, watchlist_symbols: Optional[List[str]] = None) -> dict:
         normalized_tab = (tab or "all").strip().lower()
-        if not self._news:
-            self._fetch_all_news()
+        if normalized_tab in {"all", "breaking"} or not self._news:
+            self._refresh_news_if_stale()
         if normalized_tab == "watchlist":
             symbols = self._normalize_watchlist_symbols(watchlist_symbols or [])
             current_items = self._current_watchlist_news_items(symbols)

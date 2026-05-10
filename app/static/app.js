@@ -3470,7 +3470,7 @@
         if (!document.hidden && isNewsVisible() && currentNewsTab !== "watchlist") {
             loadNewsPanel(activeNewsRequestTab());
         }
-    }, 60000);
+    }, 30000);
     setInterval(function () {
         if (!document.hidden && isWatchlistVisible()) {
             hydrateWatchlistStocks({ staleMs: 60000 });
