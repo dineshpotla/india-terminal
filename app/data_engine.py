@@ -626,6 +626,10 @@ NEWS_FEED_TIMEOUT_SECS = max(2, min(12, int(os.getenv("NEWS_FEED_TIMEOUT_SECS", 
 NEWS_FEED_WORKERS = max(2, min(12, int(os.getenv("NEWS_FEED_WORKERS", "4" if IS_RENDER else "8"))))
 MARKET_REFRESH_SECS = max(45, min(600, int(os.getenv("MARKET_REFRESH_SECS", "90" if IS_RENDER else "60"))))
 NEWS_REFRESH_SECS = max(60, min(600, int(os.getenv("NEWS_REFRESH_SECS", "120" if RENDER_MINIMAL_MODE else ("90" if IS_RENDER else "60")))))
+BREAKING_CLUSTER_MIN_SOURCES = max(2, min(5, int(os.getenv("BREAKING_CLUSTER_MIN_SOURCES", "2"))))
+BREAKING_CLUSTER_WINDOW_SECS = max(300, min(7200, int(os.getenv("BREAKING_CLUSTER_WINDOW_SECS", "5400"))))
+BREAKING_PIN_TTL_SECS = max(300, min(7200, int(os.getenv("BREAKING_PIN_TTL_SECS", "5400"))))
+BREAKING_PIN_MAX_ITEMS = max(3, min(30, int(os.getenv("BREAKING_PIN_MAX_ITEMS", "12"))))
 GLOBAL_POLL_SECS = max(30, min(900, int(os.getenv("GLOBAL_POLL_SECS", "300" if RENDER_MINIMAL_MODE else "120"))))
 LIVE_STORY_POLL_SECS = max(30, min(900, int(os.getenv("LIVE_STORY_POLL_SECS", "180" if IS_RENDER else "90"))))
 LIVE_STORY_DISCOVER_SECS = max(120, min(1800, int(os.getenv("LIVE_STORY_DISCOVER_SECS", "600" if IS_RENDER else "300"))))
@@ -854,6 +858,38 @@ _KEYWORD_STEMS = {
     "sanction", "tariff", "geopolit", "war escalat", "central bank",
 }
 
+_BREAKING_CLUSTER_STOPWORDS = {
+    "about", "after", "against", "amid", "among", "around", "before", "being",
+    "could", "from", "have", "into", "latest", "live", "more", "news", "over",
+    "report", "reported", "reports", "says", "show", "shows", "than", "that",
+    "their", "this", "today", "update", "updates", "what", "when", "where",
+    "which", "while", "with", "will", "your",
+    "google", "reuters", "bloomberg", "cnbc", "mint", "ndtv", "moneycontrol",
+    "economic", "economictimes", "times", "business", "standard", "market",
+    "markets", "india", "indian",
+}
+_BREAKING_CLUSTER_NOISE_KW = {
+    "price today", "prices today", "rate today", "rates today", "city-wise",
+    "city wise", "check latest", "current price of", "price forecast for today",
+    "streaming chart", "technical analysis", "where are the stops",
+    "next move", "make or break", "over the next", "next 12 months",
+    "next 6 months", "returns over", "your returns", "portfolio",
+    "stocks to buy", "best stocks", "should you buy", "should investors",
+    "what it means", "explained", "price prediction", "forecast",
+    "outlook", "opinion", "analysis",
+}
+_BREAKING_CLUSTER_EVENT_KW = {
+    "breaking", "just in", "flash", "alert", "urgent",
+    "rbi", "repo rate", "rate cut", "rate hike", "policy decision",
+    "fed", "federal reserve", "inflation", "cpi", "gdp",
+    "rupee", "inr", "dollar index", "dxy", "treasury yield", "bond yield",
+    "crude", "brent", "oil price", "hormuz", "red sea",
+    "war", "missile", "drone", "attack", "strike", "ceasefire",
+    "sanction", "tariff", "embargo", "nuclear",
+    "nifty", "sensex", "futures", "crash", "plunge", "sell-off",
+    "surge", "soar", "record high", "all-time high",
+}
+
 
 def _keyword_pattern(keyword: str) -> re.Pattern:
     """Match standalone keywords so short tokens like `nfl` do not hit `inflation`."""
@@ -877,6 +913,54 @@ def _has_keyword(text: str, keywords) -> bool:
     if not haystack:
         return False
     return any(_keyword_pattern(kw).search(haystack) for kw in keywords)
+
+
+def _breaking_cluster_tokens(title: str) -> Set[str]:
+    text = str(title or "").lower()
+    for sep in (" — ", " – ", " - "):
+        if sep in text:
+            text = text.rsplit(sep, 1)[0]
+            break
+    phrase_tokens: Set[str] = set()
+    if "reserve bank of india" in text or "reserve bank india" in text:
+        phrase_tokens.add("rbi")
+    if "federal reserve" in text:
+        phrase_tokens.add("fed")
+    if "basis points" in text or "basis point" in text:
+        phrase_tokens.add("bps")
+    if "strait of hormuz" in text:
+        phrase_tokens.add("hormuz")
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[^a-z0-9&]+", " ", text)
+    tokens: Set[str] = set(phrase_tokens)
+    aliases = {
+        "cuts": "cut", "cutting": "cut", "lower": "cut", "lowers": "cut",
+        "reduced": "cut", "reduces": "cut", "reduction": "cut",
+        "hikes": "hike", "raises": "hike", "raised": "hike",
+        "rises": "rise", "rise": "rise", "gains": "rise", "gain": "rise",
+        "jumps": "rise", "surges": "rise", "soars": "rise",
+        "falls": "fall", "drops": "fall", "slumps": "fall", "slides": "fall",
+        "crude": "oil", "brent": "oil", "wti": "oil",
+        "equities": "stock", "stocks": "stock", "shares": "stock",
+        "yields": "yield", "treasuries": "treasury",
+        "sanctions": "sanction", "tariffs": "tariff",
+        "missiles": "missile", "drones": "drone",
+        "points": "bps", "point": "bps",
+    }
+    for raw in text.split():
+        token = raw.strip("&")
+        if not token or token in _BREAKING_CLUSTER_STOPWORDS:
+            continue
+        if token.isdigit():
+            continue
+        if len(token) < 3 and token not in {"ai", "it", "us", "uk"}:
+            continue
+        if len(token) > 4 and token.endswith("s"):
+            token = token[:-1]
+        token = aliases.get(token, token)
+        if token and token not in _BREAKING_CLUSTER_STOPWORDS:
+            tokens.add(token)
+    return tokens
 
 
 _TICKER_PAREN_RE = re.compile(r"\([A-Z]{1,5}(?:[:.][A-Z]{1,5})?\)")
@@ -1543,13 +1627,26 @@ class DataEngine:
             item["market_relevant"] = bool(result.get("market_relevant", item.get("market_relevant", False)))
             item["company_specific"] = bool(result.get("company_specific", item.get("company_specific", False)))
             item["llm_classified"] = True
-            # BREAKING is India-impact-only and never stock-event.
+            # LLM output is a hint; final BREAKING requires 2+ media-source confirmation.
             brk = item.get("india_market_impact", False)
             if item.get("stock_event"):
                 brk = False
             if item.get("company_specific"):
                 brk = False
-            item["breaking"] = brk
+            item["breaking_hint"] = bool(item.get("breaking_hint") or brk)
+            item["breaking"] = bool(
+                item.get("breaking_confirmed")
+                and float(item.get("breaking_expires_at") or 0) > time.time()
+            )
+            item["breaking_pinned"] = item["breaking"]
+
+    def _recluster_current_news(self):
+        """Re-evaluate breaking clusters after late LLM classification updates."""
+        with self._news_lock:
+            if not self._news:
+                return
+            self._apply_breaking_clusters(self._news)
+            self._news = self._sort_news_with_breaking_pins(self._news)[:130]
 
     @staticmethod
     def _prepare_nv_messages(model: str, messages: List[dict]) -> List[dict]:
@@ -1672,6 +1769,7 @@ class DataEngine:
                             while len(self._llm_cache) > LLM_CACHE_SIZE:
                                 self._llm_cache.popitem(last=False)
                             self._apply_llm_result_to_news(cache_key, result)
+                    self._recluster_current_news()
                     await self._broadcast("news")
                 except Exception:
                     traceback.print_exc()
@@ -1718,6 +1816,8 @@ class DataEngine:
                 traceback.print_exc()
                 for job in jobs:
                     self._mark_llm_done(job["cache_key"])
+        if processed:
+            self._recluster_current_news()
         return processed
 
     async def _market_loop(self):
@@ -3127,8 +3227,8 @@ class DataEngine:
             "is_fresh": True,
             "global_news": True,
             "india_news": india_news,
-            "breaking": brk_pre,
-            "breaking_hint": tags["breaking"],
+            "breaking": False,
+            "breaking_hint": bool(brk_pre or tags["breaking"]),
             "stock_event": tags["stock_event"],
             "gold_silver": tags["gold_silver"],
             "india_market_impact": india_hint,
@@ -3916,6 +4016,154 @@ class DataEngine:
         return bool(item.get("breaking"))
 
     @staticmethod
+    def _news_source_key(item: dict) -> str:
+        raw = str((item or {}).get("source") or "").strip().lower()
+        raw = re.sub(r"[^a-z0-9]+", " ", raw)
+        raw = re.sub(r"\b(news|markets?|business|latest|top|rss|feed|live)\b", " ", raw)
+        key = " ".join(raw.split())[:40]
+        if key:
+            return key
+        link = str((item or {}).get("link") or "")
+        try:
+            host = urlparse(link).netloc.lower().replace("www.", "")
+            return host.split(":")[0]
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _same_story_tokens(left: Set[str], right: Set[str]) -> bool:
+        if len(left) < 3 or len(right) < 3:
+            return False
+        shared = len(left & right)
+        if shared < 3:
+            return False
+        union = len(left | right)
+        jaccard = shared / max(union, 1)
+        containment = shared / max(min(len(left), len(right)), 1)
+        return jaccard >= 0.42 or (shared >= 4 and containment >= 0.62)
+
+    @classmethod
+    def _is_breaking_cluster_candidate(cls, item: dict) -> bool:
+        if not cls._is_tradable_news_item(item):
+            return False
+        if item.get("stock_event") or item.get("company_specific") or item.get("watchlist_stocks"):
+            return False
+        if int(item.get("age_secs", 999999) or 999999) > BREAKING_PIN_TTL_SECS:
+            return False
+        title = str(item.get("title") or "").lower()
+        if _has_keyword(title, _BREAKING_CLUSTER_NOISE_KW):
+            return False
+        if not (item.get("breaking_hint") or _has_keyword(title, _BREAKING_CLUSTER_EVENT_KW)):
+            return False
+        return bool(
+            item.get("breaking_hint")
+            or item.get("india_market_impact")
+            or item.get("gold_silver")
+        )
+
+    @classmethod
+    def _reset_breaking_flags(cls, item: dict):
+        if not isinstance(item, dict):
+            return
+        if item.get("breaking"):
+            item["breaking_hint"] = True
+        item["breaking"] = False
+        item["breaking_pinned"] = False
+        item["breaking_confirmed"] = False
+        item.pop("breaking_cluster_count", None)
+        item.pop("breaking_sources", None)
+        item.pop("breaking_reason", None)
+        item.pop("breaking_expires_at", None)
+
+    @classmethod
+    def _apply_breaking_clusters(cls, items: List[dict], now_ts: Optional[float] = None) -> List[dict]:
+        now_ts = now_ts or time.time()
+        for item in items:
+            cls._reset_breaking_flags(item)
+
+        groups: List[dict] = []
+        candidates: List[tuple[int, dict, Set[str], str, int]] = []
+        for idx, item in enumerate(items):
+            if not cls._is_breaking_cluster_candidate(item):
+                continue
+            source_key = cls._news_source_key(item)
+            if not source_key:
+                continue
+            tokens = _breaking_cluster_tokens(str(item.get("title") or ""))
+            if len(tokens) < 3:
+                continue
+            age = int(item.get("age_secs", 999999) or 999999)
+            candidates.append((idx, item, tokens, source_key, age))
+
+        candidates.sort(key=lambda row: row[4])
+        for idx, item, tokens, source_key, age in candidates:
+            target = None
+            for group in groups:
+                if age - group["youngest_age"] > BREAKING_CLUSTER_WINDOW_SECS:
+                    continue
+                if cls._same_story_tokens(tokens, group["tokens"]):
+                    target = group
+                    break
+            if target is None:
+                target = {
+                    "indices": [],
+                    "tokens": set(tokens),
+                    "sources": {},
+                    "youngest_age": age,
+                    "oldest_age": age,
+                }
+                groups.append(target)
+            target["indices"].append(idx)
+            target["sources"].setdefault(source_key, str(item.get("source") or source_key)[:32])
+            target["oldest_age"] = max(target["oldest_age"], age)
+            target["tokens"] = set(target["tokens"]) | set(tokens)
+
+        for group in groups:
+            source_names = list(group["sources"].values())
+            if len(source_names) < BREAKING_CLUSTER_MIN_SOURCES:
+                continue
+            if group["youngest_age"] > BREAKING_PIN_TTL_SECS:
+                continue
+            expires_at = now_ts + max(60, BREAKING_PIN_TTL_SECS - int(group["youngest_age"]))
+            for idx in group["indices"]:
+                item = items[idx]
+                item["breaking"] = True
+                item["breaking_pinned"] = True
+                item["breaking_confirmed"] = True
+                item["breaking_cluster_count"] = len(source_names)
+                item["breaking_sources"] = source_names[:6]
+                item["breaking_reason"] = (
+                    f"{len(source_names)} sources within {BREAKING_CLUSTER_WINDOW_SECS // 60}m"
+                )
+                item["breaking_expires_at"] = expires_at
+                item["breaking_hint"] = True
+        return items
+
+    @classmethod
+    def _refresh_breaking_flags(cls, items: List[dict]) -> List[dict]:
+        now_ts = time.time()
+        for item in items:
+            if item.get("breaking_confirmed") and float(item.get("breaking_expires_at") or 0) > now_ts:
+                item["breaking"] = True
+                item["breaking_pinned"] = True
+            else:
+                if item.get("breaking"):
+                    item["breaking_hint"] = True
+                item["breaking"] = False
+                item["breaking_pinned"] = False
+        return items
+
+    @classmethod
+    def _sort_news_with_breaking_pins(cls, items: List[dict]) -> List[dict]:
+        cls._refresh_breaking_flags(items)
+        pinned = sorted(
+            [item for item in items if item.get("breaking") and item.get("breaking_pinned")],
+            key=lambda item: int(item.get("age_secs", 999999) or 999999),
+        )[:BREAKING_PIN_MAX_ITEMS]
+        pinned_ids = {id(item) for item in pinned}
+        return pinned + [item for item in items if id(item) not in pinned_ids]
+
+    @staticmethod
     def _parse_pub_time(entry) -> Optional[datetime]:
         """Extract a timezone-aware datetime from an RSS entry."""
         for attr in ("published_parsed", "updated_parsed"):
@@ -4056,17 +4304,17 @@ class DataEngine:
                     item["watchlist_stocks"] = list(dict.fromkeys(cached["stocks"]))
                 item["sentiment"] = cached["sentiment"]
                 item["impact"] = cached["impact"]
-                item["breaking"] = cached.get("breaking", item.get("breaking", False))
+                item["breaking_hint"] = bool(item.get("breaking_hint") or cached.get("breaking", False))
                 item["gold_silver"] = cached.get("gold_silver", False) or item.get("gold_silver", False)
                 item["india_market_impact"] = cached.get("india_market_impact", False)
                 item["market_relevant"] = cached.get("market_relevant", item.get("market_relevant", False))
                 item["company_specific"] = cached.get("company_specific", item.get("company_specific", False))
                 item["llm_classified"] = True
-                # BREAKING is India-impact-only.
-                if not item["india_market_impact"]:
-                    item["breaking"] = False
-                if item.get("stock_event"):
-                    item["breaking"] = False
+                item["breaking"] = bool(
+                    item.get("breaking_confirmed")
+                    and float(item.get("breaking_expires_at") or 0) > time.time()
+                )
+                item["breaking_pinned"] = item["breaking"]
             else:
                 uncached.append(item)
 
@@ -4097,7 +4345,9 @@ class DataEngine:
                 for item, job, entry in zip(items_chunk, chunk, entries):
                     if not entry or not isinstance(entry, dict):
                         item["india_market_impact"] = False
+                        item["breaking_hint"] = bool(item.get("breaking_hint"))
                         item["breaking"] = False
+                        item["breaking_pinned"] = False
                         continue
                     result = self._normalize_llm_entry(job, entry, valid_syms)
                     cache_key = item["title"][:80].lower()
@@ -4108,12 +4358,17 @@ class DataEngine:
                         item["watchlist_stocks"] = list(dict.fromkeys(result["stocks"]))
                     item["sentiment"] = result["sentiment"]
                     item["impact"] = result["impact"]
-                    item["breaking"] = result["breaking"]
+                    item["breaking_hint"] = bool(item.get("breaking_hint") or result["breaking"])
                     item["gold_silver"] = result["gold_silver"] or item.get("gold_silver", False)
                     item["india_market_impact"] = result["india_market_impact"]
                     item["market_relevant"] = result["market_relevant"]
                     item["company_specific"] = result["company_specific"]
                     item["llm_classified"] = True
+                    item["breaking"] = bool(
+                        item.get("breaking_confirmed")
+                        and float(item.get("breaking_expires_at") or 0) > time.time()
+                    )
+                    item["breaking_pinned"] = item["breaking"]
                     ok += 1
 
         print(f"[LLM] {ok}/{len(uncached)} new via {model.split('/')[-1]}, "
@@ -4203,6 +4458,7 @@ class DataEngine:
                     })
 
         self._fetch_tradient_news(raw, now, cutoff)
+        self._apply_breaking_clusters(raw)
 
         raw.sort(key=lambda x: x["age_secs"])
 
@@ -4254,6 +4510,7 @@ class DataEngine:
                 continue
             seen_k.add(k)
             combined.append(item)
+        combined = self._sort_news_with_breaking_pins(combined)
         with self._news_lock:
             self._news = combined[:130]
         if unique_trim:
@@ -4410,7 +4667,9 @@ class DataEngine:
             }
         if normalized_tab in {"all", "breaking"} and self._llm_stack_pending_count() and not self.background_enabled:
             self.process_llm_queue_sync(REQUEST_LLM_SYNC_MAX_ITEMS)
-        items = [item for item in self._news if self._is_tradable_news_item(item)]
+        items = self._sort_news_with_breaking_pins([
+            item for item in self._news if self._is_tradable_news_item(item)
+        ])
         if normalized_tab == "breaking":
             items = [
                 item
@@ -4418,7 +4677,6 @@ class DataEngine:
                 if item.get("breaking")
                 and not item.get("stock_event")
                 and not item.get("company_specific")
-                and item.get("india_market_impact")
             ]
         return {
             "items": items,

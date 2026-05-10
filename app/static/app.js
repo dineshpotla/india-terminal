@@ -701,7 +701,7 @@
         if (currentNewsTab === "all") return news;
         if (currentNewsTab === "breaking") {
             return news.filter(function (n) {
-                return n.breaking && !n.stock_event && !n.company_specific && n.india_market_impact;
+                return n.breaking && !n.stock_event && !n.company_specific;
             });
         }
         if (currentNewsTab === "global") {
@@ -768,7 +768,10 @@
             var tag = el("span", "wire-tag");
             if (n.breaking) {
                 tag.className = "wire-tag wire-tag-breaking";
-                tag.textContent = "BREAKING";
+                tag.textContent = n.breaking_cluster_count ? ("BREAKING " + n.breaking_cluster_count + "x") : "BREAKING";
+                if (n.breaking_sources && n.breaking_sources.length) {
+                    tag.title = "Confirmed by " + n.breaking_sources.join(", ");
+                }
             } else if (n.is_fresh) {
                 tag.className = "wire-tag wire-tag-just-in";
                 tag.textContent = "JUST IN";
@@ -3171,7 +3174,7 @@
                     applyNewsPanel("all", liveNews, { skipCache: true, isLiveUpdate: true });
                     applyNewsPanel("breaking", {
                         items: (msg.news || []).filter(function (n) {
-                            return n.breaking && !n.stock_event && !n.company_specific && n.india_market_impact;
+                            return n.breaking && !n.stock_event && !n.company_specific;
                         }),
                         as_of: liveNews.as_of,
                         stale: false,
