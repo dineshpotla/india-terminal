@@ -802,6 +802,8 @@ _LOW_SIGNAL_NEWS_KW = {
     "officers' union", "officers’ union", "promotion system",
     "promotion policy", "time-bound promotion",
     "buy areas", "will the rupee hit", "by year-end",
+    "city rates", "per tola", "24k", "22k", "18k",
+    "simple steps aussies", "protect their finances",
 }
 
 _LOW_SIGNAL_SOURCE_KW = {
@@ -810,7 +812,7 @@ _LOW_SIGNAL_SOURCE_KW = {
     "espn", "toronto star", "killeen", "journal gazette",
     "daily pioneer", "magzter", "voice of alexandria", "news.com.au",
     "israel defense", "bitcoin news", "cryptonews", "lokmattimes",
-    "citizen digital",
+    "citizen digital", "7news", "timesbull",
 }
 
 _MARKET_MOVING_KW = {

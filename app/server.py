@@ -26,8 +26,8 @@ _WATCHLIST_SYMBOL_RE = re.compile(r"^[A-Z0-9&.-]{1,20}$")
 _MF_SCHEME_CODE_RE = re.compile(r"^[0-9]{1,20}$")
 PANEL_OVERVIEW_KEY = "panel:overview"
 PANEL_GLOBAL_KEY = "panel:global"
-PANEL_NEWS_ALL_KEY = "panel:news:all:v4"
-PANEL_NEWS_BREAKING_KEY = "panel:news:breaking:v4"
+PANEL_NEWS_ALL_KEY = "panel:news:all:v5"
+PANEL_NEWS_BREAKING_KEY = "panel:news:breaking:v5"
 PANEL_WATCHLIST_QUOTES_KEY = "panel:watchlist:quotes"
 
 OVERVIEW_TTL = 60.0
