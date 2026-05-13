@@ -568,6 +568,7 @@ TWELVE_DATA_STOCK_FALLBACK_CAP = max(
 TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
 NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "z-ai/glm-5.1")
 NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", "z-ai/glm-5.1")
+NV_ENABLE_THINKING = os.getenv("NV_ENABLE_THINKING", "0").strip().lower() in ("1", "true", "yes", "on")
 RENDER_MINIMAL_MODE = os.getenv("RENDER_MINIMAL_MODE", "1" if IS_RENDER else "0").strip().lower() in ("1", "true", "yes", "on")
 BACKGROUND_NEWS_ENABLED = os.getenv("BACKGROUND_NEWS_ENABLED", "0" if RENDER_MINIMAL_MODE else "1").strip().lower() in ("1", "true", "yes", "on")
 BACKGROUND_LLM_ENABLED = os.getenv("BACKGROUND_LLM_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
@@ -1681,17 +1682,20 @@ class DataEngine:
 
     @classmethod
     def _build_nv_payload(cls, model: str, messages: List[dict], temperature: float, max_tokens: int) -> dict:
+        chat_template_kwargs = (
+            {"thinking": True}
+            if NV_ENABLE_THINKING
+            else {"enable_thinking": False, "clear_thinking": True}
+        )
         payload = {
             "model": model,
             "messages": cls._prepare_nv_messages(model, messages),
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "chat_template_kwargs": {
-                "enable_thinking": False,
-                "clear_thinking": True,
-            },
+            "top_p": 1.0,
+            "chat_template_kwargs": chat_template_kwargs,
         }
-        if model.startswith("moonshotai/kimi-k2.5"):
+        if model.startswith("moonshotai/kimi-k2.5") and not NV_ENABLE_THINKING:
             payload["thinking"] = {"type": "disabled"}
         return payload
 
