@@ -1338,7 +1338,7 @@
     function fmtFlowAxis(value) {
         var amount = Math.abs(Number(value || 0));
         var sign = Number(value || 0) < 0 ? "-" : "";
-        if (amount >= 1000) return sign + (amount / 1000).toFixed(amount >= 10000 ? 0 : 1) + "k";
+        if (amount >= 1000) return sign + (amount / 1000).toFixed(1).replace(/\.0$/, "") + "k";
         return sign + amount.toFixed(0);
     }
 
@@ -1350,14 +1350,6 @@
             month: "short",
             year: includeYear ? "2-digit" : undefined,
         });
-    }
-
-    function niceFlowMax(value) {
-        var amount = Math.max(100, Number(value || 0));
-        var exponent = Math.pow(10, Math.floor(Math.log10(amount)));
-        var fraction = amount / exponent;
-        var rounded = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-        return rounded * exponent;
     }
 
     function destroyFiiChart() {
@@ -1426,7 +1418,7 @@
         var slot = plotWidth / Math.max(rows.length, 1);
         var barWidth = Math.max(0.22, Math.min(7, slot * 0.34));
         var gap = Math.max(0.08, Math.min(1.4, slot * 0.08));
-        var flowMax = niceFlowMax(rows.reduce(function (max, row) {
+        var flowMax = Math.max(1, rows.reduce(function (max, row) {
             return Math.max(max, Math.abs(Number(row.fii_net || 0)), Math.abs(Number(row.dii_net || 0)));
         }, 0));
         var niftyRows = rows.map(function (row, index) {
@@ -1471,6 +1463,7 @@
         var svg = createFiiSvg("svg", {
             class: "fii-flow-svg",
             viewBox: "0 0 " + width + " " + height,
+            "data-flow-max": flowMax.toFixed(2),
             preserveAspectRatio: "none",
             role: "img",
             "aria-label": "Daily FII and DII cash-market net flows with Nifty 50 overlay",
