@@ -19,6 +19,9 @@
     let mfBenchmarkSeries = null;
     let mfChartSeries = [];
     let mutualChartRenderKey = "";
+    let fiiChart = null;
+    let fiiChartSeries = [];
+    let fiiChartRenderKey = "";
     const MULTI_SERIES_COLORS = [
         "#ff9d3f",
         "#4fd1c5",
@@ -41,6 +44,7 @@
         bootstrap: null,
         overview: null,
         global: null,
+        fii: null,
         watchlistQuotes: null,
         news: {
             all: null,
@@ -102,6 +106,10 @@
     const $gmStatus    = $("gm-status");
     const $gmUpdated   = $("gm-updated");
     const $gmHeatmap   = $("gm-heatmap");
+    const $fiiUpdated  = $("fii-updated");
+    const $fiiCards    = $("fii-cards");
+    const $fiiChartBox = $("fii-chart");
+    const $fiiTable    = $("fii-table");
     const $mfInput     = $("mf-input");
     const $mfSuggest   = $("mf-suggest");
     const $mfStatus    = $("mf-status");
@@ -356,6 +364,20 @@
         var value = Number(n);
         var sign = value >= 0 ? "+" : "-";
         return sign + fmtCompactMoney(Math.abs(value)).replace("\u20b9", "\u20b9");
+    }
+
+    function fmtCr(n) {
+        if (n == null || isNaN(Number(n))) return "\u2014";
+        return "\u20b9" + Number(n).toLocaleString("en-IN", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        }) + " Cr";
+    }
+
+    function fmtSignedCr(n) {
+        if (n == null || isNaN(Number(n))) return "\u2014";
+        var value = Number(n);
+        return (value >= 0 ? "+" : "-") + fmtCr(Math.abs(value));
     }
 
     function fmtDateLabel(value) {
@@ -759,8 +781,12 @@
         filtered.forEach(function (n) {
             var key = n.title.substring(0, 50);
             var isNew = isLiveUpdate && !prevNewsKeys[key];
+            var sentiment = String(n.sentiment || "").toLowerCase();
+            var sentimentClass = "";
+            if (sentiment === "bullish") sentimentClass = " wire-row-bullish";
+            else if (sentiment === "bearish") sentimentClass = " wire-row-bearish";
 
-            var row = el("div", "wire-row" + (isNew ? " wire-new" : ""));
+            var row = el("div", "wire-row" + sentimentClass + (isNew ? " wire-new" : ""));
             if (n.link) {
                 row.addEventListener("click", function () { window.open(n.link, "_blank"); });
             }
@@ -786,8 +812,8 @@
             row.appendChild(el("span", "wire-src", srcShort));
 
             var titleCls = "wire-title";
-            if (n.sentiment && n.sentiment !== "neutral") {
-                titleCls += " wire-sent-" + n.sentiment;
+            if (sentiment && sentiment !== "neutral") {
+                titleCls += " wire-sent-" + sentiment;
             }
             var titleEl = el("span", titleCls, n.title);
             var chipStocks = (n.watchlist_stocks && n.watchlist_stocks.length) ? n.watchlist_stocks
@@ -805,6 +831,13 @@
                 titleEl.appendChild(chips);
             }
             row.appendChild(titleEl);
+            if (sentiment === "bullish" || sentiment === "bearish") {
+                row.appendChild(el(
+                    "span",
+                    "wire-sent-chip wire-sent-chip-" + sentiment,
+                    sentiment === "bullish" ? "BULL" : "BEAR"
+                ));
+            }
             if (n.impact === "high") {
                 row.appendChild(el("span", "wire-impact-high", "HI"));
             }
@@ -1253,6 +1286,156 @@
         });
     }
 
+    // ── Render: FII / DII Flows ───────────────────────────────────────
+
+    function flowToneClass(value) {
+        var n = Number(value || 0);
+        if (n > 0) return "is-positive";
+        if (n < 0) return "is-negative";
+        return "is-neutral";
+    }
+
+    function renderFiiCards(items) {
+        if (!$fiiCards) return;
+        clearChildren($fiiCards);
+        if (!items || !items.length) {
+            $fiiCards.appendChild(el("div", "fii-loading", "No official FII/DII flow loaded yet."));
+            return;
+        }
+        items.forEach(function (item) {
+            var card = el("div", "fii-card " + flowToneClass(item.net));
+            var top = el("div", "fii-card-top");
+            top.appendChild(el("span", "fii-card-label", item.label || item.category || "FLOW"));
+            top.appendChild(el("span", "fii-card-date", item.date_label || item.date || "\u2014"));
+            card.appendChild(top);
+            card.appendChild(el("div", "fii-card-net", fmtSignedCr(item.net)));
+            var grid = el("div", "fii-card-grid");
+            [["BUY", item.buy], ["SELL", item.sell]].forEach(function (pair) {
+                var cell = el("div", "fii-mini-stat");
+                cell.appendChild(el("span", "fii-mini-label", pair[0]));
+                cell.appendChild(el("span", "fii-mini-value", fmtCr(pair[1])));
+                grid.appendChild(cell);
+            });
+            card.appendChild(grid);
+            $fiiCards.appendChild(card);
+        });
+    }
+
+    function destroyFiiChart() {
+        if (!fiiChart) return;
+        try { fiiChart.remove(); } catch (err) {}
+        fiiChart = null;
+        fiiChartSeries = [];
+        fiiChartRenderKey = "";
+    }
+
+    function renderFiiChart(history) {
+        if (!$fiiChartBox) return;
+        var rows = (history || []).filter(function (row) { return row && row.date; });
+        var renderKey = rows.map(function (row) {
+            return [row.date, row.fii_net, row.dii_net].join(":");
+        }).join("|");
+        if (renderKey && fiiChartRenderKey === renderKey) return;
+        destroyFiiChart();
+        clearChildren($fiiChartBox);
+        if (!rows.length) {
+            $fiiChartBox.appendChild(el("div", "fii-chart-placeholder", "Previous daily flow will build as official NSE rows are stored."));
+            return;
+        }
+        fiiChart = LightweightCharts.createChart($fiiChartBox, {
+            layout: {
+                background: { color: "transparent" },
+                textColor: "#8ea0b8",
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: 10,
+            },
+            grid: {
+                vertLines: { color: "rgba(30, 41, 59, 0.28)" },
+                horzLines: { color: "rgba(30, 41, 59, 0.32)" },
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+                vertLine: { color: "rgba(255,140,0,.18)", labelBackgroundColor: "#ff8c00" },
+                horzLine: { color: "rgba(125,211,252,.2)", labelBackgroundColor: "#26c6da" },
+            },
+            rightPriceScale: {
+                borderColor: "#1e293b",
+                scaleMargins: { top: 0.12, bottom: 0.12 },
+            },
+            timeScale: {
+                borderColor: "#1e293b",
+                timeVisible: false,
+                secondsVisible: false,
+            },
+            handleScroll: true,
+            handleScale: true,
+        });
+        var fiiSeries = fiiChart.addHistogramSeries({
+            title: "FII Net",
+            priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+            priceLineVisible: false,
+            lastValueVisible: true,
+            base: 0,
+        });
+        var diiSeries = fiiChart.addLineSeries({
+            title: "DII Net",
+            color: "#4fd1c5",
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: true,
+        });
+        fiiChartSeries = [fiiSeries, diiSeries];
+        fiiSeries.setData(rows.map(function (row) {
+            var value = Number(row.fii_net || 0);
+            return {
+                time: row.date,
+                value: value,
+                color: value >= 0 ? "rgba(0,230,118,.58)" : "rgba(255,61,61,.58)",
+            };
+        }));
+        diiSeries.setData(rows.map(function (row) {
+            return { time: row.date, value: Number(row.dii_net || 0) };
+        }));
+        fiiChart.timeScale().fitContent();
+        fiiChartRenderKey = renderKey;
+    }
+
+    function renderFiiTable(history) {
+        if (!$fiiTable) return;
+        clearChildren($fiiTable);
+        var rows = (history || []).slice(-12).reverse();
+        if (!rows.length) {
+            var empty = el("tr");
+            empty.appendChild(el("td", "", "No FII flow history yet."));
+            empty.firstChild.colSpan = 4;
+            $fiiTable.appendChild(empty);
+            return;
+        }
+        rows.forEach(function (row) {
+            var tr = el("tr");
+            tr.appendChild(el("td", "fii-date-cell", row.date_label || row.date || "\u2014"));
+            tr.appendChild(el("td", "fii-net-cell " + flowToneClass(row.fii_net), fmtSignedCr(row.fii_net)));
+            tr.appendChild(el("td", "fii-net-cell " + flowToneClass(row.dii_net), fmtSignedCr(row.dii_net)));
+            tr.appendChild(el("td", "fii-net-cell " + flowToneClass(row.combined_net), fmtSignedCr(row.combined_net)));
+            $fiiTable.appendChild(tr);
+        });
+    }
+
+    function renderFiiFlows(data) {
+        if (!data) return;
+        if ($fiiUpdated) {
+            var parts = [];
+            if (data.latest_date_label) parts.push("NSE " + data.latest_date_label);
+            if (data.updated_at) parts.push("Updated " + data.updated_at);
+            if (data.stale) parts.push("stale cache");
+            if (data.refreshing) parts.push("refreshing");
+            $fiiUpdated.textContent = parts.length ? parts.join(" \u00b7 ") : "Official NSE daily report";
+        }
+        renderFiiCards(data.items || []);
+        renderFiiChart(data.history || []);
+        renderFiiTable(data.history || []);
+    }
+
     function applyBootstrap(data) {
         panelState.bootstrap = data || null;
         updateNewsLlmState(data);
@@ -1299,6 +1482,14 @@
         updateGlobalStatus(data.global_streaming, data.last_global_update, data.global_futures || []);
         if (currentView === "global") renderGlobalMarkets(data.global_futures || []);
         if (!opts.skipCache) savePanelCache("global", data);
+    }
+
+    function applyFiiPanel(data, opts) {
+        opts = opts || {};
+        if (!data) return;
+        panelState.fii = data;
+        if (currentView === "fii") renderFiiFlows(data);
+        if (!opts.skipCache) savePanelCache("fii", data);
     }
 
     function activeNewsEnvelope() {
@@ -1348,12 +1539,14 @@
     function loadLocalPanelCaches() {
         var overview = loadPanelCache("overview");
         var global = loadPanelCache("global");
+        var fii = loadPanelCache("fii");
         var newsAll = loadPanelCache("news:all");
         var newsBreaking = loadPanelCache("news:breaking");
         var watchlistNews = loadPanelCache("news:watchlist");
         var watchlistQuotes = loadPanelCache("watchlist:quotes");
         if (overview) applyOverviewPanel(overview, { skipCache: true });
         if (global) applyGlobalPanel(global, { skipCache: true });
+        if (fii) applyFiiPanel(fii, { skipCache: true });
         if (newsAll) applyNewsPanel("all", newsAll, { skipCache: true });
         if (newsBreaking) applyNewsPanel("breaking", newsBreaking, { skipCache: true });
         if (watchlistNews) applyNewsPanel("watchlist", watchlistNews, { skipCache: true });
@@ -1403,6 +1596,18 @@
                 return panelState.global;
             }
             return panelState.global;
+        }
+    }
+
+    async function loadFiiPanel() {
+        try {
+            var data = await fetchJson("/api/panel/fii", { timeoutMs: 12000 });
+            applyFiiPanel(data);
+            return data;
+        } catch (err) {
+            console.error("FII flow fetch error:", err);
+            if (panelState.fii && currentView === "fii") renderFiiFlows(panelState.fii);
+            return panelState.fii;
         }
     }
 
@@ -2662,6 +2867,9 @@
         if (mfChart && $mfChartBox) {
             mfChart.applyOptions({ width: $mfChartBox.clientWidth, height: $mfChartBox.clientHeight });
         }
+        if (fiiChart && $fiiChartBox) {
+            fiiChart.applyOptions({ width: $fiiChartBox.clientWidth, height: $fiiChartBox.clientHeight });
+        }
         var globalRows = (panelState.global && panelState.global.global_futures)
             || (dashboardData && dashboardData.global_futures)
             || [];
@@ -3221,10 +3429,11 @@
             if (isWatchlistVisible()) await hydrateWatchlistStocks({ force: true });
             if (currentView === "global") await loadGlobalPanel();
             if (currentView === "mutual") await loadMutualWatchlist();
+            if (currentView === "fii") await loadFiiPanel();
         } catch (err) { console.error("Initial load error:", err); }
     }
 
-    // ── View Switching (INVESTING / OPTIONS / GLOBAL / MUTUAL) ────────
+    // ── View Switching (INVESTING / OPTIONS / GLOBAL / MUTUAL / FII) ──
 
     var $terminal = document.querySelector(".terminal");
     var navTabs = document.querySelectorAll(".nav-tab[data-view]");
@@ -3261,6 +3470,11 @@
             }
             if (view === "mutual") {
                 loadMutualWatchlist();
+                setTimeout(handleResize, 60);
+            }
+            if (view === "fii") {
+                if (panelState.fii) renderFiiFlows(panelState.fii);
+                loadFiiPanel();
                 setTimeout(handleResize, 60);
             }
         });
@@ -3447,6 +3661,7 @@
         if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
         if (currentView === "global") loadGlobalPanel();
         if (currentView === "mutual") loadMutualWatchlist();
+        if (currentView === "fii") loadFiiPanel();
     });
     document.addEventListener("visibilitychange", function () {
         if (!document.hidden) {
@@ -3457,6 +3672,7 @@
             if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
             if (currentView === "global") loadGlobalPanel();
             if (currentView === "mutual") loadMutualWatchlist();
+            if (currentView === "fii") loadFiiPanel();
         } else {
             disconnectWS();
         }
@@ -3491,6 +3707,11 @@
             loadMutualWatchlist();
         }
     }, 60000);
+    setInterval(function () {
+        if (!document.hidden && currentView === "fii") {
+            loadFiiPanel();
+        }
+    }, 15 * 60000);
 
     // ── Boot ───────────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
 
 from .data_engine import DataEngine, IST, SECTOR_MAP
+from .fii_flows import FiiFlowService
 from .mutual_fund_store import MutualFundWatchlistStore
 from .mutual_funds import MutualFundsService
 from .panel_cache import PanelCacheManager
@@ -29,6 +30,7 @@ PANEL_GLOBAL_KEY = "panel:global"
 PANEL_NEWS_ALL_KEY = "panel:news:all:v5"
 PANEL_NEWS_BREAKING_KEY = "panel:news:breaking:v5"
 PANEL_WATCHLIST_QUOTES_KEY = "panel:watchlist:quotes"
+PANEL_FII_FLOWS_KEY = "panel:fii-flows"
 
 OVERVIEW_TTL = 60.0
 OVERVIEW_STALE_TTL = 15 * 60.0
@@ -40,6 +42,8 @@ WATCHLIST_QUOTES_TTL = 60.0
 WATCHLIST_QUOTES_STALE_TTL = 10 * 60.0
 WATCHLIST_NEWS_TTL = 120.0
 WATCHLIST_NEWS_STALE_TTL = 12 * 60 * 60.0
+FII_FLOWS_TTL = 15 * 60.0
+FII_FLOWS_STALE_TTL = 7 * 24 * 60 * 60.0
 MF_NAV_BACKGROUND_SYNC_ENABLED = os.getenv("MF_NAV_BACKGROUND_SYNC_ENABLED", "1").strip().lower() in (
     "1", "true", "yes", "on",
 )
@@ -49,6 +53,7 @@ engine = DataEngine()
 watchlist_store = WatchlistStore()
 mutual_fund_store = MutualFundWatchlistStore()
 mutual_funds = MutualFundsService(engine._dashboard_store, mutual_fund_store)
+fii_flows = FiiFlowService(engine._dashboard_store)
 panel_cache = PanelCacheManager(engine._dashboard_store)
 
 
@@ -155,6 +160,19 @@ def _empty_watchlist_quotes_payload() -> dict:
     return {"symbols": watchlist_store.list_symbols(), "rows": []}
 
 
+def _empty_fii_flows_payload() -> dict:
+    return {
+        "source": "NSE",
+        "source_url": "https://www.nseindia.com/reports/fii-dii",
+        "latest_date": None,
+        "latest_date_label": None,
+        "items": [],
+        "history": [],
+        "history_count": 0,
+        "updated_at": None,
+    }
+
+
 async def _invalidate_watchlist_panels(before_symbols: list[str], after_symbols: list[str]):
     keys = {
         PANEL_WATCHLIST_QUOTES_KEY,
@@ -174,6 +192,7 @@ async def _bootstrap_panel_as_ofs() -> dict:
         panel_cache.peek(PANEL_GLOBAL_KEY),
         panel_cache.peek(PANEL_WATCHLIST_QUOTES_KEY),
         panel_cache.peek(_watchlist_news_key(symbols)),
+        panel_cache.peek(PANEL_FII_FLOWS_KEY),
     )
     return {
         "overview": entries[0]["as_of"] if entries[0] else None,
@@ -182,6 +201,7 @@ async def _bootstrap_panel_as_ofs() -> dict:
         "global": entries[3]["as_of"] if entries[3] else None,
         "watchlist_quotes": entries[4]["as_of"] if entries[4] else None,
         "watchlist_news": entries[5]["as_of"] if entries[5] else None,
+        "fii_flows": entries[6]["as_of"] if entries[6] else None,
     }
 
 
@@ -312,6 +332,18 @@ async def panel_global():
         engine.build_global_panel,
         fallback_payload=_empty_global_payload,
         wait_on_miss=False,
+    )
+    return JSONResponse(data)
+
+
+@app.get("/api/panel/fii")
+async def panel_fii_flows():
+    data = await panel_cache.get_or_refresh(
+        PANEL_FII_FLOWS_KEY,
+        FII_FLOWS_TTL,
+        FII_FLOWS_STALE_TTL,
+        fii_flows.latest_panel,
+        fallback_payload=_empty_fii_flows_payload,
     )
     return JSONResponse(data)
 

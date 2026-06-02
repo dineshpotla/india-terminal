@@ -4024,6 +4024,68 @@ class DataEngine:
         return f"{item.get('title') or ''} {item.get('summary') or ''}".lower()
 
     @classmethod
+    def _infer_news_sentiment(cls, item: dict) -> str:
+        """Fast market read-through used only until the LLM supplies a label."""
+        combined = cls._news_combined_text(item)
+        if not combined:
+            return "neutral"
+        bullish_kw = {
+            "stocks rally", "stocks rise", "stocks gain", "markets rally", "markets rise",
+            "futures rise", "futures gain", "record high", "all-time high",
+            "nifty gains", "sensex gains", "nifty rises", "sensex rises",
+            "rate cut", "repo rate cut", "fed cuts", "yield falls", "bond yield falls",
+            "inflation cools", "inflation eases", "cpi cools", "pmi rises",
+            "rupee gains", "rupee rises", "inr gains", "dollar index falls",
+            "oil prices fall", "oil prices edge lower", "crude oil falls", "brent falls",
+            "fii buys", "fii inflow", "fpi inflow", "foreign inflow",
+        }
+        bearish_kw = {
+            "stocks sink", "stocks fall", "markets fall", "markets slide",
+            "futures fall", "futures slip", "sell-off", "selloff", "risk-off",
+            "market crash", "flash crash", "plunge", "tumble", "bloodbath",
+            "nifty falls", "sensex falls", "nifty slips", "sensex slips",
+            "rate hike", "repo rate hike", "fed hikes", "yield rises", "bond yield rises",
+            "inflation rises", "inflation accelerates", "hot inflation",
+            "rupee falls", "rupee weakens", "inr weakens", "dollar index rises",
+            "oil prices rise", "crude oil rises", "brent rises", "rising oil prices",
+            "capital outflows", "foreign outflows", "fii sells", "fii outflow",
+            "missile strike", "drone attack", "sanctions", "strait of hormuz",
+        }
+        score = 0
+        for phrase in bullish_kw:
+            if phrase in combined:
+                score += 1
+        for phrase in bearish_kw:
+            if phrase in combined:
+                score -= 1
+        if _has_keyword(combined, {"surge", "soar", "jump", "rally"}) and not _has_keyword(combined, {"oil", "gold"}):
+            score += 1
+        if _has_keyword(combined, {"drop", "slump", "slide", "plummet"}):
+            score -= 1
+        if item.get("gold_silver") and _has_keyword(combined, {"war", "risk-off", "uncertainty", "sanction"}):
+            score -= 1
+        if item.get("india_market_impact") and _has_keyword(combined, {"oil"}) and _has_keyword(combined, {"lower", "fall", "drop"}):
+            score += 1
+        if item.get("india_market_impact") and _has_keyword(combined, {"oil"}) and _has_keyword(combined, {"rise", "higher", "surge"}):
+            score -= 1
+        if score > 0:
+            return "bullish"
+        if score < 0:
+            return "bearish"
+        return "neutral"
+
+    @classmethod
+    def _ensure_visible_news_sentiment(cls, item: dict) -> dict:
+        sentiment = str(item.get("sentiment") or "").strip().lower()
+        if sentiment in {"bullish", "bearish", "neutral"}:
+            item["sentiment"] = sentiment
+            return item
+        item["sentiment"] = cls._infer_news_sentiment(item)
+        if item["sentiment"] != "neutral":
+            item["sentiment_source"] = "rule"
+        return item
+
+    @classmethod
     def _is_low_signal_news(cls, item: dict) -> bool:
         combined = cls._news_combined_text(item)
         if _has_keyword(combined, _GLOBAL_EXCLUDE_KW) or _has_keyword(combined, _LOW_SIGNAL_NEWS_KW):
@@ -4860,6 +4922,7 @@ class DataEngine:
                     )
                     refreshed_symbols.update(extra_batch)
                     current_items = self._current_watchlist_news_items(symbols)
+            current_items = [self._ensure_visible_news_sentiment(item) for item in current_items]
             return {
                 "items": current_items,
                 "watchlist_hash": self.watchlist_hash(symbols),
@@ -4871,6 +4934,7 @@ class DataEngine:
         items = self._sort_news_with_breaking_pins([
             item for item in self._news if self._is_tradable_news_item(item)
         ])
+        items = [self._ensure_visible_news_sentiment(item) for item in items]
         if normalized_tab == "breaking":
             items = [
                 item

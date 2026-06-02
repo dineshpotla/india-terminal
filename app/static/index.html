@@ -32,6 +32,7 @@
                     <button class="nav-tab" data-view="options">OPTIONS</button>
                     <button class="nav-tab" data-view="global">GLOBAL MARKETS</button>
                     <button class="nav-tab" data-view="mutual">MUTUAL FUNDS</button>
+                    <button class="nav-tab" data-view="fii">FII FLOWS</button>
                 </div>
             </div>
             <div class="header-center">
@@ -236,6 +237,46 @@
                         </div>
                         <div id="mf-chart" class="mf-chart"></div>
                     </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- ── FII / DII Flows View ────────────────────────────────── -->
+        <div id="fii-view" class="fii-view">
+            <section class="fii-shell">
+                <div class="fii-head">
+                    <div>
+                        <div class="fii-kicker">DAILY INSTITUTIONAL FLOW</div>
+                        <h2 class="fii-title">FII / DII Cash Market</h2>
+                    </div>
+                    <div class="fii-source">
+                        <span id="fii-updated">Official NSE daily report</span>
+                    </div>
+                </div>
+                <div id="fii-cards" class="fii-cards">
+                    <div class="fii-loading">Fetching official NSE FII/DII flow…</div>
+                </div>
+                <div class="fii-chart-shell">
+                    <div class="fii-chart-head">
+                        <span>Previous Daily Flow</span>
+                        <span>Values in ₹ crore</span>
+                    </div>
+                    <div id="fii-chart" class="fii-chart"></div>
+                </div>
+                <div class="fii-table-shell">
+                    <table class="fii-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>FII Net</th>
+                                <th>DII Net</th>
+                                <th>Combined</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fii-table">
+                            <tr><td colspan="4">No FII flow history yet.</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
         </div>
