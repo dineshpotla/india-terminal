@@ -30,7 +30,7 @@ PANEL_GLOBAL_KEY = "panel:global"
 PANEL_NEWS_ALL_KEY = "panel:news:all:v5"
 PANEL_NEWS_BREAKING_KEY = "panel:news:breaking:v5"
 PANEL_WATCHLIST_QUOTES_KEY = "panel:watchlist:quotes"
-PANEL_FII_FLOWS_KEY = "panel:fii-flows:v2"
+PANEL_FII_FLOWS_KEY = "panel:fii-flows:v3"
 
 OVERVIEW_TTL = 60.0
 OVERVIEW_STALE_TTL = 15 * 60.0
@@ -168,10 +168,10 @@ def _empty_fii_flows_payload(chart_range: str = "1m") -> dict:
     return {
         "source": "NSE",
         "source_url": "https://www.nseindia.com/reports/fii-dii",
-        "history_source": "Groww",
-        "history_source_url": "https://groww.in/fii-dii-data",
-        "chart_source": "Tapetide",
-        "chart_source_url": "https://tapetide.com/fii-dii-data",
+        "history_source": "Moneycontrol",
+        "history_source_url": "https://www.moneycontrol.com/markets/fii-dii-data/",
+        "chart_source": "Moneycontrol",
+        "chart_source_url": "https://www.moneycontrol.com/markets/fii-dii-data/",
         "chart_range": chart_range,
         "chart_bucket": None,
         "chart": [],

@@ -6,7 +6,7 @@ import html
 import json
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
@@ -14,12 +14,20 @@ import requests
 from .data_engine import IST, NseSession
 
 FII_FLOW_HISTORY_KEY = "fii:flow-history:v1"
+FII_FLOW_ARCHIVE_KEY = "fii:flow-archive:v1"
 NSE_FII_DII_API_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
 NSE_FII_DII_SOURCE_URL = "https://www.nseindia.com/reports/fii-dii"
 GROWW_FII_DII_SOURCE_URL = "https://groww.in/fii-dii-data"
-TAPETIDE_FII_DII_SOURCE_URL = "https://tapetide.com/fii-dii-data"
-TAPETIDE_FII_DII_CHART_URL = "https://api.tapetide.com/api/v1/insight/fii-dii/bar-chart"
+MONEYCONTROL_FII_DII_SOURCE_URL = "https://www.moneycontrol.com/markets/fii-dii-data/"
+MONEYCONTROL_FII_DII_ARCHIVE_URL = "https://api.moneycontrol.com/swiftapi/v1/fii_dii/cash"
 FII_CHART_RANGES = {"1m", "3m", "6m", "1y", "5y", "max"}
+FII_CHART_RANGE_DAYS = {
+    "1m": 31,
+    "3m": 93,
+    "6m": 186,
+    "1y": 366,
+    "5y": 5 * 366,
+}
 
 
 class FiiFlowService:
@@ -76,6 +84,25 @@ class FiiFlowService:
                 "source": "NSE",
             },
             FII_FLOW_HISTORY_KEY,
+        )
+
+    def _load_archive(self) -> tuple[list[dict], str]:
+        payload = self._store.load_snapshot(FII_FLOW_ARCHIVE_KEY) or {}
+        history = payload.get("history") if isinstance(payload, dict) else None
+        fetched_on = str(payload.get("fetched_on") or "") if isinstance(payload, dict) else ""
+        if not isinstance(history, list):
+            return [], fetched_on
+        return [row for row in history if isinstance(row, dict)], fetched_on
+
+    def _save_archive(self, history: list[dict], fetched_on: str):
+        self._store.save_snapshot(
+            {
+                "history": history,
+                "fetched_on": fetched_on,
+                "updated_at": datetime.now(IST).isoformat(),
+                "source": "Moneycontrol",
+            },
+            FII_FLOW_ARCHIVE_KEY,
         )
 
     def _fetch_latest_rows(self) -> list[dict]:
@@ -181,47 +208,133 @@ class FiiFlowService:
             rows.append(row)
         return sorted(rows, key=lambda row: str(row.get("date") or ""))
 
-    def _fetch_chart_history(self, chart_range: str) -> tuple[list[dict], str]:
-        """Fetch a compact historical series; longer ranges are aggregated upstream."""
-        try:
-            resp = requests.get(
-                TAPETIDE_FII_DII_CHART_URL,
-                params={"interval": chart_range},
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            data = payload.get("data") if isinstance(payload, dict) else {}
-            meta = payload.get("meta") if isinstance(payload, dict) else {}
-        except Exception as exc:
-            print(f"[FII] Tapetide {chart_range} chart fetch failed: {exc}")
-            return [], ""
+    @staticmethod
+    def _read_varint(payload: bytes, offset: int) -> tuple[int, int]:
+        value = 0
+        shift = 0
+        while offset < len(payload):
+            byte = payload[offset]
+            offset += 1
+            value |= (byte & 0x7F) << shift
+            if not byte & 0x80:
+                return value, offset
+            shift += 7
+        raise ValueError("truncated protobuf varint")
 
-        dates = data.get("t") if isinstance(data, dict) else []
-        fii_values = data.get("fii_net") if isinstance(data, dict) else []
-        dii_values = data.get("dii_net") if isinstance(data, dict) else []
-        if not isinstance(dates, list) or not isinstance(fii_values, list) or not isinstance(dii_values, list):
-            return [], ""
+    @classmethod
+    def _protobuf_fields(cls, payload: bytes) -> list[tuple[int, int, object]]:
+        fields: list[tuple[int, int, object]] = []
+        offset = 0
+        while offset < len(payload):
+            tag, offset = cls._read_varint(payload, offset)
+            field_number = tag >> 3
+            wire_type = tag & 0x07
+            if wire_type == 0:
+                value, offset = cls._read_varint(payload, offset)
+            elif wire_type == 1:
+                value = payload[offset : offset + 8]
+                offset += 8
+            elif wire_type == 2:
+                length, offset = cls._read_varint(payload, offset)
+                value = payload[offset : offset + length]
+                offset += length
+            elif wire_type == 5:
+                value = payload[offset : offset + 4]
+                offset += 4
+            else:
+                raise ValueError(f"unsupported protobuf wire type {wire_type}")
+            fields.append((field_number, wire_type, value))
+        return fields
 
+    @classmethod
+    def _decode_moneycontrol_archive(cls, payload: bytes) -> list[dict]:
+        archive_payload = next(
+            (
+                value
+                for field_number, wire_type, value in cls._protobuf_fields(payload)
+                if field_number == 3 and wire_type == 2 and isinstance(value, bytes)
+            ),
+            b"",
+        )
         rows: list[dict] = []
-        for date_value, fii_value, dii_value in zip(dates, fii_values, dii_values):
-            date_iso, date_label = self._parse_date(str(date_value or ""))
-            fii_net = self._parse_float(fii_value)
-            dii_net = self._parse_float(dii_value)
+        for field_number, wire_type, value in cls._protobuf_fields(archive_payload):
+            if field_number != 1 or wire_type != 2 or not isinstance(value, bytes):
+                continue
+            raw = {
+                nested_number: nested_value.decode("utf-8", errors="replace")
+                for nested_number, nested_wire_type, nested_value in cls._protobuf_fields(value)
+                if nested_wire_type == 2 and isinstance(nested_value, bytes)
+            }
+            date_iso, date_label = cls._parse_date(str(raw.get(1) or ""))
+            fii_net = cls._parse_float(raw.get(4))
+            dii_net = cls._parse_float(raw.get(7))
             if not date_iso or fii_net is None or dii_net is None:
                 continue
             rows.append(
                 {
                     "date": date_iso,
                     "date_label": date_label,
+                    "fii_buy": cls._parse_float(raw.get(2)),
+                    "fii_sell": cls._parse_float(raw.get(3)),
                     "fii_net": fii_net,
+                    "dii_buy": cls._parse_float(raw.get(5)),
+                    "dii_sell": cls._parse_float(raw.get(6)),
                     "dii_net": dii_net,
                     "combined_net": round(fii_net + dii_net, 2),
+                    "nifty_close": cls._parse_float(raw.get(8)),
+                    "nifty_prev_close": cls._parse_float(raw.get(9)),
+                    "source": "Moneycontrol",
                 }
             )
-        bucket = str(meta.get("bucket") or "") if isinstance(meta, dict) else ""
-        return rows, bucket
+        return sorted(rows, key=lambda row: str(row.get("date") or ""))
+
+    def _fetch_archive_history(self) -> list[dict]:
+        """Fetch complete daily cash-flow history once, then persist it locally."""
+        try:
+            resp = requests.get(
+                MONEYCONTROL_FII_DII_ARCHIVE_URL,
+                params={
+                    "section": "daily",
+                    "startDate": "2000-01-01",
+                    "endDate": datetime.now(IST).strftime("%Y-%m-%d"),
+                },
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/x-protobuf"},
+                timeout=25,
+            )
+            resp.raise_for_status()
+            return self._decode_moneycontrol_archive(resp.content)
+        except Exception as exc:
+            print(f"[FII] Moneycontrol daily archive fetch failed: {exc}")
+            return []
+
+    @staticmethod
+    def _merge_history(*groups: list[dict]) -> list[dict]:
+        by_date: dict[str, dict] = {}
+        for group in groups:
+            for row in group:
+                date_iso = str(row.get("date") or "")
+                if not date_iso:
+                    continue
+                previous = by_date.get(date_iso, {})
+                merged = dict(previous)
+                merged.update({key: value for key, value in row.items() if value is not None})
+                by_date[date_iso] = merged
+        return sorted(by_date.values(), key=lambda row: str(row.get("date") or ""))
+
+    @staticmethod
+    def _slice_chart_history(history: list[dict], chart_range: str) -> list[dict]:
+        days = FII_CHART_RANGE_DAYS.get(chart_range)
+        if not days or not history:
+            return history
+        cutoff = datetime.now(IST).date() - timedelta(days=days)
+        rows: list[dict] = []
+        for row in history:
+            try:
+                if datetime.strptime(str(row.get("date") or ""), "%Y-%m-%d").date() >= cutoff:
+                    rows.append(row)
+            except ValueError:
+                continue
+        return rows
 
     @staticmethod
     def _items_from_history_row(row: Optional[dict]) -> list[dict]:
@@ -252,17 +365,10 @@ class FiiFlowService:
         normalized_range = chart_range if chart_range in FII_CHART_RANGES else "1m"
         error = None
         with self._lock:
-            history = self._load_history()
-            if len(history) < 5:
-                backfill_rows = self._fetch_recent_history_rows()
-                if backfill_rows:
-                    by_date = {str(row.get("date") or ""): row for row in history}
-                    for row in backfill_rows:
-                        by_date[str(row["date"])] = row
-                    history = sorted(
-                        [row for row in by_date.values() if row.get("date")],
-                        key=lambda row: str(row.get("date") or ""),
-                    )[-260:]
+            today = datetime.now(IST).strftime("%Y-%m-%d")
+            history, archive_fetched_on = self._load_archive()
+            if not history:
+                history = self._load_history()
             latest_rows = []
             try:
                 latest_rows = self._fetch_latest_rows()
@@ -270,30 +376,38 @@ class FiiFlowService:
                 error = str(exc)
 
             latest_history_row = self._row_from_latest(latest_rows)
+            latest_official_date = str((latest_history_row or {}).get("date") or "")
+            latest_archive_date = str((history[-1] if history else {}).get("date") or "")
+            should_refresh_archive = (
+                len(history) < 1000
+                or archive_fetched_on != today
+                or (latest_official_date and latest_official_date > latest_archive_date)
+            )
+            if should_refresh_archive:
+                archive_rows = self._fetch_archive_history()
+                if archive_rows:
+                    history = self._merge_history(history, archive_rows)
+                    archive_fetched_on = today
+            if len(history) < 5:
+                history = self._merge_history(history, self._fetch_recent_history_rows())
             if latest_history_row:
-                by_date = {str(row.get("date") or ""): row for row in history}
-                by_date[str(latest_history_row["date"])] = latest_history_row
-                history = sorted(
-                    [row for row in by_date.values() if row.get("date")],
-                    key=lambda row: str(row.get("date") or ""),
-                )[-260:]
+                history = self._merge_history(history, [latest_history_row])
+            if history:
+                self._save_archive(history, archive_fetched_on or today)
                 self._save_history(history)
 
             latest = history[-1] if history else latest_history_row
             items = self._items_from_history_row(latest)
-            chart_history, chart_bucket = self._fetch_chart_history(normalized_range)
-            if not chart_history:
-                chart_history = history[-90:]
-                chart_bucket = "1 day"
+            chart_history = self._slice_chart_history(history, normalized_range)
             return {
                 "source": "NSE",
                 "source_url": NSE_FII_DII_SOURCE_URL,
-                "history_source": "Groww",
-                "history_source_url": GROWW_FII_DII_SOURCE_URL,
-                "chart_source": "Tapetide",
-                "chart_source_url": TAPETIDE_FII_DII_SOURCE_URL,
+                "history_source": "Moneycontrol",
+                "history_source_url": MONEYCONTROL_FII_DII_SOURCE_URL,
+                "chart_source": "Moneycontrol",
+                "chart_source_url": MONEYCONTROL_FII_DII_SOURCE_URL,
                 "chart_range": normalized_range,
-                "chart_bucket": chart_bucket,
+                "chart_bucket": "1 day",
                 "chart": chart_history,
                 "chart_count": len(chart_history),
                 "latest_date": latest.get("date") if latest else None,

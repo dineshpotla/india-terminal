@@ -19,9 +19,10 @@
     let mfBenchmarkSeries = null;
     let mfChartSeries = [];
     let mutualChartRenderKey = "";
-    let fiiChart = null;
-    let fiiChartSeries = [];
     let fiiChartRenderKey = "";
+    let fiiChartRows = [];
+    let fiiChartResizeTimer = null;
+    let fiiSeriesVisibility = { fii: true, dii: true, nifty: true };
     let selectedFiiRange = "1m";
     const MULTI_SERIES_COLORS = [
         "#ff9d3f",
@@ -113,6 +114,7 @@
     const $fiiTable    = $("fii-table");
     const $fiiChartTitle = $("fii-chart-title");
     const $fiiChartNote = $("fii-chart-note");
+    const $fiiChartInsights = $("fii-chart-insights");
     const $mfInput     = $("mf-input");
     const $mfSuggest   = $("mf-suggest");
     const $mfStatus    = $("mf-status");
@@ -1324,83 +1326,250 @@
         });
     }
 
+    function createFiiSvg(tag, attrs, text) {
+        var node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+        Object.keys(attrs || {}).forEach(function (key) {
+            node.setAttribute(key, attrs[key]);
+        });
+        if (text !== undefined) node.textContent = text;
+        return node;
+    }
+
+    function fmtFlowAxis(value) {
+        var amount = Math.abs(Number(value || 0));
+        var sign = Number(value || 0) < 0 ? "-" : "";
+        if (amount >= 1000) return sign + (amount / 1000).toFixed(amount >= 10000 ? 0 : 1) + "k";
+        return sign + amount.toFixed(0);
+    }
+
+    function shortFiiDate(value, includeYear) {
+        var dt = new Date(value);
+        if (isNaN(dt.getTime())) return value || "\u2014";
+        return dt.toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: includeYear ? "2-digit" : undefined,
+        });
+    }
+
+    function niceFlowMax(value) {
+        var amount = Math.max(100, Number(value || 0));
+        var exponent = Math.pow(10, Math.floor(Math.log10(amount)));
+        var fraction = amount / exponent;
+        var rounded = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+        return rounded * exponent;
+    }
+
     function destroyFiiChart() {
-        if (!fiiChart) return;
-        try { fiiChart.remove(); } catch (err) {}
-        fiiChart = null;
-        fiiChartSeries = [];
+        if (!$fiiChartBox) return;
+        $fiiChartBox.onmousemove = null;
+        $fiiChartBox.onmouseleave = null;
+        $fiiChartBox.ontouchmove = null;
+        $fiiChartBox.ontouchend = null;
+        clearChildren($fiiChartBox);
         fiiChartRenderKey = "";
+    }
+
+    function renderFiiInsights(rows) {
+        if (!$fiiChartInsights) return;
+        clearChildren($fiiChartInsights);
+        if (!rows.length) return;
+        var fiiNet = rows.reduce(function (sum, row) { return sum + Number(row.fii_net || 0); }, 0);
+        var diiNet = rows.reduce(function (sum, row) { return sum + Number(row.dii_net || 0); }, 0);
+        var fiiSellDays = rows.filter(function (row) { return Number(row.fii_net || 0) < 0; }).length;
+        var biggest = rows.reduce(function (current, row) {
+            return !current || Math.abs(Number(row.fii_net || 0)) > Math.abs(Number(current.fii_net || 0))
+                ? row
+                : current;
+        }, null);
+        var absorption = fiiNet < 0 ? Math.round(Math.abs(diiNet) / Math.abs(fiiNet) * 100) : null;
+        [
+            ["RANGE NET", selectedFiiRange.toUpperCase(), "FII " + fmtSignedCr(fiiNet) + " \u00b7 DII " + fmtSignedCr(diiNet), flowToneClass(fiiNet + diiNet)],
+            ["DII ABSORPTION", absorption == null ? "\u2014" : absorption + "%", absorption == null ? "FII cash flow is net positive" : "of FII net selling offset", absorption != null && absorption >= 70 ? "is-positive" : "is-neutral"],
+            ["FII SELL DAYS", fiiSellDays + " / " + rows.length, "daily cash-market sessions", fiiSellDays > rows.length / 2 ? "is-negative" : "is-neutral"],
+            ["BIGGEST FII DAY", fmtSignedCr(biggest && biggest.fii_net), shortFiiDate(biggest && biggest.date, true), flowToneClass(biggest && biggest.fii_net)],
+        ].forEach(function (item) {
+            var card = el("div", "fii-insight " + item[3]);
+            card.appendChild(el("span", "fii-insight-label", item[0]));
+            card.appendChild(el("strong", "fii-insight-value", item[1]));
+            card.appendChild(el("span", "fii-insight-note", item[2]));
+            $fiiChartInsights.appendChild(card);
+        });
     }
 
     function renderFiiChart(history) {
         if (!$fiiChartBox) return;
-        var rows = (history || []).filter(function (row) { return row && row.date; });
-        var renderKey = rows.map(function (row) {
-            return [row.date, row.fii_net, row.dii_net].join(":");
-        }).join("|");
-        if (renderKey && fiiChartRenderKey === renderKey) return;
+        var rows = (history || []).filter(function (row) {
+            return row && row.date && !isNaN(Number(row.fii_net)) && !isNaN(Number(row.dii_net));
+        });
+        fiiChartRows = rows;
+        var width = Math.max(640, Math.round($fiiChartBox.clientWidth || 960));
+        var height = Math.max(300, Math.round($fiiChartBox.clientHeight || 340));
+        var first = rows[0] || {};
+        var last = rows[rows.length - 1] || {};
+        var renderKey = [
+            width, height, rows.length, first.date, last.date, last.fii_net, last.dii_net, last.nifty_close,
+            fiiSeriesVisibility.fii, fiiSeriesVisibility.dii, fiiSeriesVisibility.nifty,
+        ].join(":");
+        if (rows.length && fiiChartRenderKey === renderKey) return;
         destroyFiiChart();
-        clearChildren($fiiChartBox);
         if (!rows.length) {
-            $fiiChartBox.appendChild(el("div", "fii-chart-placeholder", "Previous daily flow will build as official NSE rows are stored."));
+            $fiiChartBox.appendChild(el("div", "fii-chart-placeholder", "Daily FII/DII flow will appear after the archive is loaded."));
+            renderFiiInsights([]);
             return;
         }
-        fiiChart = LightweightCharts.createChart($fiiChartBox, {
-            layout: {
-                background: { color: "transparent" },
-                textColor: "#8ea0b8",
-                fontFamily: "'IBM Plex Mono', monospace",
-                fontSize: 10,
-            },
-            grid: {
-                vertLines: { color: "rgba(30, 41, 59, 0.28)" },
-                horzLines: { color: "rgba(30, 41, 59, 0.32)" },
-            },
-            crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
-                vertLine: { color: "rgba(255,140,0,.18)", labelBackgroundColor: "#ff8c00" },
-                horzLine: { color: "rgba(125,211,252,.2)", labelBackgroundColor: "#26c6da" },
-            },
-            rightPriceScale: {
-                borderColor: "#1e293b",
-                scaleMargins: { top: 0.12, bottom: 0.12 },
-            },
-            timeScale: {
-                borderColor: "#1e293b",
-                timeVisible: false,
-                secondsVisible: false,
-            },
-            handleScroll: true,
-            handleScale: true,
+
+        var pad = { left: 58, right: 66, top: 18, bottom: 32 };
+        var plotWidth = width - pad.left - pad.right;
+        var plotHeight = height - pad.top - pad.bottom;
+        var zeroY = pad.top + plotHeight / 2;
+        var slot = plotWidth / Math.max(rows.length, 1);
+        var barWidth = Math.max(0.22, Math.min(7, slot * 0.34));
+        var gap = Math.max(0.08, Math.min(1.4, slot * 0.08));
+        var flowMax = niceFlowMax(rows.reduce(function (max, row) {
+            return Math.max(max, Math.abs(Number(row.fii_net || 0)), Math.abs(Number(row.dii_net || 0)));
+        }, 0));
+        var niftyRows = rows.map(function (row, index) {
+            return { index: index, value: Number(row.nifty_close) };
+        }).filter(function (row) { return !isNaN(row.value) && row.value > 0; });
+        var niftyMin = niftyRows.reduce(function (min, row) { return Math.min(min, row.value); }, Infinity);
+        var niftyMax = niftyRows.reduce(function (max, row) { return Math.max(max, row.value); }, -Infinity);
+        if (!isFinite(niftyMin) || !isFinite(niftyMax)) {
+            niftyMin = 0;
+            niftyMax = 1;
+        }
+        var niftyPad = Math.max(1, (niftyMax - niftyMin) * 0.12);
+        niftyMin -= niftyPad;
+        niftyMax += niftyPad;
+
+        function xFor(index) {
+            return pad.left + slot * index + slot / 2;
+        }
+
+        function flowY(value) {
+            return zeroY - (Number(value || 0) / flowMax) * (plotHeight / 2);
+        }
+
+        function niftyY(value) {
+            return pad.top + (niftyMax - Number(value || 0)) / (niftyMax - niftyMin) * plotHeight;
+        }
+
+        function barsPath(field, position, positive) {
+            var parts = [];
+            rows.forEach(function (row, index) {
+                var value = Number(row[field] || 0);
+                if ((positive && value <= 0) || (!positive && value >= 0)) return;
+                var x = xFor(index) + (position === "left" ? -gap / 2 - barWidth : gap / 2);
+                var y = flowY(value);
+                var top = Math.min(zeroY, y);
+                var barHeight = Math.max(0.45, Math.abs(y - zeroY));
+                parts.push("M" + x.toFixed(2) + "," + top.toFixed(2) + "h" + barWidth.toFixed(2) + "v" + barHeight.toFixed(2) + "h-" + barWidth.toFixed(2) + "Z");
+            });
+            return parts.join("");
+        }
+
+        var svg = createFiiSvg("svg", {
+            class: "fii-flow-svg",
+            viewBox: "0 0 " + width + " " + height,
+            preserveAspectRatio: "none",
+            role: "img",
+            "aria-label": "Daily FII and DII cash-market net flows with Nifty 50 overlay",
         });
-        var fiiSeries = fiiChart.addHistogramSeries({
-            title: "FII Net",
-            priceFormat: { type: "price", precision: 2, minMove: 0.01 },
-            priceLineVisible: false,
-            lastValueVisible: true,
-            base: 0,
+        [-1, -0.5, 0, 0.5, 1].forEach(function (step) {
+            var value = step * flowMax;
+            var y = flowY(value);
+            svg.appendChild(createFiiSvg("line", {
+                x1: pad.left, y1: y, x2: width - pad.right, y2: y,
+                class: step === 0 ? "fii-flow-zero" : "fii-flow-grid",
+            }));
+            svg.appendChild(createFiiSvg("text", {
+                x: pad.left - 8, y: y + 3, class: "fii-flow-axis is-left", "text-anchor": "end",
+            }, fmtFlowAxis(value)));
         });
-        var diiSeries = fiiChart.addLineSeries({
-            title: "DII Net",
-            color: "#4fd1c5",
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: true,
+        [0, 0.25, 0.5, 0.75, 1].forEach(function (step) {
+            var value = niftyMin + (niftyMax - niftyMin) * (1 - step);
+            svg.appendChild(createFiiSvg("text", {
+                x: width - pad.right + 8, y: pad.top + plotHeight * step + 3,
+                class: "fii-flow-axis is-right", "text-anchor": "start",
+            }, Number(value).toLocaleString("en-IN", { maximumFractionDigits: 0 })));
         });
-        fiiChartSeries = [fiiSeries, diiSeries];
-        fiiSeries.setData(rows.map(function (row) {
-            var value = Number(row.fii_net || 0);
-            return {
-                time: row.date,
-                value: value,
-                color: value >= 0 ? "rgba(0,230,118,.58)" : "rgba(255,61,61,.58)",
-            };
-        }));
-        diiSeries.setData(rows.map(function (row) {
-            return { time: row.date, value: Number(row.dii_net || 0) };
-        }));
-        fiiChart.timeScale().fitContent();
+        [0, 0.25, 0.5, 0.75, 1].forEach(function (step) {
+            var index = Math.min(rows.length - 1, Math.round((rows.length - 1) * step));
+            svg.appendChild(createFiiSvg("text", {
+                x: xFor(index), y: height - 10, class: "fii-flow-axis is-date", "text-anchor": "middle",
+            }, shortFiiDate(rows[index].date, rows.length > 120)));
+        });
+        if (fiiSeriesVisibility.fii) {
+            svg.appendChild(createFiiSvg("path", { d: barsPath("fii_net", "left", true), class: "fii-flow-bars is-fii is-positive" }));
+            svg.appendChild(createFiiSvg("path", { d: barsPath("fii_net", "left", false), class: "fii-flow-bars is-fii is-negative" }));
+        }
+        if (fiiSeriesVisibility.dii) {
+            svg.appendChild(createFiiSvg("path", { d: barsPath("dii_net", "right", true), class: "fii-flow-bars is-dii is-positive" }));
+            svg.appendChild(createFiiSvg("path", { d: barsPath("dii_net", "right", false), class: "fii-flow-bars is-dii is-negative" }));
+        }
+        if (fiiSeriesVisibility.nifty && niftyRows.length) {
+            svg.appendChild(createFiiSvg("path", {
+                d: niftyRows.map(function (row, index) {
+                    return (index ? "L" : "M") + xFor(row.index).toFixed(2) + "," + niftyY(row.value).toFixed(2);
+                }).join(""),
+                class: "fii-nifty-line",
+            }));
+        }
+        var hoverLine = createFiiSvg("line", {
+            x1: 0, y1: pad.top, x2: 0, y2: height - pad.bottom, class: "fii-flow-crosshair",
+        });
+        hoverLine.style.display = "none";
+        svg.appendChild(hoverLine);
+        $fiiChartBox.appendChild(svg);
+
+        var tooltip = el("div", "fii-flow-tooltip");
+        tooltip.hidden = true;
+        $fiiChartBox.appendChild(tooltip);
+        function appendTipRow(label, value, tone) {
+            var row = el("div", "fii-flow-tooltip-row");
+            row.appendChild(el("span", "fii-flow-tooltip-label", label));
+            row.appendChild(el("strong", "fii-flow-tooltip-value " + (tone || ""), value));
+            tooltip.appendChild(row);
+        }
+        function updateTooltip(event) {
+            var rect = svg.getBoundingClientRect();
+            var chartX = (event.clientX - rect.left) * width / rect.width;
+            var index = Math.max(0, Math.min(rows.length - 1, Math.round((chartX - pad.left - slot / 2) / slot)));
+            var row = rows[index];
+            var x = xFor(index);
+            hoverLine.setAttribute("x1", x);
+            hoverLine.setAttribute("x2", x);
+            hoverLine.style.display = "";
+            clearChildren(tooltip);
+            tooltip.appendChild(el("div", "fii-flow-tooltip-date", fmtDateLabel(row.date)));
+            appendTipRow("FII Cash", fmtSignedCr(row.fii_net), flowToneClass(row.fii_net));
+            appendTipRow("DII Cash", fmtSignedCr(row.dii_net), flowToneClass(row.dii_net));
+            if (row.nifty_close != null) {
+                var niftyPct = row.nifty_prev_close
+                    ? (Number(row.nifty_close) - Number(row.nifty_prev_close)) / Number(row.nifty_prev_close) * 100
+                    : null;
+                appendTipRow("Nifty 50", Number(row.nifty_close).toLocaleString("en-IN", { maximumFractionDigits: 2 }) + (niftyPct == null ? "" : "  " + fmtPct(niftyPct)), flowToneClass(niftyPct));
+            }
+            tooltip.hidden = false;
+            var boxRect = $fiiChartBox.getBoundingClientRect();
+            var tooltipLeft = event.clientX - boxRect.left + 14;
+            if (tooltipLeft + tooltip.offsetWidth > boxRect.width - 10) {
+                tooltipLeft = event.clientX - boxRect.left - tooltip.offsetWidth - 14;
+            }
+            tooltip.style.left = Math.max(10, tooltipLeft) + "px";
+            tooltip.style.top = "12px";
+        }
+        $fiiChartBox.onmousemove = updateTooltip;
+        $fiiChartBox.onmouseleave = function () {
+            tooltip.hidden = true;
+            hoverLine.style.display = "none";
+        };
+        $fiiChartBox.ontouchmove = function (event) {
+            if (event.touches && event.touches[0]) updateTooltip(event.touches[0]);
+        };
+        $fiiChartBox.ontouchend = $fiiChartBox.onmouseleave;
         fiiChartRenderKey = renderKey;
+        renderFiiInsights(rows);
     }
 
     function renderFiiTable(history) {
@@ -1441,11 +1610,11 @@
             $fiiUpdated.textContent = parts.length ? parts.join(" \u00b7 ") : "Official NSE daily report";
         }
         if ($fiiChartTitle) {
-            $fiiChartTitle.textContent = "Institutional Flow \u00b7 " + selectedFiiRange.toUpperCase();
+            $fiiChartTitle.textContent = "FII / DII Flow Over Time";
         }
         if ($fiiChartNote) {
-            var bucket = data.chart_bucket ? data.chart_bucket + " aggregates" : "Daily values";
-            $fiiChartNote.textContent = bucket + " \u00b7 Values in \u20b9 crore";
+            var sessions = data.chart_count ? data.chart_count + " sessions" : "daily values";
+            $fiiChartNote.textContent = sessions + " \u00b7 Nifty overlay \u00b7 Values in \u20b9 crore";
         }
         renderFiiCards(data.items || []);
         renderFiiChart(data.chart || data.history || []);
@@ -2885,8 +3054,12 @@
         if (mfChart && $mfChartBox) {
             mfChart.applyOptions({ width: $mfChartBox.clientWidth, height: $mfChartBox.clientHeight });
         }
-        if (fiiChart && $fiiChartBox) {
-            fiiChart.applyOptions({ width: $fiiChartBox.clientWidth, height: $fiiChartBox.clientHeight });
+        if ($fiiChartBox && currentView === "fii" && fiiChartRows.length) {
+            clearTimeout(fiiChartResizeTimer);
+            fiiChartResizeTimer = setTimeout(function () {
+                fiiChartRenderKey = "";
+                renderFiiChart(fiiChartRows);
+            }, 90);
         }
         var globalRows = (panelState.global && panelState.global.global_futures)
             || (dashboardData && dashboardData.global_futures)
@@ -3505,6 +3678,13 @@
                 item.classList.toggle("is-active", item === btn);
             });
             loadFiiPanel(selectedFiiRange);
+        });
+    });
+    document.querySelectorAll("[data-fii-series]").forEach(function (input) {
+        input.addEventListener("change", function () {
+            fiiSeriesVisibility[input.dataset.fiiSeries] = input.checked;
+            fiiChartRenderKey = "";
+            renderFiiChart(fiiChartRows);
         });
     });
 
