@@ -2675,6 +2675,32 @@ td.oc-pe span {
     text-transform: uppercase;
 }
 
+.fii-chart-meta,
+.fii-ranges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.fii-range {
+    padding: 4px 7px;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 5px;
+    background: rgba(8,12,20,.64);
+    color: var(--text-dim);
+    font-family: var(--font-data);
+    font-size: 9px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.fii-range:hover,
+.fii-range.is-active {
+    border-color: rgba(255,140,0,.55);
+    background: rgba(255,140,0,.12);
+    color: var(--amber);
+}
+
 .fii-chart {
     position: relative;
     flex: 1;
@@ -3169,6 +3195,12 @@ td.oc-pe span {
 
     .fii-chart {
         min-height: 280px;
+    }
+
+    .fii-chart-head,
+    .fii-chart-meta {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
     .fii-table th,

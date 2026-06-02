@@ -17,6 +17,9 @@ FII_FLOW_HISTORY_KEY = "fii:flow-history:v1"
 NSE_FII_DII_API_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
 NSE_FII_DII_SOURCE_URL = "https://www.nseindia.com/reports/fii-dii"
 GROWW_FII_DII_SOURCE_URL = "https://groww.in/fii-dii-data"
+TAPETIDE_FII_DII_SOURCE_URL = "https://tapetide.com/fii-dii-data"
+TAPETIDE_FII_DII_CHART_URL = "https://api.tapetide.com/api/v1/insight/fii-dii/bar-chart"
+FII_CHART_RANGES = {"1m", "3m", "6m", "1y", "5y", "max"}
 
 
 class FiiFlowService:
@@ -178,6 +181,48 @@ class FiiFlowService:
             rows.append(row)
         return sorted(rows, key=lambda row: str(row.get("date") or ""))
 
+    def _fetch_chart_history(self, chart_range: str) -> tuple[list[dict], str]:
+        """Fetch a compact historical series; longer ranges are aggregated upstream."""
+        try:
+            resp = requests.get(
+                TAPETIDE_FII_DII_CHART_URL,
+                params={"interval": chart_range},
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data") if isinstance(payload, dict) else {}
+            meta = payload.get("meta") if isinstance(payload, dict) else {}
+        except Exception as exc:
+            print(f"[FII] Tapetide {chart_range} chart fetch failed: {exc}")
+            return [], ""
+
+        dates = data.get("t") if isinstance(data, dict) else []
+        fii_values = data.get("fii_net") if isinstance(data, dict) else []
+        dii_values = data.get("dii_net") if isinstance(data, dict) else []
+        if not isinstance(dates, list) or not isinstance(fii_values, list) or not isinstance(dii_values, list):
+            return [], ""
+
+        rows: list[dict] = []
+        for date_value, fii_value, dii_value in zip(dates, fii_values, dii_values):
+            date_iso, date_label = self._parse_date(str(date_value or ""))
+            fii_net = self._parse_float(fii_value)
+            dii_net = self._parse_float(dii_value)
+            if not date_iso or fii_net is None or dii_net is None:
+                continue
+            rows.append(
+                {
+                    "date": date_iso,
+                    "date_label": date_label,
+                    "fii_net": fii_net,
+                    "dii_net": dii_net,
+                    "combined_net": round(fii_net + dii_net, 2),
+                }
+            )
+        bucket = str(meta.get("bucket") or "") if isinstance(meta, dict) else ""
+        return rows, bucket
+
     @staticmethod
     def _items_from_history_row(row: Optional[dict]) -> list[dict]:
         if not row:
@@ -203,7 +248,8 @@ class FiiFlowService:
             },
         ]
 
-    def latest_panel(self) -> dict:
+    def latest_panel(self, chart_range: str = "1m") -> dict:
+        normalized_range = chart_range if chart_range in FII_CHART_RANGES else "1m"
         error = None
         with self._lock:
             history = self._load_history()
@@ -235,11 +281,21 @@ class FiiFlowService:
 
             latest = history[-1] if history else latest_history_row
             items = self._items_from_history_row(latest)
+            chart_history, chart_bucket = self._fetch_chart_history(normalized_range)
+            if not chart_history:
+                chart_history = history[-90:]
+                chart_bucket = "1 day"
             return {
                 "source": "NSE",
                 "source_url": NSE_FII_DII_SOURCE_URL,
                 "history_source": "Groww",
                 "history_source_url": GROWW_FII_DII_SOURCE_URL,
+                "chart_source": "Tapetide",
+                "chart_source_url": TAPETIDE_FII_DII_SOURCE_URL,
+                "chart_range": normalized_range,
+                "chart_bucket": chart_bucket,
+                "chart": chart_history,
+                "chart_count": len(chart_history),
                 "latest_date": latest.get("date") if latest else None,
                 "latest_date_label": latest.get("date_label") if latest else None,
                 "items": items,

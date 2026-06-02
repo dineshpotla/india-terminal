@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=20260602-fii-history">
+    <link rel="stylesheet" href="/static/style.css?v=20260602-fii-ranges">
 </head>
 <body>
     <div class="terminal">
@@ -258,8 +258,18 @@
                 </div>
                 <div class="fii-chart-shell">
                     <div class="fii-chart-head">
-                        <span>Previous Daily Flow</span>
-                        <span>Values in ₹ crore</span>
+                        <span id="fii-chart-title">Previous Daily Flow</span>
+                        <div class="fii-chart-meta">
+                            <span id="fii-chart-note">Values in ₹ crore</span>
+                            <div id="fii-ranges" class="fii-ranges">
+                                <button type="button" class="fii-range is-active" data-range="1m">1M</button>
+                                <button type="button" class="fii-range" data-range="3m">3M</button>
+                                <button type="button" class="fii-range" data-range="6m">6M</button>
+                                <button type="button" class="fii-range" data-range="1y">1Y</button>
+                                <button type="button" class="fii-range" data-range="5y">5Y</button>
+                                <button type="button" class="fii-range" data-range="max">MAX</button>
+                            </div>
+                        </div>
                     </div>
                     <div id="fii-chart" class="fii-chart"></div>
                 </div>
@@ -309,6 +319,6 @@
         </nav>
     </div>
 
-    <script src="/static/app.js?v=20260602-fii-history"></script>
+    <script src="/static/app.js?v=20260602-fii-ranges"></script>
 </body>
 </html>

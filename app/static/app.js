@@ -22,6 +22,7 @@
     let fiiChart = null;
     let fiiChartSeries = [];
     let fiiChartRenderKey = "";
+    let selectedFiiRange = "1m";
     const MULTI_SERIES_COLORS = [
         "#ff9d3f",
         "#4fd1c5",
@@ -110,6 +111,8 @@
     const $fiiCards    = $("fii-cards");
     const $fiiChartBox = $("fii-chart");
     const $fiiTable    = $("fii-table");
+    const $fiiChartTitle = $("fii-chart-title");
+    const $fiiChartNote = $("fii-chart-note");
     const $mfInput     = $("mf-input");
     const $mfSuggest   = $("mf-suggest");
     const $mfStatus    = $("mf-status");
@@ -1423,6 +1426,10 @@
 
     function renderFiiFlows(data) {
         if (!data) return;
+        selectedFiiRange = data.chart_range || selectedFiiRange;
+        document.querySelectorAll(".fii-range").forEach(function (btn) {
+            btn.classList.toggle("is-active", btn.dataset.range === selectedFiiRange);
+        });
         if ($fiiUpdated) {
             var parts = [];
             if (data.latest_date_label) parts.push("NSE " + data.latest_date_label);
@@ -1433,8 +1440,15 @@
             if (data.refreshing) parts.push("refreshing");
             $fiiUpdated.textContent = parts.length ? parts.join(" \u00b7 ") : "Official NSE daily report";
         }
+        if ($fiiChartTitle) {
+            $fiiChartTitle.textContent = "Institutional Flow \u00b7 " + selectedFiiRange.toUpperCase();
+        }
+        if ($fiiChartNote) {
+            var bucket = data.chart_bucket ? data.chart_bucket + " aggregates" : "Daily values";
+            $fiiChartNote.textContent = bucket + " \u00b7 Values in \u20b9 crore";
+        }
         renderFiiCards(data.items || []);
-        renderFiiChart(data.history || []);
+        renderFiiChart(data.chart || data.history || []);
         renderFiiTable(data.history || []);
     }
 
@@ -1601,9 +1615,11 @@
         }
     }
 
-    async function loadFiiPanel() {
+    async function loadFiiPanel(chartRange) {
+        var normalizedRange = chartRange || selectedFiiRange || "1m";
         try {
-            var data = await fetchJson("/api/panel/fii", { timeoutMs: 12000 });
+            var data = await fetchJson("/api/panel/fii?range=" + encodeURIComponent(normalizedRange), { timeoutMs: 12000 });
+            if (normalizedRange !== selectedFiiRange) return data;
             applyFiiPanel(data);
             return data;
         } catch (err) {
@@ -3479,6 +3495,16 @@
                 loadFiiPanel();
                 setTimeout(handleResize, 60);
             }
+        });
+    });
+
+    document.querySelectorAll(".fii-range").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            selectedFiiRange = btn.dataset.range || "1m";
+            document.querySelectorAll(".fii-range").forEach(function (item) {
+                item.classList.toggle("is-active", item === btn);
+            });
+            loadFiiPanel(selectedFiiRange);
         });
     });
 

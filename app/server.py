@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
 
 from .data_engine import DataEngine, IST, SECTOR_MAP
-from .fii_flows import FiiFlowService
+from .fii_flows import FII_CHART_RANGES, FiiFlowService
 from .mutual_fund_store import MutualFundWatchlistStore
 from .mutual_funds import MutualFundsService
 from .panel_cache import PanelCacheManager
@@ -30,7 +30,7 @@ PANEL_GLOBAL_KEY = "panel:global"
 PANEL_NEWS_ALL_KEY = "panel:news:all:v5"
 PANEL_NEWS_BREAKING_KEY = "panel:news:breaking:v5"
 PANEL_WATCHLIST_QUOTES_KEY = "panel:watchlist:quotes"
-PANEL_FII_FLOWS_KEY = "panel:fii-flows"
+PANEL_FII_FLOWS_KEY = "panel:fii-flows:v2"
 
 OVERVIEW_TTL = 60.0
 OVERVIEW_STALE_TTL = 15 * 60.0
@@ -160,12 +160,22 @@ def _empty_watchlist_quotes_payload() -> dict:
     return {"symbols": watchlist_store.list_symbols(), "rows": []}
 
 
-def _empty_fii_flows_payload() -> dict:
+def _fii_flows_key(chart_range: str) -> str:
+    return f"{PANEL_FII_FLOWS_KEY}:{chart_range}"
+
+
+def _empty_fii_flows_payload(chart_range: str = "1m") -> dict:
     return {
         "source": "NSE",
         "source_url": "https://www.nseindia.com/reports/fii-dii",
         "history_source": "Groww",
         "history_source_url": "https://groww.in/fii-dii-data",
+        "chart_source": "Tapetide",
+        "chart_source_url": "https://tapetide.com/fii-dii-data",
+        "chart_range": chart_range,
+        "chart_bucket": None,
+        "chart": [],
+        "chart_count": 0,
         "latest_date": None,
         "latest_date_label": None,
         "items": [],
@@ -194,7 +204,7 @@ async def _bootstrap_panel_as_ofs() -> dict:
         panel_cache.peek(PANEL_GLOBAL_KEY),
         panel_cache.peek(PANEL_WATCHLIST_QUOTES_KEY),
         panel_cache.peek(_watchlist_news_key(symbols)),
-        panel_cache.peek(PANEL_FII_FLOWS_KEY),
+        panel_cache.peek(_fii_flows_key("1m")),
     )
     return {
         "overview": entries[0]["as_of"] if entries[0] else None,
@@ -339,13 +349,16 @@ async def panel_global():
 
 
 @app.get("/api/panel/fii")
-async def panel_fii_flows():
+async def panel_fii_flows(range: str = Query("1m")):
+    normalized_range = (range or "1m").strip().lower()
+    if normalized_range not in FII_CHART_RANGES:
+        raise HTTPException(status_code=400, detail="Unsupported FII chart range")
     data = await panel_cache.get_or_refresh(
-        PANEL_FII_FLOWS_KEY,
+        _fii_flows_key(normalized_range),
         FII_FLOWS_TTL,
         FII_FLOWS_STALE_TTL,
-        fii_flows.latest_panel,
-        fallback_payload=_empty_fii_flows_payload,
+        lambda: fii_flows.latest_panel(normalized_range),
+        fallback_payload=lambda: _empty_fii_flows_payload(normalized_range),
     )
     return JSONResponse(data)
 
