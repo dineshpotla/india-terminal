@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import html
+import json
+import re
 import threading
 from datetime import datetime
 from typing import Optional
+
+import requests
 
 from .data_engine import IST, NseSession
 
 FII_FLOW_HISTORY_KEY = "fii:flow-history:v1"
 NSE_FII_DII_API_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
 NSE_FII_DII_SOURCE_URL = "https://www.nseindia.com/reports/fii-dii"
+GROWW_FII_DII_SOURCE_URL = "https://groww.in/fii-dii-data"
 
 
 class FiiFlowService:
@@ -120,6 +126,58 @@ class FiiFlowService:
         )
         return row
 
+    def _fetch_recent_history_rows(self) -> list[dict]:
+        """Backfill recent rows from Groww's page data, then NSE latest overwrites today."""
+        try:
+            resp = requests.get(
+                GROWW_FII_DII_SOURCE_URL,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            print(f"[FII] Groww recent history fetch failed: {exc}")
+            return []
+        match = re.search(
+            r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+            resp.text,
+            re.S,
+        )
+        if not match:
+            return []
+        try:
+            payload = json.loads(html.unescape(match.group(1)))
+            raw_rows = payload["props"]["pageProps"]["initialData"]
+        except Exception as exc:
+            print(f"[FII] Groww recent history parse failed: {exc}")
+            return []
+        rows: list[dict] = []
+        for item in raw_rows:
+            if not isinstance(item, dict):
+                continue
+            date_iso, date_label = self._parse_date(str(item.get("date") or ""))
+            fii = item.get("fii") if isinstance(item.get("fii"), dict) else {}
+            dii = item.get("dii") if isinstance(item.get("dii"), dict) else {}
+            if not date_iso:
+                continue
+            row = {
+                "date": date_iso,
+                "date_label": date_label,
+                "fii_buy": self._parse_float(fii.get("grossBuy")),
+                "fii_sell": self._parse_float(fii.get("grossSell")),
+                "fii_net": self._parse_float(fii.get("netBuySell")),
+                "dii_buy": self._parse_float(dii.get("grossBuy")),
+                "dii_sell": self._parse_float(dii.get("grossSell")),
+                "dii_net": self._parse_float(dii.get("netBuySell")),
+                "source": "Groww",
+            }
+            row["combined_net"] = round(
+                float(row.get("fii_net") or 0) + float(row.get("dii_net") or 0),
+                2,
+            )
+            rows.append(row)
+        return sorted(rows, key=lambda row: str(row.get("date") or ""))
+
     @staticmethod
     def _items_from_history_row(row: Optional[dict]) -> list[dict]:
         if not row:
@@ -149,6 +207,16 @@ class FiiFlowService:
         error = None
         with self._lock:
             history = self._load_history()
+            if len(history) < 5:
+                backfill_rows = self._fetch_recent_history_rows()
+                if backfill_rows:
+                    by_date = {str(row.get("date") or ""): row for row in history}
+                    for row in backfill_rows:
+                        by_date[str(row["date"])] = row
+                    history = sorted(
+                        [row for row in by_date.values() if row.get("date")],
+                        key=lambda row: str(row.get("date") or ""),
+                    )[-260:]
             latest_rows = []
             try:
                 latest_rows = self._fetch_latest_rows()
@@ -170,6 +238,8 @@ class FiiFlowService:
             return {
                 "source": "NSE",
                 "source_url": NSE_FII_DII_SOURCE_URL,
+                "history_source": "Groww",
+                "history_source_url": GROWW_FII_DII_SOURCE_URL,
                 "latest_date": latest.get("date") if latest else None,
                 "latest_date_label": latest.get("date_label") if latest else None,
                 "items": items,

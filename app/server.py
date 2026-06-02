@@ -164,6 +164,8 @@ def _empty_fii_flows_payload() -> dict:
     return {
         "source": "NSE",
         "source_url": "https://www.nseindia.com/reports/fii-dii",
+        "history_source": "Groww",
+        "history_source_url": "https://groww.in/fii-dii-data",
         "latest_date": None,
         "latest_date_label": None,
         "items": [],

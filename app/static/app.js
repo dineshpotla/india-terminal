@@ -1426,6 +1426,8 @@
         if ($fiiUpdated) {
             var parts = [];
             if (data.latest_date_label) parts.push("NSE " + data.latest_date_label);
+            if (data.history_count) parts.push(data.history_count + " history rows");
+            if (data.history_source) parts.push("history via " + data.history_source);
             if (data.updated_at) parts.push("Updated " + data.updated_at);
             if (data.stale) parts.push("stale cache");
             if (data.refreshing) parts.push("refreshing");
