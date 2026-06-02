@@ -4077,10 +4077,14 @@ class DataEngine:
     @classmethod
     def _ensure_visible_news_sentiment(cls, item: dict) -> dict:
         sentiment = str(item.get("sentiment") or "").strip().lower()
-        if sentiment in {"bullish", "bearish", "neutral"}:
+        if sentiment in {"bullish", "bearish"}:
             item["sentiment"] = sentiment
             return item
-        item["sentiment"] = cls._infer_news_sentiment(item)
+        if sentiment == "neutral" and item.get("llm_classified"):
+            item["sentiment"] = sentiment
+            return item
+        inferred = cls._infer_news_sentiment(item)
+        item["sentiment"] = inferred if inferred != "neutral" else "neutral"
         if item["sentiment"] != "neutral":
             item["sentiment_source"] = "rule"
         return item
