@@ -1574,7 +1574,7 @@ body {
 
 .mobile-nav { display: none; }
 
-/* ── Nav Tabs (INVESTING / OPTIONS) ─────────────────────────────────── */
+/* ── Nav Tabs ───────────────────────────────────────────────────────── */
 
 .nav-tabs {
     display: flex;
@@ -1610,10 +1610,6 @@ body {
 }
 
 /* ── View Toggle ───────────────────────────────────────────────────── */
-
-.terminal[data-view="options"] .panels,
-.terminal[data-view="options"] .indices-strip { display: none !important; }
-.terminal[data-view="options"] .options-view { display: flex !important; }
 
 .terminal[data-view="global"] .panels,
 .terminal[data-view="global"] .indices-strip { display: none !important; }

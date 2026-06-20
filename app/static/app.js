@@ -2110,6 +2110,31 @@
         if (placeholder) placeholder.hidden = true;
     }
 
+    function cumulativeReturnSeries(points) {
+        var source = (points || []).filter(function (point) {
+            return point && point.time != null && isFinite(Number(point.value));
+        });
+        if (!source.length) return [];
+        var base = Number(source[0].value);
+        if (!isFinite(base) || base === 0) return [];
+        return source.map(function (point) {
+            return {
+                time: point.time,
+                value: Math.round(((Number(point.value) / base) - 1) * 10000) / 100,
+            };
+        });
+    }
+
+    function mutualReturnPriceFormat() {
+        return {
+            type: "custom",
+            minMove: 0.01,
+            formatter: function (value) {
+                return fmtPct(Number(value));
+            },
+        };
+    }
+
     function renderSingleMutualChart(compare) {
         if (!$mfChartBox) return;
         if (!compare || !compare.fund_chart_data || !compare.benchmark_chart_data || !compare.fund_chart_data.length) {
@@ -2136,9 +2161,12 @@
         if (!chartRef) return;
         resetMutualChartSeries();
         hideMutualChartPlaceholder();
+        var fundReturns = cumulativeReturnSeries(compare.fund_chart_data);
+        var benchmarkReturns = cumulativeReturnSeries(compare.benchmark_chart_data);
         mfFundSeries = chartRef.addLineSeries({
             color: "#ff9d3f",
             lineWidth: 2,
+            priceFormat: mutualReturnPriceFormat(),
             priceLineVisible: false,
             lastValueVisible: true,
             title: "Fund",
@@ -2147,13 +2175,23 @@
             color: "#4fd1c5",
             lineWidth: 2,
             lineStyle: LightweightCharts.LineStyle.Dashed,
+            priceFormat: mutualReturnPriceFormat(),
             priceLineVisible: false,
             lastValueVisible: true,
             title: "Benchmark",
         });
         mfChartSeries = [mfFundSeries, mfBenchmarkSeries];
-        mfFundSeries.setData(compare.fund_chart_data || []);
-        mfBenchmarkSeries.setData(compare.benchmark_chart_data || []);
+        mfFundSeries.setData(fundReturns);
+        mfBenchmarkSeries.setData(benchmarkReturns);
+        chartRef.priceScale("right").applyOptions({ autoScale: true });
+        mfFundSeries.createPriceLine({
+            price: 0,
+            color: "rgba(142,160,184,.42)",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: "START",
+        });
         chartRef.timeScale().fitContent();
         mutualChartRenderKey = renderKey;
     }
@@ -2371,7 +2409,7 @@
             $mfChartTitle.textContent = (fund.scheme_name || "Mutual Fund") + " vs " + (mutualState.selectedBenchmark || "Benchmark");
             if (compare) {
             $mfChartNote.textContent =
-                "Normalized to 100 from " + fmtDateLabel(compare.from_date) +
+                "Cumulative return from " + fmtDateLabel(compare.from_date) + " (0% baseline)" +
                 " · " +
                 ((compare.render_points && compare.render_points < compare.points)
                     ? (compare.render_points + "/" + compare.points + " points rendered")
@@ -2385,7 +2423,7 @@
             } else if (mutualState.compareError) {
                 $mfChartNote.textContent = mutualState.compareError;
             } else {
-                $mfChartNote.textContent = "Pick a benchmark and range to compare normalized NAV performance.";
+                $mfChartNote.textContent = "Pick a benchmark and range to compare cumulative NAV return.";
             }
         }
 
@@ -3617,7 +3655,7 @@
         } catch (err) { console.error("Initial load error:", err); }
     }
 
-    // ── View Switching (INVESTING / OPTIONS / GLOBAL / MUTUAL / FII) ──
+    // ── View Switching (INVESTING / GLOBAL / MUTUAL / FII) ──
 
     var $terminal = document.querySelector(".terminal");
     var navTabs = document.querySelectorAll(".nav-tab[data-view]");
@@ -3637,12 +3675,7 @@
             if (window.history && window.history.replaceState && window.location.pathname !== "/") {
                 window.history.replaceState({ view: view }, "", "/");
             }
-            if (view === "options") {
-                fetchOptionChain();
-                ocRefreshTimer = setInterval(fetchOptionChain, 30000);
-            } else {
-                if (ocRefreshTimer) { clearInterval(ocRefreshTimer); ocRefreshTimer = null; }
-            }
+            if (ocRefreshTimer) { clearInterval(ocRefreshTimer); ocRefreshTimer = null; }
             if (view === "investing") {
                 loadOverviewPanel();
                 if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
