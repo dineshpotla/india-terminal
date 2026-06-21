@@ -2224,7 +2224,7 @@
             priceFormat: mutualReturnPriceFormat(),
             priceLineVisible: false,
             lastValueVisible: true,
-            title: "Benchmark",
+            title: compare.benchmark || "Index",
         });
         mfChartSeries = [mfFundSeries, mfBenchmarkSeries];
         mfFundSeries.setData(fundReturns);
