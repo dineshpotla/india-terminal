@@ -2107,7 +2107,7 @@
                 horzLines: { color: "rgba(30, 41, 59, 0.32)" },
             },
             crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
+                mode: LightweightCharts.CrosshairMode.Magnet,
                 vertLine: { color: "rgba(255,140,0,.18)", labelBackgroundColor: "#ff8c00" },
                 horzLine: { color: "rgba(125,211,252,.2)", labelBackgroundColor: "#26c6da" },
             },
@@ -3173,7 +3173,7 @@
                 horzLines: { color: "rgba(30,41,59,.4)" },
             },
             crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
+                mode: LightweightCharts.CrosshairMode.Magnet,
                 vertLine: { color: "rgba(255,140,0,.3)", labelBackgroundColor: "#ff8c00" },
                 horzLine: { color: "rgba(255,140,0,.3)", labelBackgroundColor: "#ff8c00" },
             },
