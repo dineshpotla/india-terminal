@@ -69,6 +69,31 @@ MF_INCREMENTAL_HISTORY_LOOKBACK_DAYS = 7
 AMFI_HISTORY_CHUNK_DAYS = 90
 NSE_HISTORY_CHUNK_DAYS = 95
 
+_MF_RANGE_OPTIONS = [
+    {"key": "1d", "label": "1D"},
+    {"key": "3d", "label": "3D"},
+    {"key": "1w", "label": "1W"},
+    {"key": "1m", "label": "1M"},
+    {"key": "3m", "label": "3M"},
+    {"key": "6m", "label": "6M"},
+    {"key": "1y", "label": "1Y"},
+    {"key": "2y", "label": "2Y"},
+    {"key": "5y", "label": "5Y"},
+    {"key": "10y", "label": "10Y"},
+    {"key": "max", "label": "FULL"},
+]
+_MF_RANGE_DAYS = {
+    "1w": 8,
+    "1m": 32,
+    "3m": 93,
+    "6m": 186,
+    "1y": 366,
+    "2y": 732,
+    "5y": 1830,
+    "10y": 3660,
+}
+_MF_SESSION_INTERVALS = {"1d": 1, "3d": 3}
+
 
 def _utc_now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -163,12 +188,49 @@ def _benchmark_suggestions(name: str, category: Optional[str]) -> List[str]:
 
 
 def _range_options() -> List[dict]:
-    return [
-        {"key": "1y", "label": "1Y"},
-        {"key": "3y", "label": "3Y"},
-        {"key": "5y", "label": "5Y"},
-        {"key": "max", "label": "Since Inception"},
-    ]
+    return [dict(option) for option in _MF_RANGE_OPTIONS]
+
+
+def _comparison_window(
+    range_key: str,
+    custom_start: Optional[str] = None,
+    custom_end: Optional[str] = None,
+) -> tuple[str, date, date]:
+    normalized = str(range_key or "max").strip().lower()
+    if normalized == "full":
+        normalized = "max"
+
+    if normalized == "custom" or custom_start or custom_end:
+        start_date = _parse_date_value(custom_start)
+        end_date = _parse_date_value(custom_end)
+        if not start_date or not end_date:
+            raise RuntimeError("Select both calendar dates")
+        if start_date >= end_date:
+            raise RuntimeError("Calendar start date must be before the end date")
+        if end_date > date.today():
+            raise RuntimeError("Calendar end date cannot be in the future")
+        return "custom", start_date, end_date
+
+    valid_keys = {option["key"] for option in _MF_RANGE_OPTIONS}
+    if normalized not in valid_keys:
+        raise RuntimeError("Unsupported mutual-fund comparison range")
+
+    end_date = date.today()
+    if normalized == "max":
+        start_date = date(2000, 1, 1)
+    elif normalized in _MF_SESSION_INTERVALS:
+        # Fetch a buffer so weekends and exchange holidays still yield enough sessions.
+        start_date = end_date - timedelta(days=14 if normalized == "1d" else 21)
+    else:
+        start_date = end_date - timedelta(days=_MF_RANGE_DAYS[normalized])
+    return normalized, start_date, end_date
+
+
+def _slice_comparison_dates(common_dates: List[date], range_key: str) -> List[date]:
+    intervals = _MF_SESSION_INTERVALS.get(range_key)
+    if intervals is None:
+        return common_dates
+    return common_dates[-(intervals + 1):]
 
 
 def _query_category_hints(query_name: str) -> set[str]:
@@ -424,7 +486,8 @@ class MutualFundsService:
         entry = self._tracked_entry_from_scheme(scheme)
         self._watchlist_store.add_entry(entry)
         try:
-            self._ensure_fund_history_current(entry, self._comparison_start_date("max"))
+            _, start_date, end_date = _comparison_window("max")
+            self._ensure_fund_history_current(entry, start_date, end_date)
         except Exception as exc:
             print(f"[MutualFunds] initial history backfill failed for {scheme_code}: {exc}")
         return self.list_watchlist()
@@ -437,7 +500,14 @@ class MutualFundsService:
         self._watchlist_store.delete_nav_history(code)
         return self.list_watchlist()
 
-    def compare(self, scheme_code: str, benchmark: Optional[str], range_key: str = "max") -> dict:
+    def compare(
+        self,
+        scheme_code: str,
+        benchmark: Optional[str],
+        range_key: str = "max",
+        custom_start: Optional[str] = None,
+        custom_end: Optional[str] = None,
+    ) -> dict:
         code = _normalize_scheme_code(scheme_code)
         target = self._watchlist_store.get_entry(code)
         if not target:
@@ -445,10 +515,11 @@ class MutualFundsService:
         target = self._enrich_tracked_entry(target)
         benchmark_name = benchmark or (target.get("benchmark_options") or ["NIFTY 500"])[0]
         benchmark_name = _INDEX_NAME_CLEANUPS.get(benchmark_name, benchmark_name)
-        start_date = self._comparison_start_date(range_key)
-        fund_series = self._ensure_fund_history_current(target, start_date)
-        benchmark_series = self._ensure_benchmark_history_current(benchmark_name, start_date, date.today())
+        normalized_range, start_date, end_date = _comparison_window(range_key, custom_start, custom_end)
+        fund_series = self._ensure_fund_history_current(target, start_date, end_date)
+        benchmark_series = self._ensure_benchmark_history_current(benchmark_name, start_date, end_date)
         common_dates = sorted(set(fund_series) & set(benchmark_series))
+        common_dates = _slice_comparison_dates(common_dates, normalized_range)
         if len(common_dates) < 2:
             raise RuntimeError("Not enough overlapping history to compare this fund with the selected benchmark")
         fund_chart_data = _rebased_chart_data(common_dates, fund_series, MF_COMPARE_MAX_RENDER_POINTS)
@@ -460,11 +531,13 @@ class MutualFundsService:
         payload = {
             "fund": target,
             "benchmark": benchmark_name,
-            "range": range_key,
+            "range": normalized_range,
             "range_options": _range_options(),
             "benchmark_options": target.get("benchmark_options") or _benchmark_suggestions(target.get("scheme_name", ""), target.get("category")),
             "from_date": common_dates[0].isoformat(),
             "to_date": common_dates[-1].isoformat(),
+            "requested_from_date": start_date.isoformat(),
+            "requested_to_date": end_date.isoformat(),
             "points": len(common_dates),
             "render_points": min(len(fund_chart_data), len(benchmark_chart_data)),
             "fund_chart_data": fund_chart_data,
@@ -481,7 +554,13 @@ class MutualFundsService:
         }
         return payload
 
-    def compare_many(self, scheme_codes: List[str], range_key: str = "max") -> dict:
+    def compare_many(
+        self,
+        scheme_codes: List[str],
+        range_key: str = "max",
+        custom_start: Optional[str] = None,
+        custom_end: Optional[str] = None,
+    ) -> dict:
         normalized_codes = []
         seen = set()
         for raw_code in scheme_codes or []:
@@ -493,7 +572,7 @@ class MutualFundsService:
         if not normalized_codes:
             raise RuntimeError("No mutual funds selected")
 
-        start_date = self._comparison_start_date(range_key)
+        normalized_range, start_date, end_date = _comparison_window(range_key, custom_start, custom_end)
         selected_map = {
             str(entry.get("scheme_code") or "").strip(): self._enrich_tracked_entry(entry)
             for entry in self._watchlist_store.list_entries()
@@ -504,7 +583,7 @@ class MutualFundsService:
             target = selected_map.get(code)
             if not target:
                 continue
-            history = self._ensure_fund_history_current(target, start_date)
+            history = self._ensure_fund_history_current(target, start_date, end_date)
             if len(history) < 2:
                 continue
             histories[code] = history
@@ -514,11 +593,12 @@ class MutualFundsService:
             raise RuntimeError("Not enough AMFI NAV history to chart the selected funds")
 
         benchmark_name = "NIFTY 50"
-        benchmark_series = self._ensure_benchmark_history_current(benchmark_name, start_date, date.today())
+        benchmark_series = self._ensure_benchmark_history_current(benchmark_name, start_date, end_date)
         common_dates_set = set(benchmark_series)
         for history in histories.values():
             common_dates_set &= set(history)
         common_dates = sorted(common_dates_set)
+        common_dates = _slice_comparison_dates(common_dates, normalized_range)
         if len(common_dates) < 2:
             raise RuntimeError("Not enough overlapping AMFI NAV and NIFTY 50 history for the selected funds")
 
@@ -572,12 +652,14 @@ class MutualFundsService:
             )
 
         payload = {
-            "range": range_key,
+            "range": normalized_range,
             "range_options": _range_options(),
             "benchmark": benchmark_name,
             "selected_count": len([item for item in items if item.get("kind") != "benchmark"]),
             "from_date": common_dates[0].isoformat(),
             "to_date": common_dates[-1].isoformat(),
+            "requested_from_date": start_date.isoformat(),
+            "requested_to_date": end_date.isoformat(),
             "items": items,
             "source": {
                 "fund": "AMFI official NAV history",
@@ -587,16 +669,6 @@ class MutualFundsService:
             },
         }
         return payload
-
-    def _comparison_start_date(self, range_key: str) -> date:
-        today = date.today()
-        if range_key == "1y":
-            return today - timedelta(days=366)
-        if range_key == "3y":
-            return today - timedelta(days=366 * 3)
-        if range_key == "5y":
-            return today - timedelta(days=366 * 5)
-        return date(2000, 1, 1)
 
     def _tracked_entry_from_scheme(self, scheme: dict) -> dict:
         category = _infer_category(scheme.get("name") or "")
@@ -799,26 +871,33 @@ class MutualFundsService:
                     print(f"[MutualFunds] incremental NAV sync fallback for {code}: {exc}")
             self._watchlist_store.upsert_nav_history(code, [(master_date, master_nav)])
 
-    def _ensure_fund_history_current(self, fund: dict, start_date: date) -> Dict[date, float]:
+    def _ensure_fund_history_current(
+        self,
+        fund: dict,
+        start_date: date,
+        end_date: Optional[date] = None,
+    ) -> Dict[date, float]:
         scheme = self._resolve_scheme_by_code(fund.get("scheme_code") or "")
         code = str(scheme.get("scheme_code") or "").strip()
+        end_date = min(end_date or date.today(), date.today())
         self._ensure_latest_fund_nav(scheme)
-        history = self._watchlist_store.nav_history(code, start_date, date.today())
-        if self._needs_fund_backfill(history, start_date):
-            self._fetch_and_store_fund_history(scheme, start_date, date.today())
-            history = self._watchlist_store.nav_history(code, start_date, date.today())
+        history = self._watchlist_store.nav_history(code, start_date, end_date)
+        if self._needs_fund_backfill(history, start_date, end_date):
+            self._fetch_and_store_fund_history(scheme, start_date, end_date)
+            history = self._watchlist_store.nav_history(code, start_date, end_date)
         if not history:
             raise RuntimeError(f"No stored NAV history for {fund.get('scheme_name') or scheme.get('name')}")
         return history
 
-    def _needs_fund_backfill(self, history: Dict[date, float], start_date: date) -> bool:
+    def _needs_fund_backfill(self, history: Dict[date, float], start_date: date, end_date: Optional[date] = None) -> bool:
         if not history:
             return True
+        end_date = min(end_date or date.today(), date.today())
         dates = sorted(history)
         earliest = dates[0]
         latest = dates[-1]
         coverage_days = max(0, (latest - earliest).days)
-        requested_days = max(0, (date.today() - start_date).days)
+        requested_days = max(0, (end_date - start_date).days)
         max_gap_days = max(
             ((dates[idx] - dates[idx - 1]).days for idx in range(1, len(dates))),
             default=0,

@@ -61,6 +61,9 @@
         selectedSchemeCode: null,
         selectedBenchmark: null,
         selectedRange: "max",
+        customStartDate: null,
+        customEndDate: null,
+        customRangeError: null,
         selectedChartSchemeCodes: [],
         compare: null,
         compareLoading: false,
@@ -125,6 +128,12 @@
     const $mfBenchmarks = $("mf-benchmarks");
     const $mfRangeBlock = $("mf-range-block");
     const $mfRanges    = $("mf-ranges");
+    const $mfCustomRange = $("mf-custom-range");
+    const $mfDateFrom  = $("mf-date-from");
+    const $mfDateTo    = $("mf-date-to");
+    const $mfApplyDates = $("mf-apply-dates");
+    const $mfClearDates = $("mf-clear-dates");
+    const $mfDateError = $("mf-date-error");
     const $mfStats     = $("mf-stats");
     const $mfChartShell = $("mf-chart-shell");
     const $mfChartTitle = $("mf-chart-title");
@@ -1825,6 +1834,8 @@
                 schemeCode: mutualState.selectedSchemeCode,
                 benchmark: mutualState.selectedBenchmark,
                 range: mutualState.selectedRange,
+                customStartDate: mutualState.customStartDate,
+                customEndDate: mutualState.customEndDate,
                 chartSchemeCodes: mutualState.selectedChartSchemeCodes || [],
             }));
         } catch (err) {}
@@ -1854,10 +1865,17 @@
             return source.range_options;
         }
         return [
+            { key: "1d", label: "1D" },
+            { key: "3d", label: "3D" },
+            { key: "1w", label: "1W" },
+            { key: "1m", label: "1M" },
+            { key: "3m", label: "3M" },
+            { key: "6m", label: "6M" },
             { key: "1y", label: "1Y" },
-            { key: "3y", label: "3Y" },
+            { key: "2y", label: "2Y" },
             { key: "5y", label: "5Y" },
-            { key: "max", label: "Since Inception" },
+            { key: "10y", label: "10Y" },
+            { key: "max", label: "FULL" },
         ];
     }
 
@@ -1880,21 +1898,48 @@
         return value > 0 ? "up" : (value < 0 ? "down" : "neutral");
     }
 
-    function compareBaseCacheKey(schemeCode, benchmark, rangeKey) {
+    function compareBaseCacheKey(schemeCode, benchmark, rangeKey, customStart, customEnd) {
         return [
             String(schemeCode || "").trim(),
             String(benchmark || "").trim(),
             String(rangeKey || "max").trim(),
+            rangeKey === "custom" ? String(customStart || "") : "",
+            rangeKey === "custom" ? String(customEnd || "") : "",
         ].join("|");
     }
 
-    function performanceBaseCacheKey(schemeCodes, rangeKey) {
+    function performanceBaseCacheKey(schemeCodes, rangeKey, customStart, customEnd) {
         return [
             (schemeCodes || []).map(function (code) {
                 return String(code || "").trim();
             }).filter(Boolean).sort().join(","),
             String(rangeKey || "max").trim(),
+            rangeKey === "custom" ? String(customStart || "") : "",
+            rangeKey === "custom" ? String(customEnd || "") : "",
         ].join("|");
+    }
+
+    function localTodayDateValue() {
+        var now = new Date();
+        var year = String(now.getFullYear());
+        var month = String(now.getMonth() + 1).padStart(2, "0");
+        var day = String(now.getDate()).padStart(2, "0");
+        return [year, month, day].join("-");
+    }
+
+    function mutualCustomRangeMatches(payload, rangeKey, customStart, customEnd) {
+        if (!payload || payload.range !== rangeKey) return false;
+        if (rangeKey !== "custom") return true;
+        return payload.requested_from_date === customStart && payload.requested_to_date === customEnd;
+    }
+
+    function mutualRangeQuery(rangeKey, customStart, customEnd) {
+        var query = "&range=" + encodeURIComponent(rangeKey);
+        if (rangeKey === "custom") {
+            query += "&start_date=" + encodeURIComponent(customStart || "");
+            query += "&end_date=" + encodeURIComponent(customEnd || "");
+        }
+        return query;
     }
 
     function cancelSingleCompare() {
@@ -2152,6 +2197,7 @@
             compare.fund && compare.fund.scheme_code,
             compare.benchmark,
             compare.range,
+            compare.from_date || "",
             compare.render_points || 0,
             compare.to_date || "",
         ].join("|");
@@ -2211,6 +2257,7 @@
         var renderKey = [
             "multi",
             payload.range,
+            payload.from_date || "",
             payload.to_date || "",
             payload.items.map(function (item) {
                 return [item.scheme_code, item.render_points || 0, item.kind || "fund"].join(":");
@@ -2350,6 +2397,16 @@
             $mfRanges.appendChild(chip);
         });
 
+        if ($mfCustomRange && $mfDateFrom && $mfDateTo && $mfDateError) {
+            var todayValue = localTodayDateValue();
+            $mfDateFrom.max = todayValue;
+            $mfDateTo.max = todayValue;
+            $mfDateFrom.value = mutualState.customStartDate || "";
+            $mfDateTo.value = mutualState.customEndDate || "";
+            $mfCustomRange.classList.toggle("is-active", mutualState.selectedRange === "custom");
+            $mfDateError.textContent = mutualState.customRangeError || "";
+        }
+
         var compare = mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code
             ? mutualState.compare
             : null;
@@ -2460,7 +2517,7 @@
         var ranges = mutualRangeOptions();
         var rangeKeys = ranges.map(function (item) { return item.key; });
         var rangeKey = opts.range || mutualState.selectedRange || "max";
-        if (rangeKeys.indexOf(rangeKey) === -1) rangeKey = ranges[0] ? ranges[0].key : "max";
+        if (rangeKey !== "custom" && rangeKeys.indexOf(rangeKey) === -1) rangeKey = "max";
         mutualState.selectedRange = rangeKey;
         mutualState.compareError = null;
         mutualState.multiCompareError = null;
@@ -2501,6 +2558,9 @@
             mutualState.selectedSchemeCode = null;
             mutualState.selectedBenchmark = null;
             mutualState.selectedRange = "max";
+            mutualState.customStartDate = null;
+            mutualState.customEndDate = null;
+            mutualState.customRangeError = null;
             mutualState.selectedChartSchemeCodes = [];
             mutualState.compare = null;
             mutualState.compareLoading = false;
@@ -2528,8 +2588,12 @@
         }
         var rangeOptions = mutualRangeOptions();
         mutualState.selectedRange = opts.range || mutualState.selectedRange || prefs.range || "max";
-        if (!rangeOptions.some(function (item) { return item.key === mutualState.selectedRange; })) {
-            mutualState.selectedRange = rangeOptions[0] ? rangeOptions[0].key : "max";
+        mutualState.customStartDate = opts.customStartDate || mutualState.customStartDate || prefs.customStartDate || null;
+        mutualState.customEndDate = opts.customEndDate || mutualState.customEndDate || prefs.customEndDate || null;
+        if (mutualState.selectedRange === "custom" && (!mutualState.customStartDate || !mutualState.customEndDate)) {
+            mutualState.selectedRange = "max";
+        } else if (mutualState.selectedRange !== "custom" && !rangeOptions.some(function (item) { return item.key === mutualState.selectedRange; })) {
+            mutualState.selectedRange = "max";
         }
         var requestedChartCodes = opts.chartSchemeCodes || mutualState.selectedChartSchemeCodes || prefs.chartSchemeCodes || [];
         if (!Array.isArray(requestedChartCodes)) requestedChartCodes = [];
@@ -2578,10 +2642,17 @@
         if (!fund || selectedCodes.length !== 1 || selectedCodes[0] !== String(fund.scheme_code || "")) return null;
         var benchmark = opts.benchmark || mutualState.selectedBenchmark || (fund.benchmark_options && fund.benchmark_options[0]) || "NIFTY 500";
         var rangeKey = opts.range || mutualState.selectedRange || "max";
-        if (!opts.force && mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code && mutualState.compare.benchmark === benchmark && mutualState.compare.range === rangeKey) {
+        var customStart = rangeKey === "custom" ? mutualState.customStartDate : "";
+        var customEnd = rangeKey === "custom" ? mutualState.customEndDate : "";
+        if (rangeKey === "custom" && (!customStart || !customEnd)) {
+            mutualState.customRangeError = "Select both dates";
+            renderMutualPage();
+            return null;
+        }
+        if (!opts.force && mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code && mutualState.compare.benchmark === benchmark && mutualCustomRangeMatches(mutualState.compare, rangeKey, customStart, customEnd)) {
             return mutualState.compare;
         }
-        var cacheKey = compareBaseCacheKey(fund.scheme_code, benchmark, rangeKey);
+        var cacheKey = compareBaseCacheKey(fund.scheme_code, benchmark, rangeKey, customStart, customEnd);
         var cachedCompare = mutualCompareBaseCache.get(cacheKey);
         if (cachedCompare) {
             cancelMultiCompare();
@@ -2613,7 +2684,7 @@
                 var data = await fetchJson(
                     "/api/mf/compare/" + encodeURIComponent(String(fund.scheme_code || "")) +
                     "?benchmark=" + encodeURIComponent(benchmark) +
-                    "&range=" + encodeURIComponent(rangeKey),
+                    mutualRangeQuery(rangeKey, customStart, customEnd),
                     { timeoutMs: 45000, signal: compareController ? compareController.signal : null }
                 );
                 if (compareController && compareController.signal.aborted) return null;
@@ -2624,6 +2695,11 @@
                 mutualState.compareLoading = false;
                 mutualState.selectedBenchmark = data.benchmark || benchmark;
                 mutualState.selectedRange = data.range || rangeKey;
+                if (data.range === "custom") {
+                    mutualState.customStartDate = data.requested_from_date || customStart;
+                    mutualState.customEndDate = data.requested_to_date || customEnd;
+                    mutualState.customRangeError = null;
+                }
                 saveMutualSelectionPrefs();
                 renderMutualPage();
                 return data;
@@ -2652,7 +2728,14 @@
         var selectedCodes = currentChartCodes();
         if (selectedCodes.length < 2) return null;
         var rangeKey = opts.range || mutualState.selectedRange || "max";
-        if (!opts.force && mutualState.multiCompare && mutualState.multiCompare.range === rangeKey) {
+        var customStart = rangeKey === "custom" ? mutualState.customStartDate : "";
+        var customEnd = rangeKey === "custom" ? mutualState.customEndDate : "";
+        if (rangeKey === "custom" && (!customStart || !customEnd)) {
+            mutualState.customRangeError = "Select both dates";
+            renderMutualPage();
+            return null;
+        }
+        if (!opts.force && mutualState.multiCompare && mutualCustomRangeMatches(mutualState.multiCompare, rangeKey, customStart, customEnd)) {
             var existingCodes = (mutualState.multiCompare.items || [])
                 .filter(function (item) { return item.kind !== "benchmark"; })
                 .map(function (item) { return item.scheme_code; })
@@ -2661,7 +2744,7 @@
             var requestedCodes = selectedCodes.slice().sort().join(",");
             if (existingCodes === requestedCodes) return mutualState.multiCompare;
         }
-        var cacheKey = performanceBaseCacheKey(selectedCodes, rangeKey);
+        var cacheKey = performanceBaseCacheKey(selectedCodes, rangeKey, customStart, customEnd);
         var cachedPayload = mutualPerformanceBaseCache.get(cacheKey);
         if (cachedPayload) {
             cancelSingleCompare();
@@ -2691,7 +2774,7 @@
             try {
                 var data = await fetchJson(
                     "/api/mf/performance?scheme_codes=" + encodeURIComponent(selectedCodes.join(",")) +
-                    "&range=" + encodeURIComponent(rangeKey),
+                    mutualRangeQuery(rangeKey, customStart, customEnd),
                     { timeoutMs: 45000, signal: perfController ? perfController.signal : null }
                 );
                 if (perfController && perfController.signal.aborted) return null;
@@ -2700,6 +2783,11 @@
                 mutualState.multiCompare = data;
                 mutualState.multiCompareLoading = false;
                 mutualState.selectedRange = data.range || rangeKey;
+                if (data.range === "custom") {
+                    mutualState.customStartDate = data.requested_from_date || customStart;
+                    mutualState.customEndDate = data.requested_to_date || customEnd;
+                    mutualState.customRangeError = null;
+                }
                 saveMutualSelectionPrefs();
                 renderMutualPage();
                 return data;
@@ -2966,6 +3054,67 @@
     if ($mfClearAll) {
         $mfClearAll.addEventListener("click", function () {
             clearAllMutualChartFunds();
+        });
+    }
+
+    function applyMutualCalendarRange() {
+        if (!$mfDateFrom || !$mfDateTo) return;
+        var startDate = $mfDateFrom.value;
+        var endDate = $mfDateTo.value;
+        if (!startDate || !endDate) {
+            mutualState.customRangeError = "Select both dates";
+            renderMutualPage();
+            return;
+        }
+        if (startDate >= endDate) {
+            mutualState.customRangeError = "Start must be before end";
+            renderMutualPage();
+            return;
+        }
+        if (endDate > localTodayDateValue()) {
+            mutualState.customRangeError = "End date cannot be in the future";
+            renderMutualPage();
+            return;
+        }
+        mutualState.customStartDate = startDate;
+        mutualState.customEndDate = endDate;
+        mutualState.customRangeError = null;
+        setMutualSelection(mutualState.selectedSchemeCode, {
+            benchmark: mutualState.selectedBenchmark,
+            range: "custom",
+            loadChart: true,
+            forceChart: true,
+            autoInclude: false,
+        });
+    }
+
+    if ($mfApplyDates) {
+        $mfApplyDates.addEventListener("click", applyMutualCalendarRange);
+    }
+
+    [$mfDateFrom, $mfDateTo].forEach(function (input) {
+        if (!input) return;
+        input.addEventListener("change", function () {
+            mutualState.customRangeError = null;
+            if ($mfDateError) $mfDateError.textContent = "";
+        });
+        input.addEventListener("keydown", function (event) {
+            if (event.key === "Enter") applyMutualCalendarRange();
+        });
+    });
+
+    if ($mfClearDates) {
+        $mfClearDates.addEventListener("click", function () {
+            mutualState.customStartDate = null;
+            mutualState.customEndDate = null;
+            mutualState.customRangeError = null;
+            setMutualSelection(mutualState.selectedSchemeCode, {
+                benchmark: mutualState.selectedBenchmark,
+                range: "max",
+                loadChart: true,
+                forceChart: true,
+                autoInclude: false,
+            });
         });
     }
 

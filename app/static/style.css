@@ -2426,6 +2426,127 @@ td.oc-pe span {
     box-shadow: inset 0 0 0 1px rgba(255,140,0,.08);
 }
 
+.mf-custom-range {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 7px;
+    width: fit-content;
+    max-width: 100%;
+    padding: 7px 8px;
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: 10px;
+    background: rgba(8,12,19,.58);
+    transition: border-color .14s ease, background .14s ease;
+}
+
+.mf-custom-range.is-active {
+    border-color: rgba(255,140,0,.34);
+    background: rgba(255,140,0,.045);
+}
+
+.mf-custom-range-label,
+.mf-date-field span {
+    font-family: var(--font-head);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.mf-custom-range-label {
+    align-self: center;
+    padding: 0 4px;
+    color: var(--text-secondary);
+}
+
+.mf-date-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.mf-date-field input {
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid rgba(255,255,255,.09);
+    border-radius: 7px;
+    outline: none;
+    background: rgba(15,23,42,.66);
+    color: var(--text-primary);
+    color-scheme: dark;
+    font-family: var(--font-data);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.mf-date-field input:focus {
+    border-color: rgba(255,140,0,.48);
+    box-shadow: 0 0 0 2px rgba(255,140,0,.08);
+}
+
+.mf-date-separator {
+    align-self: center;
+    color: var(--text-dim);
+    font-family: var(--font-data);
+    font-size: 9px;
+    text-transform: uppercase;
+}
+
+.mf-date-btn {
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid rgba(255,255,255,.09);
+    border-radius: 7px;
+    background: rgba(255,255,255,.035);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: var(--font-head);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+}
+
+.mf-date-btn:hover {
+    border-color: rgba(255,140,0,.3);
+    color: var(--text-primary);
+}
+
+.mf-date-btn.primary {
+    border-color: rgba(255,140,0,.38);
+    background: rgba(255,140,0,.1);
+    color: var(--amber);
+}
+
+.mf-date-error {
+    align-self: center;
+    min-height: 1em;
+    color: #ff7b78;
+    font-family: var(--font-data);
+    font-size: 9px;
+}
+
+@media (max-width: 700px) {
+    .mf-custom-range {
+        width: 100%;
+    }
+
+    .mf-custom-range-label {
+        width: 100%;
+    }
+
+    .mf-date-field {
+        flex: 1 1 130px;
+    }
+
+    .mf-date-field input {
+        min-width: 0;
+        width: 100%;
+    }
+}
+
 .mf-stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=20260620-mf-cumulative">
+    <link rel="stylesheet" href="/static/style.css?v=20260621-mf-ranges">
 </head>
 <body>
     <div class="terminal">
@@ -227,6 +227,21 @@
                     <div id="mf-range-block" class="mf-control-block" hidden>
                         <div class="mf-control-label">Compare Range</div>
                         <div id="mf-ranges" class="mf-chip-row"></div>
+                        <div id="mf-custom-range" class="mf-custom-range">
+                            <span class="mf-custom-range-label">Calendar</span>
+                            <label class="mf-date-field">
+                                <span>From</span>
+                                <input id="mf-date-from" type="date" aria-label="Comparison start date">
+                            </label>
+                            <span class="mf-date-separator">to</span>
+                            <label class="mf-date-field">
+                                <span>To</span>
+                                <input id="mf-date-to" type="date" aria-label="Comparison end date">
+                            </label>
+                            <button id="mf-apply-dates" class="mf-date-btn primary" type="button">Apply</button>
+                            <button id="mf-clear-dates" class="mf-date-btn" type="button">Reset</button>
+                            <span id="mf-date-error" class="mf-date-error" aria-live="polite"></span>
+                        </div>
                     </div>
                     <div id="mf-stats" class="mf-stats" hidden></div>
                     <div id="mf-chart-shell" class="mf-chart-shell">
@@ -326,6 +341,6 @@
         </nav>
     </div>
 
-    <script src="/static/app.js?v=20260620-mf-cumulative"></script>
+    <script src="/static/app.js?v=20260621-mf-ranges"></script>
 </body>
 </html>

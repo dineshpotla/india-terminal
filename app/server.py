@@ -534,10 +534,23 @@ async def delete_mf_watchlist_item(scheme_code: str):
 
 
 @app.get("/api/mf/compare/{scheme_code}")
-async def mf_compare(scheme_code: str, benchmark: str = Query(""), range_key: str = Query("max", alias="range")):
+async def mf_compare(
+    scheme_code: str,
+    benchmark: str = Query(""),
+    range_key: str = Query("max", alias="range"),
+    start_date: str = Query(""),
+    end_date: str = Query(""),
+):
     code = _normalize_scheme_code(scheme_code)
     try:
-        data = await asyncio.to_thread(mutual_funds.compare, code, benchmark or None, range_key)
+        data = await asyncio.to_thread(
+            mutual_funds.compare,
+            code,
+            benchmark or None,
+            range_key,
+            start_date or None,
+            end_date or None,
+        )
     except Exception as exc:
         print(f"[MutualFunds] compare failed: {exc}")
         raise HTTPException(status_code=400, detail=str(exc))
@@ -545,12 +558,23 @@ async def mf_compare(scheme_code: str, benchmark: str = Query(""), range_key: st
 
 
 @app.get("/api/mf/performance")
-async def mf_performance(scheme_codes: str = Query(""), range_key: str = Query("max", alias="range")):
+async def mf_performance(
+    scheme_codes: str = Query(""),
+    range_key: str = Query("max", alias="range"),
+    start_date: str = Query(""),
+    end_date: str = Query(""),
+):
     codes = _normalize_scheme_codes(scheme_codes)
     if not codes:
         raise HTTPException(status_code=400, detail="No mutual funds selected")
     try:
-        data = await asyncio.to_thread(mutual_funds.compare_many, codes, range_key)
+        data = await asyncio.to_thread(
+            mutual_funds.compare_many,
+            codes,
+            range_key,
+            start_date or None,
+            end_date or None,
+        )
     except Exception as exc:
         print(f"[MutualFunds] performance failed: {exc}")
         raise HTTPException(status_code=400, detail=str(exc))
