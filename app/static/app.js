@@ -2337,8 +2337,8 @@
         }
         $mfDetail.classList.remove("is-empty");
         $mfHero.hidden = false;
-        $mfBenchmarkBlock.hidden = multiMode;
-        $mfRangeBlock.hidden = false;
+        $mfBenchmarkBlock.hidden = true;
+        $mfRangeBlock.hidden = true;
         $mfStats.hidden = false;
         $mfChartShell.classList.remove("is-empty");
 
@@ -2347,9 +2347,13 @@
         clearChildren($mfRanges);
         clearChildren($mfStats);
 
+        var compare = mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code
+            ? mutualState.compare
+            : null;
+
         var heroTop = el("div", "mf-hero-top");
         var titleWrap = el("div", "mf-hero-copy");
-        titleWrap.appendChild(el("div", "mf-hero-kicker", multiMode ? "NAV PERFORMANCE STACK" : "OFFICIAL NAV TRACKER"));
+        titleWrap.appendChild(el("div", "mf-hero-kicker", multiMode ? "NAV PERFORMANCE STACK" : "MF COMPARISON"));
         titleWrap.appendChild(el("h3", "mf-hero-name", fund.scheme_name || fund.scheme_code || "Mutual Fund"));
         var meta = [];
         if (fund.category) meta.push(titleCase(fund.category));
@@ -2359,14 +2363,9 @@
         titleWrap.appendChild(el("div", "mf-hero-meta", meta.join(" · ") || "Comparison against official NSE benchmarks"));
         heroTop.appendChild(titleWrap);
 
-        var heroValue = el("div", "mf-hero-value");
-        heroValue.appendChild(el("span", "mf-hero-value-label", "Latest NAV"));
-        heroValue.appendChild(el("span", "mf-hero-value-number", fund.latest_nav != null ? fmtPrice(fund.latest_nav) : "—"));
-        heroValue.appendChild(el("span", "mf-hero-value-change flat", fund.latest_nav_date ? "Updated " + fmtDateLabel(fund.latest_nav_date) : "Official NAV date unavailable"));
-        heroTop.appendChild(heroValue);
-        $mfHero.appendChild(heroTop);
-
+        var heroControls = el("div", "mf-hero-controls");
         if (!multiMode) {
+            var benchmarkStrip = el("div", "mf-inline-chip-row benchmark");
             mutualBenchmarkOptions(fund).forEach(function (benchmark) {
                 var chip = el("button", "mf-chip" + (benchmark === mutualState.selectedBenchmark ? " active" : ""), benchmark);
                 chip.type = "button";
@@ -2378,10 +2377,12 @@
                         forceChart: true,
                     });
                 });
-                $mfBenchmarks.appendChild(chip);
+                benchmarkStrip.appendChild(chip);
             });
+            heroControls.appendChild(benchmarkStrip);
         }
 
+        var rangeStrip = el("div", "mf-inline-chip-row range");
         mutualRangeOptions().forEach(function (rangeOpt) {
             var chip = el("button", "mf-chip" + (rangeOpt.key === mutualState.selectedRange ? " active" : ""), rangeOpt.label);
             chip.type = "button";
@@ -2394,8 +2395,20 @@
                     autoInclude: false,
                 });
             });
-            $mfRanges.appendChild(chip);
+            rangeStrip.appendChild(chip);
         });
+        if ($mfCustomRange && $mfDateFrom) {
+            var dateChip = el("button", "mf-chip mf-date-chip" + (mutualState.selectedRange === "custom" ? " active" : ""), "DATES");
+            dateChip.type = "button";
+            dateChip.addEventListener("click", function () {
+                $mfCustomRange.classList.add("is-active");
+                $mfDateFrom.focus();
+            });
+            rangeStrip.appendChild(dateChip);
+        }
+        heroControls.appendChild(rangeStrip);
+        heroTop.appendChild(heroControls);
+        $mfHero.appendChild(heroTop);
 
         if ($mfCustomRange && $mfDateFrom && $mfDateTo && $mfDateError) {
             var todayValue = localTodayDateValue();
@@ -2403,13 +2416,11 @@
             $mfDateTo.max = todayValue;
             $mfDateFrom.value = mutualState.customStartDate || "";
             $mfDateTo.value = mutualState.customEndDate || "";
-            $mfCustomRange.classList.toggle("is-active", mutualState.selectedRange === "custom");
+            $mfCustomRange.classList.toggle("is-active", mutualState.selectedRange === "custom" || !!mutualState.customStartDate || !!mutualState.customEndDate || !!mutualState.customRangeError);
             $mfDateError.textContent = mutualState.customRangeError || "";
+            $mfHero.appendChild($mfCustomRange);
         }
 
-        var compare = mutualState.compare && mutualState.compare.fund && mutualState.compare.fund.scheme_code === fund.scheme_code
-            ? mutualState.compare
-            : null;
         var statCards = [];
         if (multiMode) {
             var multiItems = ((mutualState.multiCompare && mutualState.multiCompare.items) || []).filter(function (item) {

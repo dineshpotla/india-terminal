@@ -1571,7 +1571,7 @@ body {
 
     .mf-detail {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: auto auto auto auto minmax(360px, 1fr);
+        grid-template-rows: auto auto minmax(360px, 1fr);
     }
 
     .mf-hero,
@@ -1581,10 +1581,6 @@ body {
     .mf-chart-shell {
         grid-column: 1;
         grid-row: auto;
-    }
-
-    .mf-stats {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .mf-chart-shell {
@@ -2245,12 +2241,14 @@ td.oc-pe span {
 .mf-stat-card {
     position: relative;
     overflow: hidden;
+    flex: 1 0 128px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    min-height: 74px;
-    padding: 12px;
-    border-radius: 16px;
+    justify-content: center;
+    gap: 5px;
+    min-height: 54px;
+    padding: 9px 10px;
+    border-radius: 14px;
     border: 1px solid rgba(148,163,184,.11);
     background:
         linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.018)),
@@ -2268,7 +2266,8 @@ td.oc-pe span {
 
 .mf-stat-value {
     font-family: var(--font-data);
-    font-size: clamp(14px, 1.05vw, 18px);
+    font-size: clamp(12px, .9vw, 16px);
+    line-height: 1.15;
     font-weight: 700;
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
@@ -2428,8 +2427,8 @@ td.oc-pe span {
     width: 100%;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(306px, 390px) minmax(0, 1fr);
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
     gap: 12px;
     align-items: start;
     contain: layout paint;
@@ -2457,36 +2456,79 @@ td.oc-pe span {
 .mf-hero {
     grid-column: 1;
     grid-row: 1;
-    padding: 16px;
+    padding: 14px;
     overflow: hidden;
 }
 
 .mf-hero-top {
     display: flex;
-    align-items: stretch;
+    align-items: center;
     justify-content: space-between;
-    gap: 14px;
+    gap: 12px;
     min-width: 0;
 }
 
 .mf-hero-copy {
+    flex: 1 1 34%;
+    max-width: 38%;
     min-width: 0;
 }
 
 .mf-hero-name {
-    margin-top: 6px;
+    margin-top: 4px;
     font-family: var(--font-head);
-    font-size: clamp(20px, 1.9vw, 28px);
+    font-size: clamp(16px, 1.15vw, 20px);
     font-weight: 700;
-    line-height: 1.05;
+    line-height: 1.12;
     color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .mf-hero-meta {
-    margin-top: 10px;
+    margin-top: 5px;
     color: var(--text-secondary);
-    font-size: 11px;
-    line-height: 1.5;
+    font-size: 10px;
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mf-hero-controls {
+    flex: 1 1 60%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 2px 0 3px;
+    scrollbar-width: none;
+}
+
+.mf-hero-controls::-webkit-scrollbar {
+    display: none;
+}
+
+.mf-inline-chip-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+.mf-inline-chip-row.benchmark {
+    padding-right: 8px;
+    border-right: 1px solid rgba(148,163,184,.14);
+}
+
+.mf-hero-controls .mf-chip {
+    min-height: 28px;
+    padding: 5px 9px;
+    font-size: 9px;
+    white-space: nowrap;
 }
 
 .mf-hero-value {
@@ -2542,6 +2584,11 @@ td.oc-pe span {
     grid-row: 3;
 }
 
+#mf-benchmark-block,
+#mf-range-block {
+    display: none !important;
+}
+
 .mf-chip-row {
     display: flex;
     flex-wrap: wrap;
@@ -2584,6 +2631,15 @@ td.oc-pe span {
     border-radius: 14px;
     background: rgba(5,9,16,.5);
     transition: border-color .14s ease, background .14s ease;
+}
+
+.mf-hero > .mf-custom-range {
+    display: none;
+    margin-top: 10px;
+}
+
+.mf-hero > .mf-custom-range.is-active {
+    display: flex;
 }
 
 .mf-custom-range.is-active {
@@ -2695,15 +2751,21 @@ td.oc-pe span {
 
 .mf-stats {
     grid-column: 1;
-    grid-row: 4;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 9px;
+    grid-row: 2;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+}
+
+.mf-stats::-webkit-scrollbar {
+    display: none;
 }
 
 .mf-chart-shell {
-    grid-column: 2;
-    grid-row: 1 / -1;
+    grid-column: 1;
+    grid-row: 3;
     align-self: stretch;
     min-height: 0;
     padding: 14px;
@@ -2786,7 +2848,7 @@ td.oc-pe span {
 
     .mf-detail {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: auto auto auto auto minmax(360px, 1fr);
+        grid-template-rows: auto auto minmax(360px, 1fr);
     }
 
     .mf-hero,
@@ -2796,10 +2858,6 @@ td.oc-pe span {
     .mf-chart-shell {
         grid-column: 1;
         grid-row: auto;
-    }
-
-    .mf-stats {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .mf-chart-shell {
@@ -3656,7 +3714,6 @@ td.oc-pe span {
 
     .mf-holding-top,
     .mf-holding-foot,
-    .mf-hero-top,
     .mf-chart-head {
         flex-direction: column;
         align-items: flex-start;
@@ -3671,7 +3728,15 @@ td.oc-pe span {
     }
 
     .mf-hero-name {
-        font-size: 20px;
+        font-size: 16px;
+    }
+
+    .mf-hero-copy {
+        flex-basis: 38%;
+    }
+
+    .mf-hero-controls {
+        flex-basis: 58%;
     }
 
     .mf-hero-value {
@@ -3680,11 +3745,12 @@ td.oc-pe span {
     }
 
     .mf-stats {
-        grid-template-columns: 1fr 1fr;
+        margin-right: -2px;
     }
 
     .mf-stat-card {
-        min-height: 66px;
+        flex-basis: 128px;
+        min-height: 52px;
     }
 
     .mf-chart-shell {
