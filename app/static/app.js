@@ -3894,13 +3894,11 @@
     var $ocTotalOI = document.querySelector("#oc-total-oi .oc-badge-val");
     var $ocTimestamp = $("oc-timestamp");
     var $ocStockInput = $("oc-stock-input");
-    var $osLegSide = $("os-leg-side");
     var $osLegType = $("os-leg-type");
     var $osDistanceSide = $("os-distance-side");
     var $osDistance = $("os-distance");
     var $osDistanceMode = $("os-distance-mode");
     var $osLots = $("os-lots");
-    var $osLotSize = $("os-lot-size");
     var $osAddLeg = $("os-add-leg");
     var $osResetStrategy = $("os-reset-strategy");
     var $osPickedStrike = $("os-picked-strike");
@@ -3943,17 +3941,11 @@
     }
 
     function optionLotSize() {
-        var manual = Number($osLotSize && $osLotSize.value);
-        if (isFinite(manual) && manual > 0) return Math.max(1, Math.round(manual));
         return (ocChainData && Number(ocChainData.lot_size)) || ocDefaultLotSizes[ocSymbol] || 1;
     }
 
-    function updateOptionLotSize(force) {
-        if (!$osLotSize) return;
-        var next = (ocChainData && Number(ocChainData.lot_size)) || ocDefaultLotSizes[ocSymbol] || Number($osLotSize.value) || 1;
-        if (force || !$osLotSize.value || Number($osLotSize.value) <= 1) {
-            $osLotSize.value = String(Math.max(1, Math.round(next)));
-        }
+    function updateOptionLotSize() {
+        return optionLotSize();
     }
 
     function optionStrikeRows(chainData) {
@@ -4010,14 +4002,14 @@
             " | Expiry " + (ocExpiry || (ocChainData && ocChainData.selected_expiry) || "\u2014");
     }
 
-    function addStrategyLeg(side, type, strike, lots) {
+    function addStrategyLeg(type, strike, lots) {
         var quote = optionQuoteFor(strike, type);
         var price = quote && Number(quote.ltp) ? Number(quote.ltp) : 0;
         var baseSpot = Number(ocChainData && ocChainData.spot) || 0;
         var signedPct = baseSpot ? (Number(strike) - baseSpot) / baseSpot : 0;
         strategyLegs.push({
             id: strategyLegSeq++,
-            side: side || "B",
+            side: "S",
             type: type || "CE",
             strike: Number(strike),
             lots: Math.max(1, Math.round(Number(lots) || 1)),
@@ -4275,20 +4267,12 @@
 
     function renderOpportunityScanner(rows, isScanning, errorText) {
         if (!$osOpportunityTitle || !$osOpportunityList || !$osOpportunityAlert) return;
-        var hasShort = strategyLegs.some(function (leg) { return leg.side === "S"; });
         if (!strategyLegs.length) {
             $osOpportunityTitle.textContent = "Add sell legs to scan alternatives";
             $osOpportunityAlert.className = "os-opportunity-alert";
             $osOpportunityAlert.textContent = "No active strategy yet.";
-            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Add your morning sell/buy legs. I will compare the same percentage distance across same-day index expiries.</div>';
+            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Add your morning sell legs. I will compare the same percentage distance across same-day index expiries.</div>';
             if ($osOpportunityUpdated) $osOpportunityUpdated.textContent = "Auto scans while Strategy is visible.";
-            return;
-        }
-        if (!hasShort) {
-            $osOpportunityTitle.textContent = "Scanner is for option-selling setups";
-            $osOpportunityAlert.className = "os-opportunity-alert";
-            $osOpportunityAlert.textContent = "Add at least one sell leg to compare expiry premium.";
-            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Buy-only strategies are not ranked by premium received.</div>';
             return;
         }
         if (isScanning) {
@@ -4330,7 +4314,7 @@
                 ? '<span class="os-op-cell"><small>Current</small></span>'
                 : '<button class="os-op-load" type="button" data-op-load="' + row.symbol + '">Load</button>';
             return '<div class="' + cls + '">' +
-                '<div class="os-op-symbol">' + row.symbol + '<small>' + row.expiry + " · " + row.lotSize + '/lot</small></div>' +
+                '<div class="os-op-symbol">' + row.symbol + '<small>' + row.expiry + '</small></div>' +
                 '<div class="os-op-strikes">' + row.strikesLabel + '</div>' +
                 '<div class="os-op-cell positive">' + fmtMoney(row.netCredit) + '<small>Net credit</small></div>' +
                 '<div class="os-op-cell">' + (row.margin ? fmtMoney(row.margin) : "—") + '<small>Est. margin</small></div>' +
@@ -4404,7 +4388,6 @@
                 expiry: row.expiry,
             });
         });
-        if ($osLotSize) $osLotSize.value = String(row.lotSize);
         document.querySelectorAll(".oc-sym-btn").forEach(function (btn) {
             btn.classList.toggle("active", btn.dataset.ocSym === row.symbol);
         });
@@ -4423,12 +4406,10 @@
             leg.expiry = ocExpiry || leg.expiry;
         });
         if (!strategyLegs.length) {
-            $osLegsBody.innerHTML = '<tr><td colspan="7" class="os-empty">Add legs using distance, or click LTP in the live chain.</td></tr>';
+            $osLegsBody.innerHTML = '<tr><td colspan="6" class="os-empty">Add sell legs using distance, or click LTP in the live chain.</td></tr>';
         } else {
             $osLegsBody.innerHTML = strategyLegs.map(function (leg) {
-                var sideClass = leg.side === "B" ? "buy" : "sell";
                 return '<tr>' +
-                    '<td><span class="os-leg-side ' + sideClass + '">' + leg.side + '</span></td>' +
                     '<td>' + (leg.expiry || "\u2014") + '</td>' +
                     '<td>' + Number(leg.strike).toLocaleString("en-IN") + '</td>' +
                     '<td>' + leg.type + '</td>' +
@@ -4440,10 +4421,10 @@
         }
         var metrics = optionPayoffMetrics();
         var premium = metrics.premium || 0;
-        var premiumLabel = premium >= 0 ? "Premium Pay" : "Premium Receive";
+        var premiumLabel = premium > 0 ? "Premium Pay" : "Premium Receive";
         $osPremium.textContent = fmtMoney(Math.abs(premium));
         $osPremium.className = premium > 0 ? "down" : (premium < 0 ? "up" : "");
-        $osPremiumLabel.textContent = premiumLabel + " | " + metrics.lotSize + "/lot";
+        $osPremiumLabel.textContent = premiumLabel;
         $osMargin.textContent = metrics.margin ? fmtMoney(metrics.margin) : "\u2014";
         $osMargin.className = metrics.margin ? "warn" : "";
         $osMaxProfit.textContent = metrics.maxProfitUnlimited ? "Unlimited" : (metrics.maxProfit == null ? "\u2014" : fmtMoney(metrics.maxProfit));
@@ -4587,7 +4568,7 @@
         fetchOptionChain();
     });
 
-    [$osLegType, $osDistanceSide, $osDistance, $osDistanceMode, $osLots, $osLotSize].forEach(function (node) {
+    [$osLegType, $osDistanceSide, $osDistance, $osDistanceMode, $osLots].forEach(function (node) {
         if (!node) return;
         node.addEventListener("input", renderStrategyBuilder);
         node.addEventListener("change", renderStrategyBuilder);
@@ -4598,7 +4579,6 @@
             var row = selectedTargetStrikeRow();
             if (!row) return;
             addStrategyLeg(
-                ($osLegSide && $osLegSide.value) || "B",
                 ($osLegType && $osLegType.value) || "CE",
                 row.strike,
                 Number($osLots && $osLots.value) || 1
@@ -4631,7 +4611,6 @@
             var cell = event.target.closest("[data-leg-type][data-strike]");
             if (!cell) return;
             addStrategyLeg(
-                ($osLegSide && $osLegSide.value) || "B",
                 cell.getAttribute("data-leg-type"),
                 Number(cell.getAttribute("data-strike")),
                 Number($osLots && $osLots.value) || 1

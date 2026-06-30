@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=20260630-expiry-scan">
+    <link rel="stylesheet" href="/static/style.css?v=20260630-sell-only">
 </head>
 <body>
     <div class="terminal">
@@ -154,20 +154,18 @@
                         <button id="os-reset-strategy" class="os-link-btn" type="button">Clear</button>
                     </div>
                     <div class="os-add-grid">
-                        <label class="os-field"><span>B/S</span><select id="os-leg-side"><option value="B">Buy</option><option value="S">Sell</option></select></label>
                         <label class="os-field"><span>Type</span><select id="os-leg-type"><option value="CE">CE</option><option value="PE">PE</option></select></label>
                         <label class="os-field"><span>Direction</span><select id="os-distance-side"><option value="above">Above spot</option><option value="below">Below spot</option><option value="nearest">Nearest ATM</option></select></label>
                         <label class="os-field"><span>Distance</span><input id="os-distance" type="number" min="0" step="1" value="0"></label>
                         <label class="os-field"><span>Mode</span><select id="os-distance-mode"><option value="points">Points</option><option value="percent">Percent</option></select></label>
                         <label class="os-field"><span>Lots</span><input id="os-lots" type="number" min="1" step="1" value="1"></label>
-                        <label class="os-field"><span>Lot size</span><input id="os-lot-size" type="number" min="1" step="1" value="65"></label>
-                        <button id="os-add-leg" class="os-primary-btn" type="button">Add Leg</button>
+                        <button id="os-add-leg" class="os-primary-btn" type="button">Sell Leg</button>
                     </div>
                     <div class="os-picked" id="os-picked-strike">Nearest strike will appear after live chain loads.</div>
                     <div class="os-legs-wrap">
                         <table class="os-legs-table">
-                            <thead><tr><th>B/S</th><th>Expiry</th><th>Strike</th><th>Type</th><th>Lots</th><th>Price</th><th></th></tr></thead>
-                            <tbody id="os-legs-body"><tr><td colspan="7" class="os-empty">Add legs using distance, or click LTP in the live chain.</td></tr></tbody>
+                            <thead><tr><th>Expiry</th><th>Strike</th><th>Type</th><th>Lots</th><th>Price</th><th></th></tr></thead>
+                            <tbody id="os-legs-body"><tr><td colspan="6" class="os-empty">Add sell legs using distance, or click LTP in the live chain.</td></tr></tbody>
                         </table>
                     </div>
                 </section>
@@ -404,6 +402,6 @@
         </nav>
     </div>
 
-    <script src="/static/app.js?v=20260630-expiry-scan"></script>
+    <script src="/static/app.js?v=20260630-sell-only"></script>
 </body>
 </html>

@@ -1868,7 +1868,7 @@ body {
 
 .os-add-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
     padding: 0 16px 10px;
 }
@@ -1959,26 +1959,6 @@ body {
     text-align: center !important;
     padding: 24px 12px !important;
     color: var(--text-dim) !important;
-}
-
-.os-leg-side {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 26px;
-    height: 22px;
-    border-radius: 7px;
-    font-weight: 800;
-}
-
-.os-leg-side.buy {
-    color: #9fe8c5;
-    background: rgba(16,185,129,.12);
-}
-
-.os-leg-side.sell {
-    color: #ffaaa7;
-    background: rgba(255,61,61,.12);
 }
 
 .os-remove-leg {
