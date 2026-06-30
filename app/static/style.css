@@ -1641,25 +1641,36 @@ body {
 .terminal[data-view="fii"] .indices-strip { display: none !important; }
 .terminal[data-view="fii"] .fii-view { display: flex !important; }
 
-/* ── Options View ──────────────────────────────────────────────────── */
+.terminal[data-view="options"] .panels,
+.terminal[data-view="options"] .indices-strip { display: none !important; }
+.terminal[data-view="options"] .options-view { display: flex !important; }
+
+/* ── Option Strategy Builder ───────────────────────────────────────── */
 
 .options-view {
     flex: 1;
     display: none;
     flex-direction: column;
     overflow: hidden;
-    padding: 0 6px 6px;
+    gap: 10px;
+    padding: 10px 14px 14px;
+    background:
+        radial-gradient(circle at 12% 0%, rgba(38,198,218,.1), transparent 30%),
+        radial-gradient(circle at 88% 10%, rgba(255,140,0,.08), transparent 32%),
+        linear-gradient(135deg, rgba(6,10,16,.92), rgba(8,13,22,.98));
 }
 
-.oc-toolbar {
+.os-toolbar {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 8px 10px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    margin-bottom: 6px;
+    padding: 10px 12px;
+    background:
+        linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.018)),
+        rgba(10,15,24,.8);
+    border: 1px solid rgba(148,163,184,.14);
+    border-radius: 18px;
+    box-shadow: 0 18px 46px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.06);
     flex-wrap: wrap;
 }
 
@@ -1694,10 +1705,10 @@ body {
     font-family: var(--font-data);
     font-size: 11px;
     width: 100px;
-    padding: 4px 8px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    padding: 5px 9px;
+    background: rgba(5,9,16,.62);
+    border: 1px solid rgba(148,163,184,.14);
+    border-radius: 8px;
     color: var(--text-primary);
     outline: none;
 }
@@ -1708,6 +1719,7 @@ body {
     display: flex;
     gap: 10px;
     margin-left: auto;
+    flex-wrap: wrap;
 }
 
 .oc-badge {
@@ -1750,10 +1762,10 @@ body {
 .oc-expiry-select {
     font-family: var(--font-data);
     font-size: 11px;
-    padding: 3px 8px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    padding: 5px 9px;
+    background: rgba(5,9,16,.62);
+    border: 1px solid rgba(148,163,184,.14);
+    border-radius: 8px;
     color: var(--text-primary);
     outline: none;
     cursor: pointer;
@@ -1766,14 +1778,297 @@ body {
     margin-left: 8px;
 }
 
+.os-layout {
+    display: grid;
+    grid-template-columns: minmax(360px, .82fr) minmax(520px, 1.18fr);
+    gap: 10px;
+    min-height: 390px;
+}
+
+.os-card {
+    border: 1px solid rgba(148,163,184,.14);
+    border-radius: 18px;
+    background:
+        radial-gradient(circle at top right, rgba(79,209,197,.08), transparent 36%),
+        linear-gradient(180deg, rgba(255,255,255,.052), rgba(255,255,255,.018)),
+        rgba(9,14,23,.86);
+    box-shadow: 0 20px 54px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.06);
+    overflow: hidden;
+}
+
+.os-builder {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.os-analysis {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+}
+
+.os-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px 10px;
+}
+
+.os-card-head.compact {
+    padding: 12px 14px 8px;
+}
+
+.os-kicker {
+    font-family: var(--font-head);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.7px;
+    color: rgba(148,163,184,.74);
+}
+
+.os-card-head h2 {
+    margin-top: 4px;
+    font-family: var(--font-head);
+    font-size: 20px;
+    line-height: 1.1;
+    color: var(--text-primary);
+}
+
+.os-link-btn,
+.os-primary-btn {
+    height: 34px;
+    border: 1px solid rgba(255,140,0,.36);
+    border-radius: 10px;
+    background: rgba(255,140,0,.1);
+    color: var(--amber);
+    font-family: var(--font-head);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.os-link-btn {
+    padding: 0 12px;
+    background: rgba(255,255,255,.035);
+    color: var(--text-secondary);
+    border-color: rgba(148,163,184,.14);
+}
+
+.os-primary-btn {
+    width: 100%;
+}
+
+.os-add-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    padding: 0 16px 10px;
+}
+
+.os-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.os-field span {
+    font-family: var(--font-head);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.os-field input,
+.os-field select {
+    height: 34px;
+    min-width: 0;
+    padding: 0 9px;
+    border: 1px solid rgba(148,163,184,.13);
+    border-radius: 9px;
+    background: rgba(5,9,16,.66);
+    color: var(--text-primary);
+    font-family: var(--font-data);
+    font-size: 11px;
+    outline: none;
+}
+
+.os-field input:focus,
+.os-field select:focus {
+    border-color: rgba(38,198,218,.42);
+    box-shadow: 0 0 0 2px rgba(38,198,218,.08);
+}
+
+.os-picked {
+    margin: 0 16px 10px;
+    padding: 8px 10px;
+    border: 1px dashed rgba(148,163,184,.16);
+    border-radius: 12px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+.os-legs-wrap {
+    flex: 1;
+    min-height: 150px;
+    overflow: auto;
+    border-top: 1px solid rgba(148,163,184,.1);
+}
+
+.os-legs-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-data);
+    font-size: 11px;
+}
+
+.os-legs-table th,
+.os-legs-table td {
+    padding: 8px 9px;
+    border-bottom: 1px solid rgba(255,255,255,.045);
+    color: var(--text-secondary);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.os-legs-table th {
+    position: sticky;
+    top: 0;
+    background: rgba(8,13,22,.96);
+    color: var(--text-dim);
+    font-family: var(--font-head);
+    font-size: 8px;
+    letter-spacing: 1px;
+    z-index: 1;
+}
+
+.os-legs-table th:first-child,
+.os-legs-table td:first-child { text-align: left; }
+
+.os-empty {
+    text-align: center !important;
+    padding: 24px 12px !important;
+    color: var(--text-dim) !important;
+}
+
+.os-leg-side {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 22px;
+    border-radius: 7px;
+    font-weight: 800;
+}
+
+.os-leg-side.buy {
+    color: #9fe8c5;
+    background: rgba(16,185,129,.12);
+}
+
+.os-leg-side.sell {
+    color: #ffaaa7;
+    background: rgba(255,61,61,.12);
+}
+
+.os-remove-leg {
+    width: 24px;
+    height: 24px;
+    border: 1px solid rgba(148,163,184,.12);
+    border-radius: 999px;
+    background: rgba(255,255,255,.035);
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.os-remove-leg:hover {
+    color: var(--red);
+    border-color: rgba(255,61,61,.26);
+}
+
+.os-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.os-metric {
+    min-height: 86px;
+    padding: 12px;
+    border: 1px solid rgba(148,163,184,.12);
+    border-radius: 16px;
+    background:
+        linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.018)),
+        rgba(9,14,23,.88);
+}
+
+.os-metric span,
+.os-metric small {
+    display: block;
+    color: var(--text-dim);
+    font-size: 10px;
+}
+
+.os-metric strong {
+    display: block;
+    margin: 7px 0 5px;
+    color: var(--text-primary);
+    font-family: var(--font-data);
+    font-size: clamp(18px, 2vw, 28px);
+    font-variant-numeric: tabular-nums;
+}
+
+.os-metric strong.up { color: var(--green); }
+.os-metric strong.down { color: var(--red); }
+.os-metric strong.warn { color: var(--amber); }
+
+.os-payoff-card {
+    flex: 1;
+    min-height: 260px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(148,163,184,.14);
+    border-radius: 18px;
+    background:
+        radial-gradient(circle at top right, rgba(38,198,218,.08), transparent 36%),
+        rgba(9,14,23,.86);
+    overflow: hidden;
+}
+
+.os-note {
+    max-width: 280px;
+    color: var(--text-dim);
+    font-size: 10px;
+    line-height: 1.4;
+    text-align: right;
+}
+
+.os-payoff-chart {
+    width: 100%;
+    flex: 1;
+    min-height: 230px;
+    display: block;
+}
+
 /* ── Option Chain Table ────────────────────────────────────────────── */
 
 .oc-table-wrap {
     flex: 1;
+    min-height: 230px;
     overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-card);
+    border: 1px solid rgba(148,163,184,.14);
+    border-radius: 16px;
+    background: rgba(9,14,23,.86);
 }
 
 .oc-table {
@@ -1887,6 +2182,15 @@ td.oc-pe span {
     color: var(--text-dim);
     padding: 40px 0 !important;
     font-size: 12px;
+}
+
+.oc-ltp[data-leg-type] {
+    cursor: pointer;
+}
+
+.oc-ltp[data-leg-type]:hover {
+    background: rgba(255,140,0,.1) !important;
+    color: var(--amber) !important;
 }
 
 /* ── Mutual Funds View ─────────────────────────────────────────────── */
@@ -3764,6 +4068,63 @@ td.oc-pe span {
 
     .mf-chart {
         min-height: 300px;
+    }
+
+    .options-view {
+        padding: 8px 10px 10px;
+        overflow-y: auto;
+    }
+
+    .os-toolbar {
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .oc-info-group {
+        width: 100%;
+        margin-left: 0;
+        justify-content: space-between;
+    }
+
+    .os-layout {
+        grid-template-columns: 1fr;
+        min-height: 0;
+    }
+
+    .os-add-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        padding: 0 12px 10px;
+    }
+
+    .os-card-head {
+        padding: 12px;
+    }
+
+    .os-picked {
+        margin: 0 12px 10px;
+    }
+
+    .os-summary-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+
+    .os-metric {
+        min-height: 74px;
+        padding: 10px;
+    }
+
+    .os-payoff-card {
+        min-height: 320px;
+    }
+
+    .os-note {
+        max-width: none;
+        text-align: left;
+    }
+
+    .oc-table-wrap {
+        min-height: 320px;
     }
 
     .fii-view {

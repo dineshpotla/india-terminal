@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=20260623-mf-compact">
+    <link rel="stylesheet" href="/static/style.css?v=20260630-strategy-builder">
 </head>
 <body>
     <div class="terminal">
@@ -29,6 +29,7 @@
                 </div>
                 <div class="nav-tabs">
                     <button class="nav-tab active" data-view="investing">INVESTING</button>
+                    <button class="nav-tab" data-view="options">STRATEGY</button>
                     <button class="nav-tab" data-view="global">GLOBAL MARKETS</button>
                     <button class="nav-tab" data-view="mutual">MUTUAL FUNDS</button>
                     <button class="nav-tab" data-view="fii">FII FLOWS</button>
@@ -119,14 +120,18 @@
             </section>
         </div>
 
-        <!-- ── Options View ────────────────────────────────────── -->
+        <!-- ── Option Strategy Builder ─────────────────────────── -->
         <div id="options-view" class="options-view">
-            <div class="oc-toolbar">
+            <div class="os-toolbar">
                 <div class="oc-sym-group">
                     <button class="oc-sym-btn active" data-oc-sym="NIFTY">NIFTY</button>
                     <button class="oc-sym-btn" data-oc-sym="BANKNIFTY">BANKNIFTY</button>
                     <button class="oc-sym-btn" data-oc-sym="FINNIFTY">FINNIFTY</button>
                     <input type="text" id="oc-stock-input" class="oc-stock-input" placeholder="Stock symbol…" autocomplete="off">
+                </div>
+                <div class="oc-expiry-group">
+                    <label class="oc-expiry-label">EXPIRY</label>
+                    <select id="oc-expiry" class="oc-expiry-select"></select>
                 </div>
                 <div class="oc-info-group">
                     <div class="oc-badge" id="oc-spot"><span class="oc-badge-label">SPOT</span><span class="oc-badge-val">--</span></div>
@@ -134,12 +139,54 @@
                     <div class="oc-badge" id="oc-maxpain"><span class="oc-badge-label">MAX PAIN</span><span class="oc-badge-val">--</span></div>
                     <div class="oc-badge" id="oc-total-oi"><span class="oc-badge-label">TOTAL OI</span><span class="oc-badge-val">--</span></div>
                 </div>
-                <div class="oc-expiry-group">
-                    <label class="oc-expiry-label">EXPIRY</label>
-                    <select id="oc-expiry" class="oc-expiry-select"></select>
-                </div>
                 <div class="oc-ts" id="oc-timestamp">--</div>
             </div>
+
+            <div class="os-layout">
+                <section class="os-card os-builder">
+                    <div class="os-card-head">
+                        <div>
+                            <div class="os-kicker">STRATEGY BUILDER</div>
+                            <h2>Build From Distance</h2>
+                        </div>
+                        <button id="os-reset-strategy" class="os-link-btn" type="button">Clear</button>
+                    </div>
+                    <div class="os-add-grid">
+                        <label class="os-field"><span>B/S</span><select id="os-leg-side"><option value="B">Buy</option><option value="S">Sell</option></select></label>
+                        <label class="os-field"><span>Type</span><select id="os-leg-type"><option value="CE">CE</option><option value="PE">PE</option></select></label>
+                        <label class="os-field"><span>Direction</span><select id="os-distance-side"><option value="above">Above spot</option><option value="below">Below spot</option><option value="nearest">Nearest ATM</option></select></label>
+                        <label class="os-field"><span>Distance</span><input id="os-distance" type="number" min="0" step="1" value="0"></label>
+                        <label class="os-field"><span>Mode</span><select id="os-distance-mode"><option value="points">Points</option><option value="percent">Percent</option></select></label>
+                        <label class="os-field"><span>Lots</span><input id="os-lots" type="number" min="1" step="1" value="1"></label>
+                        <label class="os-field"><span>Lot size</span><input id="os-lot-size" type="number" min="1" step="1" value="65"></label>
+                        <button id="os-add-leg" class="os-primary-btn" type="button">Add Leg</button>
+                    </div>
+                    <div class="os-picked" id="os-picked-strike">Nearest strike will appear after live chain loads.</div>
+                    <div class="os-legs-wrap">
+                        <table class="os-legs-table">
+                            <thead><tr><th>B/S</th><th>Expiry</th><th>Strike</th><th>Type</th><th>Lots</th><th>Price</th><th></th></tr></thead>
+                            <tbody id="os-legs-body"><tr><td colspan="7" class="os-empty">Add legs using distance, or click LTP in the live chain.</td></tr></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="os-card os-analysis">
+                    <div class="os-summary-grid">
+                        <div class="os-metric"><span>Premium</span><strong id="os-premium">--</strong><small id="os-premium-label">Pay / receive</small></div>
+                        <div class="os-metric"><span>Est. Margin</span><strong id="os-margin">--</strong><small>Broker/SPAN estimate</small></div>
+                        <div class="os-metric"><span>Max Profit</span><strong id="os-max-profit">--</strong><small id="os-rr">Reward / risk --</small></div>
+                        <div class="os-metric"><span>Max Loss</span><strong id="os-max-loss">--</strong><small id="os-breakeven">Breakeven --</small></div>
+                    </div>
+                    <div class="os-payoff-card">
+                        <div class="os-card-head compact">
+                            <div><div class="os-kicker">EXPIRY PAYOFF</div><h2 id="os-payoff-title">No strategy selected</h2></div>
+                            <div class="os-note">Margin is an estimate; use broker/SPAN for order placement.</div>
+                        </div>
+                        <canvas id="os-payoff-chart" class="os-payoff-chart"></canvas>
+                    </div>
+                </section>
+            </div>
+
             <div class="oc-table-wrap" id="oc-table-wrap">
                 <table class="oc-table" id="oc-table">
                     <thead>
@@ -341,6 +388,6 @@
         </nav>
     </div>
 
-    <script src="/static/app.js?v=20260623-mf-compact"></script>
+    <script src="/static/app.js?v=20260630-strategy-builder"></script>
 </body>
 </html>

@@ -3812,10 +3812,11 @@
             if (currentView === "global") await loadGlobalPanel();
             if (currentView === "mutual") await loadMutualWatchlist();
             if (currentView === "fii") await loadFiiPanel();
+            if (currentView === "options") await fetchOptionChain();
         } catch (err) { console.error("Initial load error:", err); }
     }
 
-    // ── View Switching (INVESTING / GLOBAL / MUTUAL / FII) ──
+    // ── View Switching (INVESTING / STRATEGY / GLOBAL / MUTUAL / FII) ──
 
     var $terminal = document.querySelector(".terminal");
     var navTabs = document.querySelectorAll(".nav-tab[data-view]");
@@ -3835,7 +3836,6 @@
             if (window.history && window.history.replaceState && window.location.pathname !== "/") {
                 window.history.replaceState({ view: view }, "", "/");
             }
-            if (ocRefreshTimer) { clearInterval(ocRefreshTimer); ocRefreshTimer = null; }
             if (view === "investing") {
                 loadOverviewPanel();
                 if (isNewsVisible()) loadNewsPanel(activeNewsRequestTab());
@@ -3853,6 +3853,10 @@
                 if (panelState.fii) renderFiiFlows(panelState.fii);
                 loadFiiPanel();
                 setTimeout(handleResize, 60);
+            }
+            if (view === "options") {
+                fetchOptionChain();
+                setTimeout(renderStrategyBuilder, 80);
             }
         });
     });
@@ -3874,11 +3878,14 @@
         });
     });
 
-    // ── Option Chain ─────────────────────────────────────────────────────
+    // ── Option Strategy Builder ─────────────────────────────────────────
 
     var ocSymbol = "NIFTY";
     var ocExpiry = "";
-    var ocRefreshTimer = null;
+    var ocChainData = null;
+    var strategyLegs = [];
+    var strategyLegSeq = 1;
+    var ocDefaultLotSizes = { NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60, MIDCPNIFTY: 120, NIFTYNXT50: 25 };
     var $ocTbody = $("oc-tbody");
     var $ocExpiry = $("oc-expiry");
     var $ocSpot = document.querySelector("#oc-spot .oc-badge-val");
@@ -3887,31 +3894,26 @@
     var $ocTotalOI = document.querySelector("#oc-total-oi .oc-badge-val");
     var $ocTimestamp = $("oc-timestamp");
     var $ocStockInput = $("oc-stock-input");
-
-    document.querySelectorAll(".oc-sym-btn").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-            document.querySelectorAll(".oc-sym-btn").forEach(function (b) { b.classList.remove("active"); });
-            btn.classList.add("active");
-            $ocStockInput.value = "";
-            ocSymbol = btn.dataset.ocSym;
-            ocExpiry = "";
-            fetchOptionChain();
-        });
-    });
-
-    $ocStockInput.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" && $ocStockInput.value.trim()) {
-            document.querySelectorAll(".oc-sym-btn").forEach(function (b) { b.classList.remove("active"); });
-            ocSymbol = $ocStockInput.value.trim().toUpperCase();
-            ocExpiry = "";
-            fetchOptionChain();
-        }
-    });
-
-    $ocExpiry.addEventListener("change", function () {
-        ocExpiry = $ocExpiry.value;
-        fetchOptionChain();
-    });
+    var $osLegSide = $("os-leg-side");
+    var $osLegType = $("os-leg-type");
+    var $osDistanceSide = $("os-distance-side");
+    var $osDistance = $("os-distance");
+    var $osDistanceMode = $("os-distance-mode");
+    var $osLots = $("os-lots");
+    var $osLotSize = $("os-lot-size");
+    var $osAddLeg = $("os-add-leg");
+    var $osResetStrategy = $("os-reset-strategy");
+    var $osPickedStrike = $("os-picked-strike");
+    var $osLegsBody = $("os-legs-body");
+    var $osPremium = $("os-premium");
+    var $osPremiumLabel = $("os-premium-label");
+    var $osMargin = $("os-margin");
+    var $osMaxProfit = $("os-max-profit");
+    var $osMaxLoss = $("os-max-loss");
+    var $osRR = $("os-rr");
+    var $osBreakeven = $("os-breakeven");
+    var $osPayoffTitle = $("os-payoff-title");
+    var $osPayoffChart = $("os-payoff-chart");
 
     function fmtOI(n) {
         if (!n) return "\u2014";
@@ -3921,21 +3923,324 @@
         return String(n);
     }
 
+    function fmtMoney(n) {
+        if (n == null || !isFinite(Number(n))) return "\u2014";
+        var abs = Math.abs(Number(n));
+        var sign = Number(n) < 0 ? "-" : "";
+        if (abs >= 10000000) return sign + "\u20b9" + (abs / 10000000).toFixed(2) + "Cr";
+        if (abs >= 100000) return sign + "\u20b9" + (abs / 100000).toFixed(2) + "L";
+        return sign + "\u20b9" + abs.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+    }
+
+    function optionLotSize() {
+        var manual = Number($osLotSize && $osLotSize.value);
+        if (isFinite(manual) && manual > 0) return Math.max(1, Math.round(manual));
+        return (ocChainData && Number(ocChainData.lot_size)) || ocDefaultLotSizes[ocSymbol] || 1;
+    }
+
+    function updateOptionLotSize(force) {
+        if (!$osLotSize) return;
+        var next = (ocChainData && Number(ocChainData.lot_size)) || ocDefaultLotSizes[ocSymbol] || Number($osLotSize.value) || 1;
+        if (force || !$osLotSize.value || Number($osLotSize.value) <= 1) {
+            $osLotSize.value = String(Math.max(1, Math.round(next)));
+        }
+    }
+
+    function optionStrikeRows() {
+        return (ocChainData && Array.isArray(ocChainData.strikes)) ? ocChainData.strikes : [];
+    }
+
+    function nearestOptionStrike(target) {
+        var rows = optionStrikeRows();
+        if (!rows.length) return null;
+        return rows.reduce(function (best, row) {
+            if (!best) return row;
+            return Math.abs(Number(row.strike) - target) < Math.abs(Number(best.strike) - target) ? row : best;
+        }, null);
+    }
+
+    function selectedTargetStrikeRow() {
+        var spot = Number(ocChainData && ocChainData.spot) || 0;
+        if (!spot) return null;
+        var rawDistance = Math.max(0, Number($osDistance && $osDistance.value) || 0);
+        var distance = ($osDistanceMode && $osDistanceMode.value) === "percent" ? spot * rawDistance / 100 : rawDistance;
+        var dir = ($osDistanceSide && $osDistanceSide.value) || "nearest";
+        var target = dir === "above" ? spot + distance : (dir === "below" ? spot - distance : spot);
+        return nearestOptionStrike(target);
+    }
+
+    function optionQuoteFor(strike, type) {
+        var row = optionStrikeRows().find(function (item) { return Number(item.strike) === Number(strike); });
+        if (!row) return null;
+        return type === "PE" ? row.pe : row.ce;
+    }
+
+    function currentLegPrice(leg) {
+        var quote = optionQuoteFor(leg.strike, leg.type);
+        return quote && Number(quote.ltp) ? Number(quote.ltp) : Number(leg.price || 0);
+    }
+
+    function updatePickedStrikePreview() {
+        if (!$osPickedStrike) return;
+        var row = selectedTargetStrikeRow();
+        if (!row) {
+            $osPickedStrike.textContent = "Waiting for live option chain...";
+            return;
+        }
+        var type = ($osLegType && $osLegType.value) || "CE";
+        var quote = type === "PE" ? row.pe : row.ce;
+        $osPickedStrike.textContent =
+            "Nearest " + type + " strike: " + Number(row.strike).toLocaleString("en-IN") +
+            " | LTP " + (quote && quote.ltp ? fmtPrice(quote.ltp) : "\u2014") +
+            " | Expiry " + (ocExpiry || (ocChainData && ocChainData.selected_expiry) || "\u2014");
+    }
+
+    function addStrategyLeg(side, type, strike, lots) {
+        var quote = optionQuoteFor(strike, type);
+        var price = quote && Number(quote.ltp) ? Number(quote.ltp) : 0;
+        strategyLegs.push({
+            id: strategyLegSeq++,
+            side: side || "B",
+            type: type || "CE",
+            strike: Number(strike),
+            lots: Math.max(1, Math.round(Number(lots) || 1)),
+            price: price,
+            expiry: ocExpiry || (ocChainData && ocChainData.selected_expiry) || "",
+        });
+        renderStrategyBuilder();
+    }
+
+    function legPayoffAt(leg, underlying, lotSize) {
+        var lots = Math.max(1, Number(leg.lots) || 1);
+        var multiplier = lots * lotSize;
+        var price = currentLegPrice(leg);
+        var intrinsic = leg.type === "CE"
+            ? Math.max(0, underlying - Number(leg.strike))
+            : Math.max(0, Number(leg.strike) - underlying);
+        var unit = leg.side === "B" ? intrinsic - price : price - intrinsic;
+        return unit * multiplier;
+    }
+
+    function optionPayoffMetrics() {
+        var lotSize = optionLotSize();
+        var spot = Number(ocChainData && ocChainData.spot) || 0;
+        if (!strategyLegs.length || !spot) {
+            return {
+                lotSize: lotSize, premium: 0, points: [], maxProfit: null, maxLoss: null,
+                maxProfitUnlimited: false, maxLossUnlimited: false, margin: 0, breakevens: [],
+            };
+        }
+        var strikes = strategyLegs.map(function (leg) { return Number(leg.strike); }).filter(isFinite);
+        var chainStrikes = optionStrikeRows().map(function (row) { return Number(row.strike); }).filter(isFinite);
+        var minStrike = Math.min.apply(null, strikes.concat([spot]));
+        var maxStrike = Math.max.apply(null, strikes.concat([spot]));
+        var step = Number(ocChainData && ocChainData.strike_step) || 50;
+        var span = Math.max(step * 12, Math.abs(maxStrike - minStrike) * 1.8, spot * 0.08);
+        var low = Math.max(0, Math.min(minStrike, spot) - span);
+        var high = Math.max(maxStrike, spot) + span;
+        if (chainStrikes.length) {
+            low = Math.max(0, Math.min(low, Math.min.apply(null, chainStrikes)));
+            high = Math.max(high, Math.max.apply(null, chainStrikes));
+        }
+        var points = [];
+        var count = 90;
+        for (var i = 0; i <= count; i++) {
+            var s = low + (high - low) * i / count;
+            var pnl = strategyLegs.reduce(function (sum, leg) {
+                return sum + legPayoffAt(leg, s, lotSize);
+            }, 0);
+            points.push({ underlying: s, pnl: pnl });
+        }
+        var premium = strategyLegs.reduce(function (sum, leg) {
+            var signed = leg.side === "B" ? 1 : -1;
+            return sum + signed * currentLegPrice(leg) * Math.max(1, Number(leg.lots) || 1) * lotSize;
+        }, 0);
+        var riskPoints = points.slice();
+        if (strategyLegs.some(function (leg) { return leg.type === "PE"; })) {
+            riskPoints.push({
+                underlying: 0,
+                pnl: strategyLegs.reduce(function (sum, leg) {
+                    return sum + legPayoffAt(leg, 0, lotSize);
+                }, 0),
+            });
+        }
+        var maxP = Math.max.apply(null, riskPoints.map(function (p) { return p.pnl; }));
+        var minP = Math.min.apply(null, riskPoints.map(function (p) { return p.pnl; }));
+        var highSlopeLots = strategyLegs.reduce(function (sum, leg) {
+            if (leg.type !== "CE") return sum;
+            return sum + (leg.side === "B" ? 1 : -1) * Math.max(1, Number(leg.lots) || 1) * lotSize;
+        }, 0);
+        var maxProfitUnlimited = highSlopeLots > 0;
+        var maxLossUnlimited = highSlopeLots < 0;
+        var breakevens = [];
+        for (var j = 1; j < points.length; j++) {
+            var prev = points[j - 1];
+            var cur = points[j];
+            if ((prev.pnl <= 0 && cur.pnl >= 0) || (prev.pnl >= 0 && cur.pnl <= 0)) {
+                var denom = cur.pnl - prev.pnl;
+                var ratio = denom === 0 ? 0 : (0 - prev.pnl) / denom;
+                var be = prev.underlying + (cur.underlying - prev.underlying) * ratio;
+                if (breakevens.every(function (existing) { return Math.abs(existing - be) > step / 2; })) {
+                    breakevens.push(be);
+                }
+            }
+        }
+        var finiteRisk = !maxLossUnlimited ? Math.max(0, -minP) : 0;
+        var hasShort = strategyLegs.some(function (leg) { return leg.side === "S"; });
+        var nakedShortEstimate = strategyLegs.reduce(function (sum, leg) {
+            if (leg.side !== "S") return sum;
+            var lots = Math.max(1, Number(leg.lots) || 1);
+            return sum + (spot * lotSize * lots * 0.12) + (currentLegPrice(leg) * lotSize * lots);
+        }, 0);
+        var margin = hasShort
+            ? (maxLossUnlimited ? nakedShortEstimate + Math.max(0, premium) : finiteRisk)
+            : Math.max(0, premium);
+        return {
+            lotSize: lotSize,
+            premium: premium,
+            points: points,
+            maxProfit: maxP,
+            maxLoss: minP,
+            maxProfitUnlimited: maxProfitUnlimited,
+            maxLossUnlimited: maxLossUnlimited,
+            margin: margin,
+            breakevens: breakevens,
+            spot: spot,
+        };
+    }
+
+    function drawPayoffChart(metrics) {
+        if (!$osPayoffChart) return;
+        var canvas = $osPayoffChart;
+        var rect = canvas.getBoundingClientRect();
+        var dpr = window.devicePixelRatio || 1;
+        var width = Math.max(320, Math.floor(rect.width || 640));
+        var height = Math.max(220, Math.floor(rect.height || 260));
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "rgba(5,9,16,.42)";
+        ctx.fillRect(0, 0, width, height);
+        var pad = { left: 54, right: 18, top: 22, bottom: 34 };
+        var pts = metrics.points || [];
+        if (!pts.length) {
+            ctx.fillStyle = "#4a5568";
+            ctx.font = "12px IBM Plex Mono, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("Add strategy legs to draw payoff", width / 2, height / 2);
+            return;
+        }
+        var minX = Math.min.apply(null, pts.map(function (p) { return p.underlying; }));
+        var maxX = Math.max.apply(null, pts.map(function (p) { return p.underlying; }));
+        var maxAbsY = Math.max(1, Math.max.apply(null, pts.map(function (p) { return Math.abs(p.pnl); })));
+        var plotW = width - pad.left - pad.right;
+        var plotH = height - pad.top - pad.bottom;
+        function x(v) { return pad.left + ((v - minX) / Math.max(1, maxX - minX)) * plotW; }
+        function y(v) { return pad.top + (maxAbsY - v) / (maxAbsY * 2) * plotH; }
+        var zeroY = y(0);
+        ctx.strokeStyle = "rgba(148,163,184,.16)";
+        ctx.lineWidth = 1;
+        for (var g = -2; g <= 2; g++) {
+            var gy = y(maxAbsY * g / 2);
+            ctx.beginPath(); ctx.moveTo(pad.left, gy); ctx.lineTo(width - pad.right, gy); ctx.stroke();
+        }
+        ctx.strokeStyle = "rgba(148,163,184,.36)";
+        ctx.beginPath(); ctx.moveTo(pad.left, zeroY); ctx.lineTo(width - pad.right, zeroY); ctx.stroke();
+        if (metrics.spot) {
+            var sx = x(metrics.spot);
+            ctx.strokeStyle = "rgba(255,140,0,.7)";
+            ctx.beginPath(); ctx.moveTo(sx, pad.top); ctx.lineTo(sx, height - pad.bottom); ctx.stroke();
+        }
+        ctx.beginPath();
+        pts.forEach(function (p, idx) {
+            var px = x(p.underlying);
+            var py = y(p.pnl);
+            if (idx === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+        });
+        ctx.strokeStyle = "#4fd1c5";
+        ctx.lineWidth = 2.4;
+        ctx.stroke();
+        ctx.fillStyle = "#8ea0b8";
+        ctx.font = "10px IBM Plex Mono, monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(fmtMoney(maxAbsY), pad.left - 8, pad.top + 4);
+        ctx.fillText("0", pad.left - 8, zeroY + 3);
+        ctx.fillText("-" + fmtMoney(maxAbsY).replace(/^-/, ""), pad.left - 8, height - pad.bottom);
+        ctx.textAlign = "center";
+        ctx.fillText(Math.round(minX).toLocaleString("en-IN"), pad.left, height - 10);
+        ctx.fillText(Math.round(maxX).toLocaleString("en-IN"), width - pad.right, height - 10);
+    }
+
+    function renderStrategyBuilder() {
+        updatePickedStrikePreview();
+        if (!$osLegsBody) return;
+        strategyLegs.forEach(function (leg) {
+            leg.price = currentLegPrice(leg);
+            leg.expiry = ocExpiry || leg.expiry;
+        });
+        if (!strategyLegs.length) {
+            $osLegsBody.innerHTML = '<tr><td colspan="7" class="os-empty">Add legs using distance, or click LTP in the live chain.</td></tr>';
+        } else {
+            $osLegsBody.innerHTML = strategyLegs.map(function (leg) {
+                var sideClass = leg.side === "B" ? "buy" : "sell";
+                return '<tr>' +
+                    '<td><span class="os-leg-side ' + sideClass + '">' + leg.side + '</span></td>' +
+                    '<td>' + (leg.expiry || "\u2014") + '</td>' +
+                    '<td>' + Number(leg.strike).toLocaleString("en-IN") + '</td>' +
+                    '<td>' + leg.type + '</td>' +
+                    '<td>' + leg.lots + '</td>' +
+                    '<td>' + (leg.price ? leg.price.toFixed(2) : "\u2014") + '</td>' +
+                    '<td><button class="os-remove-leg" data-remove-leg="' + leg.id + '" type="button">\u00d7</button></td>' +
+                    '</tr>';
+            }).join("");
+        }
+        var metrics = optionPayoffMetrics();
+        var premium = metrics.premium || 0;
+        var premiumLabel = premium >= 0 ? "Premium Pay" : "Premium Receive";
+        $osPremium.textContent = fmtMoney(Math.abs(premium));
+        $osPremium.className = premium > 0 ? "down" : (premium < 0 ? "up" : "");
+        $osPremiumLabel.textContent = premiumLabel + " | " + metrics.lotSize + "/lot";
+        $osMargin.textContent = metrics.margin ? fmtMoney(metrics.margin) : "\u2014";
+        $osMargin.className = metrics.margin ? "warn" : "";
+        $osMaxProfit.textContent = metrics.maxProfitUnlimited ? "Unlimited" : (metrics.maxProfit == null ? "\u2014" : fmtMoney(metrics.maxProfit));
+        $osMaxProfit.className = metrics.maxProfitUnlimited || metrics.maxProfit > 0 ? "up" : "";
+        $osMaxLoss.textContent = metrics.maxLossUnlimited ? "Unlimited" : (metrics.maxLoss == null ? "\u2014" : fmtMoney(metrics.maxLoss));
+        $osMaxLoss.className = metrics.maxLossUnlimited || metrics.maxLoss < 0 ? "down" : "";
+        var risk = !metrics.maxLossUnlimited && metrics.maxLoss < 0 ? Math.abs(metrics.maxLoss) : null;
+        var reward = !metrics.maxProfitUnlimited && metrics.maxProfit > 0 ? metrics.maxProfit : null;
+        $osRR.textContent = metrics.maxProfitUnlimited && risk ? "Reward / risk \u221e" : (risk && reward ? "Reward / risk " + (reward / risk).toFixed(2) + "x" : "Reward / risk --");
+        $osBreakeven.textContent = metrics.breakevens && metrics.breakevens.length
+            ? "Breakeven " + metrics.breakevens.map(function (be) { return Math.round(be).toLocaleString("en-IN"); }).join(", ")
+            : "Breakeven --";
+        $osPayoffTitle.textContent = strategyLegs.length
+            ? strategyLegs.length + " leg strategy on " + ocSymbol
+            : "No strategy selected";
+        drawPayoffChart(metrics);
+    }
+
     async function fetchOptionChain() {
         try {
             var url = "/api/options/" + encodeURIComponent(ocSymbol);
             if (ocExpiry) url += "?expiry=" + encodeURIComponent(ocExpiry);
             var res = await fetch(url);
             var data = await res.json();
+            ocChainData = data;
+            updateOptionLotSize(!strategyLegs.length);
             renderOptionChain(data);
+            renderStrategyBuilder();
         } catch (err) {
             console.error("[OC] Fetch error:", err);
         }
     }
 
     function renderOptionChain(data) {
-        if (data.error && !data.strikes.length) {
+        var rows = (data && data.strikes) || [];
+        if (data.error && !rows.length) {
             $ocTbody.innerHTML = '<tr><td colspan="11" class="oc-empty">' + (data.error || "No data") + '</td></tr>';
+            renderStrategyBuilder();
             return;
         }
 
@@ -3945,7 +4250,6 @@
         $ocTotalOI.textContent = fmtOI((data.total_ce_oi || 0) + (data.total_pe_oi || 0));
         $ocTimestamp.textContent = data.timestamp || "--";
 
-        var prevExpiry = $ocExpiry.value;
         if (data.expiries && data.expiries.length) {
             $ocExpiry.innerHTML = "";
             data.expiries.forEach(function (exp) {
@@ -3963,7 +4267,7 @@
         var maxOI = data.max_oi || 1;
         var html = "";
 
-        data.strikes.forEach(function (row) {
+        rows.forEach(function (row) {
             var isATM = row.strike === atm;
             var ceITM = spot > row.strike;
             var peITM = spot < row.strike;
@@ -3984,11 +4288,11 @@
             html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + ' ' + ceChgCls + '">' + fmtOI(ce.chgOI) + '</td>';
             html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '">' + fmtOI(ce.vol) + '</td>';
             html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '">' + (ce.iv ? ce.iv.toFixed(1) : "\u2014") + '</td>';
-            html += '<td class="oc-ce oc-ltp' + (ceITM ? " oc-itm" : "") + ' ' + ceLtpCls + '">' + (ce.ltp ? ce.ltp.toFixed(2) : "\u2014") + '</td>';
+            html += '<td class="oc-ce oc-ltp' + (ceITM ? " oc-itm" : "") + ' ' + ceLtpCls + '" data-leg-type="CE" data-strike="' + row.strike + '">' + (ce.ltp ? ce.ltp.toFixed(2) : "\u2014") + '</td>';
 
             html += '<td class="oc-strike">' + Number(row.strike).toLocaleString("en-IN") + '</td>';
 
-            html += '<td class="oc-pe oc-ltp' + (peITM ? " oc-itm" : "") + ' ' + peLtpCls + '">' + (pe.ltp ? pe.ltp.toFixed(2) : "\u2014") + '</td>';
+            html += '<td class="oc-pe oc-ltp' + (peITM ? " oc-itm" : "") + ' ' + peLtpCls + '" data-leg-type="PE" data-strike="' + row.strike + '">' + (pe.ltp ? pe.ltp.toFixed(2) : "\u2014") + '</td>';
             html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '">' + (pe.iv ? pe.iv.toFixed(1) : "\u2014") + '</td>';
             html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '">' + fmtOI(pe.vol) + '</td>';
             html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + ' ' + peChgCls + '">' + fmtOI(pe.chgOI) + '</td>';
@@ -3999,9 +4303,86 @@
         $ocTbody.innerHTML = html;
 
         var atmRow = document.querySelector(".oc-atm");
-        if (atmRow) {
+        if (atmRow && currentView === "options") {
             atmRow.scrollIntoView({ block: "center", behavior: "smooth" });
         }
+    }
+
+    document.querySelectorAll(".oc-sym-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            document.querySelectorAll(".oc-sym-btn").forEach(function (b) { b.classList.remove("active"); });
+            btn.classList.add("active");
+            $ocStockInput.value = "";
+            ocSymbol = btn.dataset.ocSym;
+            ocExpiry = "";
+            strategyLegs = [];
+            fetchOptionChain();
+        });
+    });
+
+    $ocStockInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && $ocStockInput.value.trim()) {
+            document.querySelectorAll(".oc-sym-btn").forEach(function (b) { b.classList.remove("active"); });
+            ocSymbol = $ocStockInput.value.trim().toUpperCase();
+            ocExpiry = "";
+            strategyLegs = [];
+            fetchOptionChain();
+        }
+    });
+
+    $ocExpiry.addEventListener("change", function () {
+        ocExpiry = $ocExpiry.value;
+        strategyLegs = strategyLegs.filter(function (leg) { return leg.expiry === ocExpiry; });
+        fetchOptionChain();
+    });
+
+    [$osLegType, $osDistanceSide, $osDistance, $osDistanceMode, $osLots, $osLotSize].forEach(function (node) {
+        if (!node) return;
+        node.addEventListener("input", renderStrategyBuilder);
+        node.addEventListener("change", renderStrategyBuilder);
+    });
+
+    if ($osAddLeg) {
+        $osAddLeg.addEventListener("click", function () {
+            var row = selectedTargetStrikeRow();
+            if (!row) return;
+            addStrategyLeg(
+                ($osLegSide && $osLegSide.value) || "B",
+                ($osLegType && $osLegType.value) || "CE",
+                row.strike,
+                Number($osLots && $osLots.value) || 1
+            );
+        });
+    }
+
+    if ($osResetStrategy) {
+        $osResetStrategy.addEventListener("click", function () {
+            strategyLegs = [];
+            renderStrategyBuilder();
+        });
+    }
+
+    if ($osLegsBody) {
+        $osLegsBody.addEventListener("click", function (event) {
+            var btn = event.target.closest("[data-remove-leg]");
+            if (!btn) return;
+            var id = Number(btn.getAttribute("data-remove-leg"));
+            strategyLegs = strategyLegs.filter(function (leg) { return leg.id !== id; });
+            renderStrategyBuilder();
+        });
+    }
+
+    if ($ocTbody) {
+        $ocTbody.addEventListener("click", function (event) {
+            var cell = event.target.closest("[data-leg-type][data-strike]");
+            if (!cell) return;
+            addStrategyLeg(
+                ($osLegSide && $osLegSide.value) || "B",
+                cell.getAttribute("data-leg-type"),
+                Number(cell.getAttribute("data-strike")),
+                Number($osLots && $osLots.value) || 1
+            );
+        });
     }
 
     // ── Mobile Panel Switching ────────────────────────────────────────
@@ -4056,6 +4437,7 @@
         if (currentView === "global") loadGlobalPanel();
         if (currentView === "mutual") loadMutualWatchlist();
         if (currentView === "fii") loadFiiPanel();
+        if (currentView === "options") fetchOptionChain();
     });
     document.addEventListener("visibilitychange", function () {
         if (!document.hidden) {
@@ -4067,6 +4449,7 @@
             if (currentView === "global") loadGlobalPanel();
             if (currentView === "mutual") loadMutualWatchlist();
             if (currentView === "fii") loadFiiPanel();
+            if (currentView === "options") fetchOptionChain();
         } else {
             disconnectWS();
         }
@@ -4106,6 +4489,11 @@
             loadFiiPanel();
         }
     }, 15 * 60000);
+    setInterval(function () {
+        if (!document.hidden && currentView === "options") {
+            fetchOptionChain();
+        }
+    }, 60000);
 
     // ── Boot ───────────────────────────────────────────────────────────
 

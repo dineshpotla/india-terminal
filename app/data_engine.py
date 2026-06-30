@@ -51,9 +51,18 @@ NSE_EQUITY_LIST_URLS = (
     "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
     "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
 )
+NSE_OC_CONTRACT_INFO_URL = NSE_BASE + "/api/option-chain-contract-info?symbol={symbol}"
+NSE_OC_V3_URL = NSE_BASE + "/api/option-chain-v3?type={type}&symbol={symbol}"
 NSE_OC_INDEX_URL = NSE_BASE + "/api/option-chain-indices?symbol={symbol}"
 NSE_OC_EQUITY_URL = NSE_BASE + "/api/option-chain-equities?symbol={symbol}"
 OC_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+OC_INDEX_LOT_SIZES = {
+    "NIFTY": 65,
+    "BANKNIFTY": 30,
+    "FINNIFTY": 60,
+    "MIDCPNIFTY": 120,
+    "NIFTYNXT50": 25,
+}
 
 SECTOR_MAP = {
     "RELIANCE":   "Energy",   "TCS":        "IT",         "HDFCBANK":   "Banking",
@@ -1108,14 +1117,24 @@ class NseSession:
         now = time.time()
         if now - self._last_cookie_time < 120:
             return
+        user_agent = random.choice(_USER_AGENTS)
         self._session.headers.update({
-            "User-Agent": random.choice(_USER_AGENTS),
+            "User-Agent": user_agent,
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": NSE_BASE,
+            "Origin": NSE_BASE,
+            "Referer": NSE_BASE + "/option-chain",
+            "X-Requested-With": "XMLHttpRequest",
         })
+        warm_headers = {
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": NSE_BASE,
+        }
         try:
-            self._session.get(NSE_BASE, timeout=10)
+            self._session.get(NSE_BASE + "/option-chain", headers=warm_headers, timeout=10)
+            self._session.get(NSE_BASE, headers=warm_headers, timeout=10)
         except Exception:
             pass
         self._last_cookie_time = now
@@ -1126,8 +1145,12 @@ class NseSession:
             try:
                 r = self._session.get(url, timeout=15)
                 if r.status_code == 200:
-                    return r.json()
-                if r.status_code == 401:
+                    try:
+                        return r.json()
+                    except Exception as exc:
+                        print(f"[NSE] JSON decode failed for {url.split('?')[0]}: {exc}")
+                        return None
+                if r.status_code in {401, 403} or (r.status_code == 404 and "option-chain" in url):
                     self._last_cookie_time = 0
                     self._refresh_cookies()
                 print(f"[NSE] {url.split('?')[0]} → HTTP {r.status_code}")
@@ -5400,27 +5423,40 @@ class DataEngine:
 
     def get_option_chain(self, symbol: str, expiry: Optional[str] = None) -> dict:
         symbol = symbol.upper()
-        url_tpl = NSE_OC_INDEX_URL if symbol in OC_INDEX_SYMBOLS else NSE_OC_EQUITY_URL
-        data = self._nse.get(url_tpl.format(symbol=symbol))
+        is_index = symbol in OC_INDEX_SYMBOLS
+        oc_type = "Indices" if is_index else "Equity"
+        contract = self._nse.get(NSE_OC_CONTRACT_INFO_URL.format(symbol=quote(symbol)))
+        contract_expiries = contract.get("expiryDates", []) if isinstance(contract, dict) else []
+        selected = expiry if expiry and expiry in contract_expiries else (contract_expiries[0] if contract_expiries else "")
+        url = NSE_OC_V3_URL.format(type=quote(oc_type), symbol=quote(symbol))
+        if selected:
+            url += "&expiry=" + quote(selected, safe="")
+        data = self._nse.get(url)
+        if not data or "records" not in data:
+            url_tpl = NSE_OC_INDEX_URL if is_index else NSE_OC_EQUITY_URL
+            data = self._nse.get(url_tpl.format(symbol=quote(symbol)))
         if not data or "records" not in data:
             return {"error": "No data — market may be closed", "strikes": [], "expiries": []}
 
         records = data["records"]
-        all_expiries = records.get("expiryDates", [])
+        all_expiries = records.get("expiryDates", []) or contract_expiries
         spot = records.get("underlyingValue", 0)
         timestamp = records.get("timestamp", "")
 
-        selected = expiry if expiry and expiry in all_expiries else (all_expiries[0] if all_expiries else "")
+        selected = selected if selected in all_expiries else (expiry if expiry and expiry in all_expiries else (all_expiries[0] if all_expiries else ""))
 
         total_ce_oi = 0
         total_pe_oi = 0
         max_oi = 1
         strikes = []
-        pain_map: Dict[float, float] = {}
 
         for row in records.get("data", []):
-            if row.get("expiryDate") != selected:
-                continue
+            row_expiry = row.get("expiryDate") or row.get("expiryDates") or ""
+            if selected and row_expiry and row_expiry != selected:
+                ce_expiry = (row.get("CE") or {}).get("expiryDate", "")
+                pe_expiry = (row.get("PE") or {}).get("expiryDate", "")
+                if selected not in {ce_expiry, pe_expiry}:
+                    continue
             strike = row.get("strikePrice", 0)
             ce_raw = row.get("CE", {})
             pe_raw = row.get("PE", {})
@@ -5449,22 +5485,39 @@ class DataEngine:
                 total_pe_oi += pe["oi"]
                 max_oi = max(max_oi, pe["oi"])
 
-            ce_pain = sum(max(0, spot - s) * (ce["oi"] if ce else 0) for s in [strike])
-            pe_pain = sum(max(0, s - spot) * (pe["oi"] if pe else 0) for s in [strike])
-            pain_map[strike] = ce_pain + pe_pain
-
             strikes.append({"strike": strike, "ce": ce, "pe": pe})
 
         pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi else 0
+        pain_map: Dict[float, float] = {}
+        for candidate in [float(s["strike"]) for s in strikes if s.get("strike")]:
+            total_pain = 0.0
+            for row in strikes:
+                strike = float(row.get("strike") or 0)
+                ce_oi = float((row.get("ce") or {}).get("oi") or 0)
+                pe_oi = float((row.get("pe") or {}).get("oi") or 0)
+                total_pain += max(0.0, candidate - strike) * ce_oi
+                total_pain += max(0.0, strike - candidate) * pe_oi
+            pain_map[candidate] = total_pain
         max_pain = min(pain_map, key=pain_map.get) if pain_map else 0
 
         atm_strike = 0
         if spot and strikes:
             atm_strike = min(strikes, key=lambda s: abs(s["strike"] - spot))["strike"]
+        strike_values = sorted({float(s["strike"]) for s in strikes if s.get("strike")})
+        strike_step = 0
+        if len(strike_values) > 1:
+            diffs = [
+                round(strike_values[i] - strike_values[i - 1], 4)
+                for i in range(1, len(strike_values))
+                if strike_values[i] > strike_values[i - 1]
+            ]
+            strike_step = min(diffs) if diffs else 0
 
         return {
             "symbol": symbol,
             "spot": spot,
+            "lot_size": OC_INDEX_LOT_SIZES.get(symbol, 0),
+            "strike_step": strike_step,
             "timestamp": timestamp,
             "expiries": all_expiries,
             "selected_expiry": selected,
