@@ -4405,14 +4405,13 @@
             leg.expiry = ocExpiry || leg.expiry;
         });
         if (!strategyLegs.length) {
-            $osLegsBody.innerHTML = '<tr><td colspan="6" class="os-empty">Add sell legs using distance, or click LTP in the live chain.</td></tr>';
+            $osLegsBody.innerHTML = '<tr><td colspan="5" class="os-empty">Add sell legs using distance, or click LTP in the live chain.</td></tr>';
         } else {
             $osLegsBody.innerHTML = strategyLegs.map(function (leg) {
                 return '<tr>' +
                     '<td>' + (leg.expiry || "\u2014") + '</td>' +
                     '<td>' + Number(leg.strike).toLocaleString("en-IN") + '</td>' +
                     '<td>' + leg.type + '</td>' +
-                    '<td>' + leg.lots + '</td>' +
                     '<td>' + (leg.price ? leg.price.toFixed(2) : "\u2014") + '</td>' +
                     '<td><button class="os-remove-leg" data-remove-leg="' + leg.id + '" type="button">\u00d7</button></td>' +
                     '</tr>';

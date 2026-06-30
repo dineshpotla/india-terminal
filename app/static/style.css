@@ -1651,7 +1651,8 @@ body {
     flex: 1;
     display: none;
     flex-direction: column;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     gap: 10px;
     padding: 10px 14px 14px;
     background:
@@ -1780,9 +1781,10 @@ body {
 
 .os-layout {
     display: grid;
-    grid-template-columns: minmax(360px, .82fr) minmax(520px, 1.18fr);
+    grid-template-columns: minmax(440px, .96fr) minmax(330px, .74fr);
     gap: 10px;
-    min-height: 390px;
+    min-height: 0;
+    align-items: start;
 }
 
 .os-card {
@@ -1799,6 +1801,14 @@ body {
 .os-builder {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+}
+
+.os-left-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
     min-height: 0;
 }
 
@@ -1868,9 +1878,10 @@ body {
 
 .os-add-grid {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: .8fr minmax(120px, 1fr) .9fr minmax(105px, .85fr);
     gap: 8px;
     padding: 0 16px 10px;
+    align-items: end;
 }
 
 .os-field {
@@ -1920,7 +1931,8 @@ body {
 
 .os-legs-wrap {
     flex: 1;
-    min-height: 150px;
+    min-height: 116px;
+    max-height: 210px;
     overflow: auto;
     border-top: 1px solid rgba(148,163,184,.1);
 }
@@ -1978,12 +1990,12 @@ body {
 
 .os-summary-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(105px, 1fr));
     gap: 10px;
 }
 
 .os-metric {
-    min-height: 86px;
+    min-height: 72px;
     padding: 12px;
     border: 1px solid rgba(148,163,184,.12);
     border-radius: 16px;
@@ -2004,7 +2016,7 @@ body {
     margin: 7px 0 5px;
     color: var(--text-primary);
     font-family: var(--font-data);
-    font-size: clamp(18px, 2vw, 28px);
+    font-size: clamp(16px, 1.5vw, 24px);
     font-variant-numeric: tabular-nums;
 }
 
@@ -2152,8 +2164,8 @@ body {
 }
 
 .os-payoff-card {
-    flex: 1;
-    min-height: 260px;
+    flex: 0 0 auto;
+    min-height: 230px;
     display: flex;
     flex-direction: column;
     border: 1px solid rgba(148,163,184,.14);
@@ -2174,27 +2186,45 @@ body {
 
 .os-payoff-chart {
     width: 100%;
-    flex: 1;
-    min-height: 230px;
+    flex: 0 0 190px;
+    min-height: 190px;
     display: block;
 }
 
 /* ── Option Chain Table ────────────────────────────────────────────── */
 
+.oc-chain-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    height: min(720px, calc(100vh - 158px));
+    min-height: 480px;
+}
+
+.oc-chain-card .os-card-head {
+    flex-shrink: 0;
+}
+
+.oc-chain-card .os-note {
+    max-width: 180px;
+}
+
 .oc-table-wrap {
     flex: 1;
-    min-height: 230px;
+    min-height: 0;
     overflow: auto;
-    border: 1px solid rgba(148,163,184,.14);
-    border-radius: 16px;
-    background: rgba(9,14,23,.86);
+    border-top: 1px solid rgba(148,163,184,.1);
+    background: rgba(5,9,16,.42);
 }
 
 .oc-table {
     width: 100%;
+    max-width: 360px;
+    margin: 0 auto;
+    table-layout: fixed;
     border-collapse: collapse;
     font-family: var(--font-data);
-    font-size: 11px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
 }
 
@@ -2206,18 +2236,27 @@ body {
 
 .oc-table thead tr:first-child th {
     font-family: var(--font-head);
-    font-size: 9px;
+    font-size: 8px;
     font-weight: 700;
     letter-spacing: 1.5px;
-    padding: 6px 8px;
+    padding: 8px 10px;
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
     color: var(--text-dim);
 }
 
-.oc-th-ce { text-align: center; color: var(--green) !important; }
-.oc-th-pe { text-align: center; color: var(--red) !important; }
+.oc-th-ce { text-align: right; color: var(--green) !important; }
+.oc-th-pe { text-align: left; color: var(--red) !important; }
 .oc-th-strike { text-align: center; }
+
+.oc-table th:nth-child(1),
+.oc-table td:nth-child(1) { width: 36%; text-align: right; }
+
+.oc-table th:nth-child(2),
+.oc-table td:nth-child(2) { width: 28%; text-align: center; }
+
+.oc-table th:nth-child(3),
+.oc-table td:nth-child(3) { width: 36%; text-align: left; }
 
 .oc-table thead tr:nth-child(2) th {
     font-size: 8px;
@@ -2231,8 +2270,7 @@ body {
 }
 
 .oc-table tbody td {
-    padding: 3px 8px;
-    text-align: right;
+    padding: 5px 10px;
     border-bottom: 1px solid rgba(255,255,255,.03);
     color: var(--text-secondary);
     white-space: nowrap;
@@ -2247,8 +2285,6 @@ body {
     background: var(--bg-surface);
     border-left: 2px solid var(--border);
     border-right: 2px solid var(--border);
-    position: sticky;
-    left: 0;
 }
 
 .oc-atm td { background: rgba(0,120,255,.06) !important; }
@@ -2261,7 +2297,10 @@ body {
 
 .oc-itm { background: rgba(255,255,255,.02); }
 
-.oc-ltp { font-weight: 600; }
+.oc-ltp {
+    font-weight: 700;
+    cursor: pointer;
+}
 .oc-ltp.up { color: var(--green) !important; }
 .oc-ltp.down { color: var(--red) !important; }
 
@@ -4258,8 +4297,17 @@ td.oc-pe span {
         text-align: left;
     }
 
+    .oc-chain-card {
+        height: auto;
+        min-height: 0;
+    }
+
     .oc-table-wrap {
         min-height: 320px;
+    }
+
+    .oc-table {
+        max-width: none;
     }
 
     .fii-view {
