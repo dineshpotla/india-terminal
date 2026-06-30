@@ -4464,7 +4464,7 @@
     function renderOptionChain(data) {
         var rows = (data && data.strikes) || [];
         if (data.error && !rows.length) {
-            $ocTbody.innerHTML = '<tr><td colspan="11" class="oc-empty">' + (data.error || "No data") + '</td></tr>';
+            $ocTbody.innerHTML = '<tr><td colspan="3" class="oc-empty">' + (data.error || "No data") + '</td></tr>';
             renderStrategyBuilder();
             return;
         }
@@ -4489,7 +4489,6 @@
 
         var spot = data.spot || 0;
         var atm = data.atm_strike || 0;
-        var maxOI = data.max_oi || 1;
         var html = "";
 
         rows.forEach(function (row) {
@@ -4501,27 +4500,13 @@
 
             var ce = row.ce || {};
             var pe = row.pe || {};
-            var ceOIpct = Math.round(100 * (ce.oi || 0) / maxOI);
-            var peOIpct = Math.round(100 * (pe.oi || 0) / maxOI);
-            var ceChgCls = (ce.chgOI || 0) > 0 ? "up" : (ce.chgOI || 0) < 0 ? "down" : "";
-            var peChgCls = (pe.chgOI || 0) > 0 ? "up" : (pe.chgOI || 0) < 0 ? "down" : "";
             var ceLtpCls = (ce.chg || 0) >= 0 ? "up" : "down";
             var peLtpCls = (pe.chg || 0) >= 0 ? "up" : "down";
 
             html += '<tr class="' + cls + '">';
-            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '"><div class="oc-oi-bar" style="width:' + ceOIpct + '%"></div><span>' + fmtOI(ce.oi) + '</span></td>';
-            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + ' ' + ceChgCls + '">' + fmtOI(ce.chgOI) + '</td>';
-            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '">' + fmtOI(ce.vol) + '</td>';
-            html += '<td class="oc-ce' + (ceITM ? " oc-itm" : "") + '">' + (ce.iv ? ce.iv.toFixed(1) : "\u2014") + '</td>';
             html += '<td class="oc-ce oc-ltp' + (ceITM ? " oc-itm" : "") + ' ' + ceLtpCls + '" data-leg-type="CE" data-strike="' + row.strike + '">' + (ce.ltp ? ce.ltp.toFixed(2) : "\u2014") + '</td>';
-
             html += '<td class="oc-strike">' + Number(row.strike).toLocaleString("en-IN") + '</td>';
-
             html += '<td class="oc-pe oc-ltp' + (peITM ? " oc-itm" : "") + ' ' + peLtpCls + '" data-leg-type="PE" data-strike="' + row.strike + '">' + (pe.ltp ? pe.ltp.toFixed(2) : "\u2014") + '</td>';
-            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '">' + (pe.iv ? pe.iv.toFixed(1) : "\u2014") + '</td>';
-            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '">' + fmtOI(pe.vol) + '</td>';
-            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + ' ' + peChgCls + '">' + fmtOI(pe.chgOI) + '</td>';
-            html += '<td class="oc-pe' + (peITM ? " oc-itm" : "") + '"><div class="oc-oi-bar oc-oi-bar-pe" style="width:' + peOIpct + '%"></div><span>' + fmtOI(pe.oi) + '</span></td>';
             html += '</tr>';
         });
 
