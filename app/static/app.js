@@ -3914,6 +3914,16 @@
     var $osBreakeven = $("os-breakeven");
     var $osPayoffTitle = $("os-payoff-title");
     var $osPayoffChart = $("os-payoff-chart");
+    var $osScanNow = $("os-scan-now");
+    var $osOpportunityTitle = $("os-opportunity-title");
+    var $osOpportunityAlert = $("os-opportunity-alert");
+    var $osOpportunityList = $("os-opportunity-list");
+    var $osOpportunityUpdated = $("os-opportunity-updated");
+    var opportunitySymbols = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"];
+    var opportunityScanTimer = null;
+    var opportunityScanInFlight = false;
+    var opportunityLastScanAt = 0;
+    var opportunityLastRows = [];
 
     function fmtOI(n) {
         if (!n) return "\u2014";
@@ -3946,12 +3956,13 @@
         }
     }
 
-    function optionStrikeRows() {
-        return (ocChainData && Array.isArray(ocChainData.strikes)) ? ocChainData.strikes : [];
+    function optionStrikeRows(chainData) {
+        var data = chainData || ocChainData;
+        return (data && Array.isArray(data.strikes)) ? data.strikes : [];
     }
 
-    function nearestOptionStrike(target) {
-        var rows = optionStrikeRows();
+    function nearestOptionStrike(target, chainData) {
+        var rows = optionStrikeRows(chainData);
         if (!rows.length) return null;
         return rows.reduce(function (best, row) {
             if (!best) return row;
@@ -3969,15 +3980,19 @@
         return nearestOptionStrike(target);
     }
 
-    function optionQuoteFor(strike, type) {
-        var row = optionStrikeRows().find(function (item) { return Number(item.strike) === Number(strike); });
+    function optionQuoteFor(strike, type, chainData) {
+        var row = optionStrikeRows(chainData).find(function (item) { return Number(item.strike) === Number(strike); });
         if (!row) return null;
         return type === "PE" ? row.pe : row.ce;
     }
 
-    function currentLegPrice(leg) {
-        var quote = optionQuoteFor(leg.strike, leg.type);
+    function currentLegPrice(leg, chainData) {
+        var quote = optionQuoteFor(leg.strike, leg.type, chainData);
         return quote && Number(quote.ltp) ? Number(quote.ltp) : Number(leg.price || 0);
+    }
+
+    function optionLotSizeFor(symbol, chainData) {
+        return (chainData && Number(chainData.lot_size)) || ocDefaultLotSizes[symbol] || 1;
     }
 
     function updatePickedStrikePreview() {
@@ -3998,6 +4013,8 @@
     function addStrategyLeg(side, type, strike, lots) {
         var quote = optionQuoteFor(strike, type);
         var price = quote && Number(quote.ltp) ? Number(quote.ltp) : 0;
+        var baseSpot = Number(ocChainData && ocChainData.spot) || 0;
+        var signedPct = baseSpot ? (Number(strike) - baseSpot) / baseSpot : 0;
         strategyLegs.push({
             id: strategyLegSeq++,
             side: side || "B",
@@ -4006,14 +4023,19 @@
             lots: Math.max(1, Math.round(Number(lots) || 1)),
             price: price,
             expiry: ocExpiry || (ocChainData && ocChainData.selected_expiry) || "",
+            baseSpot: baseSpot,
+            targetPct: signedPct,
+            distanceMode: ($osDistanceMode && $osDistanceMode.value) || "percent",
+            distanceValue: Math.abs(signedPct * 100),
         });
         renderStrategyBuilder();
+        scheduleOpportunityScan(500);
     }
 
-    function legPayoffAt(leg, underlying, lotSize) {
+    function legPayoffAt(leg, underlying, lotSize, chainData) {
         var lots = Math.max(1, Number(leg.lots) || 1);
         var multiplier = lots * lotSize;
-        var price = currentLegPrice(leg);
+        var price = currentLegPrice(leg, chainData);
         var intrinsic = leg.type === "CE"
             ? Math.max(0, underlying - Number(leg.strike))
             : Math.max(0, Number(leg.strike) - underlying);
@@ -4021,20 +4043,20 @@
         return unit * multiplier;
     }
 
-    function optionPayoffMetrics() {
-        var lotSize = optionLotSize();
-        var spot = Number(ocChainData && ocChainData.spot) || 0;
-        if (!strategyLegs.length || !spot) {
+    function optionPayoffMetricsFor(legs, chainData, lotSize) {
+        legs = legs || [];
+        var spot = Number(chainData && chainData.spot) || 0;
+        if (!legs.length || !spot) {
             return {
                 lotSize: lotSize, premium: 0, points: [], maxProfit: null, maxLoss: null,
                 maxProfitUnlimited: false, maxLossUnlimited: false, margin: 0, breakevens: [],
             };
         }
-        var strikes = strategyLegs.map(function (leg) { return Number(leg.strike); }).filter(isFinite);
-        var chainStrikes = optionStrikeRows().map(function (row) { return Number(row.strike); }).filter(isFinite);
+        var strikes = legs.map(function (leg) { return Number(leg.strike); }).filter(isFinite);
+        var chainStrikes = optionStrikeRows(chainData).map(function (row) { return Number(row.strike); }).filter(isFinite);
         var minStrike = Math.min.apply(null, strikes.concat([spot]));
         var maxStrike = Math.max.apply(null, strikes.concat([spot]));
-        var step = Number(ocChainData && ocChainData.strike_step) || 50;
+        var step = Number(chainData && chainData.strike_step) || 50;
         var span = Math.max(step * 12, Math.abs(maxStrike - minStrike) * 1.8, spot * 0.08);
         var low = Math.max(0, Math.min(minStrike, spot) - span);
         var high = Math.max(maxStrike, spot) + span;
@@ -4046,27 +4068,27 @@
         var count = 90;
         for (var i = 0; i <= count; i++) {
             var s = low + (high - low) * i / count;
-            var pnl = strategyLegs.reduce(function (sum, leg) {
-                return sum + legPayoffAt(leg, s, lotSize);
+            var pnl = legs.reduce(function (sum, leg) {
+                return sum + legPayoffAt(leg, s, lotSize, chainData);
             }, 0);
             points.push({ underlying: s, pnl: pnl });
         }
-        var premium = strategyLegs.reduce(function (sum, leg) {
+        var premium = legs.reduce(function (sum, leg) {
             var signed = leg.side === "B" ? 1 : -1;
-            return sum + signed * currentLegPrice(leg) * Math.max(1, Number(leg.lots) || 1) * lotSize;
+            return sum + signed * currentLegPrice(leg, chainData) * Math.max(1, Number(leg.lots) || 1) * lotSize;
         }, 0);
         var riskPoints = points.slice();
-        if (strategyLegs.some(function (leg) { return leg.type === "PE"; })) {
+        if (legs.some(function (leg) { return leg.type === "PE"; })) {
             riskPoints.push({
                 underlying: 0,
-                pnl: strategyLegs.reduce(function (sum, leg) {
-                    return sum + legPayoffAt(leg, 0, lotSize);
+                pnl: legs.reduce(function (sum, leg) {
+                    return sum + legPayoffAt(leg, 0, lotSize, chainData);
                 }, 0),
             });
         }
         var maxP = Math.max.apply(null, riskPoints.map(function (p) { return p.pnl; }));
         var minP = Math.min.apply(null, riskPoints.map(function (p) { return p.pnl; }));
-        var highSlopeLots = strategyLegs.reduce(function (sum, leg) {
+        var highSlopeLots = legs.reduce(function (sum, leg) {
             if (leg.type !== "CE") return sum;
             return sum + (leg.side === "B" ? 1 : -1) * Math.max(1, Number(leg.lots) || 1) * lotSize;
         }, 0);
@@ -4086,11 +4108,11 @@
             }
         }
         var finiteRisk = !maxLossUnlimited ? Math.max(0, -minP) : 0;
-        var hasShort = strategyLegs.some(function (leg) { return leg.side === "S"; });
-        var nakedShortEstimate = strategyLegs.reduce(function (sum, leg) {
+        var hasShort = legs.some(function (leg) { return leg.side === "S"; });
+        var nakedShortEstimate = legs.reduce(function (sum, leg) {
             if (leg.side !== "S") return sum;
             var lots = Math.max(1, Number(leg.lots) || 1);
-            return sum + (spot * lotSize * lots * 0.12) + (currentLegPrice(leg) * lotSize * lots);
+            return sum + (spot * lotSize * lots * 0.12) + (currentLegPrice(leg, chainData) * lotSize * lots);
         }, 0);
         var margin = hasShort
             ? (maxLossUnlimited ? nakedShortEstimate + Math.max(0, premium) : finiteRisk)
@@ -4107,6 +4129,10 @@
             breakevens: breakevens,
             spot: spot,
         };
+    }
+
+    function optionPayoffMetrics() {
+        return optionPayoffMetricsFor(strategyLegs, ocChainData, optionLotSize());
     }
 
     function drawPayoffChart(metrics) {
@@ -4174,6 +4200,221 @@
         ctx.fillText(Math.round(maxX).toLocaleString("en-IN"), width - pad.right, height - 10);
     }
 
+    function fmtOpportunityPct(n) {
+        if (n == null || !isFinite(Number(n))) return "--";
+        return (Number(n) * 100).toFixed(1) + "%";
+    }
+
+    function opportunityLegRecipes() {
+        var baseSpot = Number(ocChainData && ocChainData.spot) || 0;
+        if (!baseSpot || !strategyLegs.length) return [];
+        return strategyLegs.map(function (leg) {
+            var pct = isFinite(Number(leg.targetPct)) ? Number(leg.targetPct) : ((Number(leg.strike) - baseSpot) / baseSpot);
+            return {
+                id: leg.id,
+                side: leg.side,
+                type: leg.type,
+                lots: Math.max(1, Number(leg.lots) || 1),
+                targetPct: pct,
+            };
+        });
+    }
+
+    function evaluateOpportunity(symbol, chainData, recipes, baseExpiry) {
+        if (!chainData || chainData.error || !Array.isArray(chainData.strikes) || !chainData.strikes.length) {
+            return { symbol: symbol, ok: false, reason: "No live chain" };
+        }
+        var expiry = chainData.selected_expiry || "";
+        if (baseExpiry && expiry !== baseExpiry) {
+            return { symbol: symbol, ok: false, reason: "No same-day expiry", expiry: expiry };
+        }
+        var spot = Number(chainData.spot) || 0;
+        if (!spot) return { symbol: symbol, ok: false, reason: "No spot" };
+        var legs = [];
+        for (var i = 0; i < recipes.length; i++) {
+            var recipe = recipes[i];
+            var target = spot * (1 + Number(recipe.targetPct || 0));
+            var row = nearestOptionStrike(target, chainData);
+            if (!row) return { symbol: symbol, ok: false, reason: "No strike" };
+            var quote = recipe.type === "PE" ? row.pe : row.ce;
+            if (!quote) return { symbol: symbol, ok: false, reason: "No " + recipe.type };
+            legs.push({
+                id: recipe.id,
+                side: recipe.side,
+                type: recipe.type,
+                strike: Number(row.strike),
+                lots: recipe.lots,
+                price: Number(quote.ltp) || 0,
+                expiry: expiry,
+                baseSpot: spot,
+                targetPct: recipe.targetPct,
+            });
+        }
+        var lotSize = optionLotSizeFor(symbol, chainData);
+        var metrics = optionPayoffMetricsFor(legs, chainData, lotSize);
+        var netCredit = Math.max(0, -(metrics.premium || 0));
+        var netDebit = Math.max(0, metrics.premium || 0);
+        return {
+            symbol: symbol,
+            ok: true,
+            chainData: chainData,
+            expiry: expiry,
+            spot: spot,
+            lotSize: lotSize,
+            legs: legs,
+            premium: metrics.premium || 0,
+            netCredit: netCredit,
+            netDebit: netDebit,
+            margin: metrics.margin || 0,
+            creditYield: metrics.margin ? netCredit / metrics.margin : 0,
+            strikesLabel: legs.map(function (leg) {
+                return leg.side + " " + leg.strike.toLocaleString("en-IN") + " " + leg.type + " @" + (leg.price ? leg.price.toFixed(2) : "--");
+            }).join(" / "),
+        };
+    }
+
+    function renderOpportunityScanner(rows, isScanning, errorText) {
+        if (!$osOpportunityTitle || !$osOpportunityList || !$osOpportunityAlert) return;
+        var hasShort = strategyLegs.some(function (leg) { return leg.side === "S"; });
+        if (!strategyLegs.length) {
+            $osOpportunityTitle.textContent = "Add sell legs to scan alternatives";
+            $osOpportunityAlert.className = "os-opportunity-alert";
+            $osOpportunityAlert.textContent = "No active strategy yet.";
+            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Add your morning sell/buy legs. I will compare the same percentage distance across same-day index expiries.</div>';
+            if ($osOpportunityUpdated) $osOpportunityUpdated.textContent = "Auto scans while Strategy is visible.";
+            return;
+        }
+        if (!hasShort) {
+            $osOpportunityTitle.textContent = "Scanner is for option-selling setups";
+            $osOpportunityAlert.className = "os-opportunity-alert";
+            $osOpportunityAlert.textContent = "Add at least one sell leg to compare expiry premium.";
+            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Buy-only strategies are not ranked by premium received.</div>';
+            return;
+        }
+        if (isScanning) {
+            $osOpportunityTitle.textContent = "Scanning same-day expiries...";
+            $osOpportunityAlert.className = "os-opportunity-alert";
+            $osOpportunityAlert.textContent = "Checking NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY and NIFTYNXT50.";
+            return;
+        }
+        if (errorText) {
+            $osOpportunityTitle.textContent = "Scanner paused";
+            $osOpportunityAlert.className = "os-opportunity-alert";
+            $osOpportunityAlert.textContent = errorText;
+            return;
+        }
+        var validRows = (rows || []).filter(function (row) { return row.ok; });
+        var current = validRows.find(function (row) { return row.symbol === ocSymbol; }) || null;
+        if (!validRows.length || !current) {
+            $osOpportunityTitle.textContent = "No same-day alternatives found";
+            $osOpportunityAlert.className = "os-opportunity-alert";
+            $osOpportunityAlert.textContent = "No matching same-day index expiry has a usable chain right now.";
+            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Try again after the chains refresh.</div>';
+            return;
+        }
+        validRows.sort(function (a, b) { return b.netCredit - a.netCredit; });
+        var best = validRows[0];
+        var extra = best.netCredit - current.netCredit;
+        var alertThreshold = Math.max(100, current.netCredit * 0.05);
+        var hot = best.symbol !== current.symbol && extra > alertThreshold;
+        $osOpportunityTitle.textContent = hot ? "Better expiry premium found" : "Same-day expiry check";
+        $osOpportunityAlert.className = "os-opportunity-alert" + (hot ? " hot" : "");
+        $osOpportunityAlert.textContent = hot
+            ? "ALERT: " + best.symbol + " gives " + fmtMoney(extra) + " more net credit than " + current.symbol + " for the same % distance."
+            : "No better same-day expiry by net credit. Current setup remains competitive.";
+        $osOpportunityList.innerHTML = validRows.map(function (row, idx) {
+            var diff = row.netCredit - current.netCredit;
+            var cls = "os-opportunity-row" + (idx === 0 ? " best" : "") + (row.symbol === current.symbol ? " current" : "");
+            var diffCls = diff > 0 ? "positive" : (diff < 0 ? "negative" : "");
+            var action = row.symbol === current.symbol
+                ? '<span class="os-op-cell"><small>Current</small></span>'
+                : '<button class="os-op-load" type="button" data-op-load="' + row.symbol + '">Load</button>';
+            return '<div class="' + cls + '">' +
+                '<div class="os-op-symbol">' + row.symbol + '<small>' + row.expiry + " · " + row.lotSize + '/lot</small></div>' +
+                '<div class="os-op-strikes">' + row.strikesLabel + '</div>' +
+                '<div class="os-op-cell positive">' + fmtMoney(row.netCredit) + '<small>Net credit</small></div>' +
+                '<div class="os-op-cell">' + (row.margin ? fmtMoney(row.margin) : "—") + '<small>Est. margin</small></div>' +
+                '<div class="os-op-cell ' + diffCls + '">' + (diff === 0 ? "—" : fmtMoney(diff)) + '<small>Vs current</small></div>' +
+                action +
+                '</div>';
+        }).join("");
+        if ($osOpportunityUpdated) {
+            $osOpportunityUpdated.textContent = "Same % distance scan · updated " + new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        }
+    }
+
+    function scheduleOpportunityScan(delayMs) {
+        if (opportunityScanTimer) clearTimeout(opportunityScanTimer);
+        opportunityScanTimer = setTimeout(function () {
+            scanSameDayOpportunities(false);
+        }, delayMs == null ? 800 : delayMs);
+    }
+
+    async function scanSameDayOpportunities(force) {
+        if (opportunityScanInFlight) return;
+        if (document.hidden || currentView !== "options") return;
+        var hasShort = strategyLegs.some(function (leg) { return leg.side === "S"; });
+        if (!strategyLegs.length || !hasShort || !ocChainData || !ocChainData.spot) {
+            renderOpportunityScanner([], false);
+            return;
+        }
+        if (!force && Date.now() - opportunityLastScanAt < 45000) return;
+        var baseExpiry = (ocChainData && ocChainData.selected_expiry) || ocExpiry || "";
+        var recipes = opportunityLegRecipes();
+        if (!baseExpiry || !recipes.length) {
+            renderOpportunityScanner([], false, "Waiting for current expiry and live chain.");
+            return;
+        }
+        opportunityScanInFlight = true;
+        renderOpportunityScanner(opportunityLastRows, true);
+        try {
+            var chains = {};
+            chains[ocSymbol] = ocChainData;
+            await Promise.all(opportunitySymbols.filter(function (symbol) {
+                return symbol !== ocSymbol;
+            }).map(async function (symbol) {
+                try {
+                    chains[symbol] = await fetchJson("/api/options/" + encodeURIComponent(symbol) + "?expiry=" + encodeURIComponent(baseExpiry), { timeoutMs: 18000 });
+                } catch (err) {
+                    chains[symbol] = { error: err && err.message ? err.message : "Fetch failed", strikes: [] };
+                }
+            }));
+            opportunityLastRows = opportunitySymbols.map(function (symbol) {
+                return evaluateOpportunity(symbol, chains[symbol], recipes, baseExpiry);
+            });
+            opportunityLastScanAt = Date.now();
+            renderOpportunityScanner(opportunityLastRows, false);
+        } catch (err) {
+            renderOpportunityScanner(opportunityLastRows, false, "Scanner error: " + (err && err.message ? err.message : err));
+        } finally {
+            opportunityScanInFlight = false;
+        }
+    }
+
+    function loadOpportunityCandidate(symbol) {
+        var row = opportunityLastRows.find(function (item) { return item.ok && item.symbol === symbol; });
+        if (!row) return;
+        ocSymbol = row.symbol;
+        ocExpiry = row.expiry;
+        ocChainData = row.chainData;
+        strategyLegs = row.legs.map(function (leg) {
+            return Object.assign({}, leg, {
+                id: strategyLegSeq++,
+                baseSpot: row.spot,
+                expiry: row.expiry,
+            });
+        });
+        if ($osLotSize) $osLotSize.value = String(row.lotSize);
+        document.querySelectorAll(".oc-sym-btn").forEach(function (btn) {
+            btn.classList.toggle("active", btn.dataset.ocSym === row.symbol);
+        });
+        if ($ocStockInput) $ocStockInput.value = opportunitySymbols.indexOf(row.symbol) >= 0 ? "" : row.symbol;
+        renderOptionChain(row.chainData);
+        renderStrategyBuilder();
+        renderOpportunityScanner(opportunityLastRows, false);
+        scheduleOpportunityScan(1500);
+    }
+
     function renderStrategyBuilder() {
         updatePickedStrikePreview();
         if (!$osLegsBody) return;
@@ -4219,6 +4460,9 @@
             ? strategyLegs.length + " leg strategy on " + ocSymbol
             : "No strategy selected";
         drawPayoffChart(metrics);
+        if (!strategyLegs.length || !strategyLegs.some(function (leg) { return leg.side === "S"; })) {
+            renderOpportunityScanner([], false);
+        }
     }
 
     async function fetchOptionChain() {
@@ -4231,6 +4475,7 @@
             updateOptionLotSize(!strategyLegs.length);
             renderOptionChain(data);
             renderStrategyBuilder();
+            if (strategyLegs.length) scheduleOpportunityScan(700);
         } catch (err) {
             console.error("[OC] Fetch error:", err);
         }
@@ -4316,6 +4561,8 @@
             ocSymbol = btn.dataset.ocSym;
             ocExpiry = "";
             strategyLegs = [];
+            opportunityLastRows = [];
+            opportunityLastScanAt = 0;
             fetchOptionChain();
         });
     });
@@ -4326,6 +4573,8 @@
             ocSymbol = $ocStockInput.value.trim().toUpperCase();
             ocExpiry = "";
             strategyLegs = [];
+            opportunityLastRows = [];
+            opportunityLastScanAt = 0;
             fetchOptionChain();
         }
     });
@@ -4333,6 +4582,8 @@
     $ocExpiry.addEventListener("change", function () {
         ocExpiry = $ocExpiry.value;
         strategyLegs = strategyLegs.filter(function (leg) { return leg.expiry === ocExpiry; });
+        opportunityLastRows = [];
+        opportunityLastScanAt = 0;
         fetchOptionChain();
     });
 
@@ -4358,6 +4609,8 @@
     if ($osResetStrategy) {
         $osResetStrategy.addEventListener("click", function () {
             strategyLegs = [];
+            opportunityLastRows = [];
+            opportunityLastScanAt = 0;
             renderStrategyBuilder();
         });
     }
@@ -4369,6 +4622,7 @@
             var id = Number(btn.getAttribute("data-remove-leg"));
             strategyLegs = strategyLegs.filter(function (leg) { return leg.id !== id; });
             renderStrategyBuilder();
+            scheduleOpportunityScan(500);
         });
     }
 
@@ -4382,6 +4636,21 @@
                 Number(cell.getAttribute("data-strike")),
                 Number($osLots && $osLots.value) || 1
             );
+        });
+    }
+
+    if ($osScanNow) {
+        $osScanNow.addEventListener("click", function () {
+            opportunityLastScanAt = 0;
+            scanSameDayOpportunities(true);
+        });
+    }
+
+    if ($osOpportunityList) {
+        $osOpportunityList.addEventListener("click", function (event) {
+            var btn = event.target.closest("[data-op-load]");
+            if (!btn) return;
+            loadOpportunityCandidate(btn.getAttribute("data-op-load"));
         });
     }
 

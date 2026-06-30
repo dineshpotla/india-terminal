@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=20260630-strategy-builder">
+    <link rel="stylesheet" href="/static/style.css?v=20260630-expiry-scan">
 </head>
 <body>
     <div class="terminal">
@@ -127,6 +127,8 @@
                     <button class="oc-sym-btn active" data-oc-sym="NIFTY">NIFTY</button>
                     <button class="oc-sym-btn" data-oc-sym="BANKNIFTY">BANKNIFTY</button>
                     <button class="oc-sym-btn" data-oc-sym="FINNIFTY">FINNIFTY</button>
+                    <button class="oc-sym-btn" data-oc-sym="MIDCPNIFTY">MIDCP</button>
+                    <button class="oc-sym-btn" data-oc-sym="NIFTYNXT50">NEXT50</button>
                     <input type="text" id="oc-stock-input" class="oc-stock-input" placeholder="Stock symbol…" autocomplete="off">
                 </div>
                 <div class="oc-expiry-group">
@@ -176,6 +178,20 @@
                         <div class="os-metric"><span>Est. Margin</span><strong id="os-margin">--</strong><small>Broker/SPAN estimate</small></div>
                         <div class="os-metric"><span>Max Profit</span><strong id="os-max-profit">--</strong><small id="os-rr">Reward / risk --</small></div>
                         <div class="os-metric"><span>Max Loss</span><strong id="os-max-loss">--</strong><small id="os-breakeven">Breakeven --</small></div>
+                    </div>
+                    <div class="os-opportunity-card" id="os-opportunity-card">
+                        <div class="os-card-head compact">
+                            <div>
+                                <div class="os-kicker">SAME-DAY EXPIRY SCANNER</div>
+                                <h2 id="os-opportunity-title">Add sell legs to scan alternatives</h2>
+                            </div>
+                            <button id="os-scan-now" class="os-link-btn" type="button">Scan</button>
+                        </div>
+                        <div id="os-opportunity-alert" class="os-opportunity-alert">No better same-day expiry yet.</div>
+                        <div id="os-opportunity-list" class="os-opportunity-list">
+                            <div class="os-opportunity-empty">Set morning strikes once. The scanner will compare the same percentage distance across same-day index expiries.</div>
+                        </div>
+                        <div class="os-opportunity-foot" id="os-opportunity-updated">Auto scans while Strategy is visible.</div>
                     </div>
                     <div class="os-payoff-card">
                         <div class="os-card-head compact">
@@ -388,6 +404,6 @@
         </nav>
     </div>
 
-    <script src="/static/app.js?v=20260630-strategy-builder"></script>
+    <script src="/static/app.js?v=20260630-expiry-scan"></script>
 </body>
 </html>

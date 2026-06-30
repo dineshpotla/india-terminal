@@ -55,7 +55,7 @@ NSE_OC_CONTRACT_INFO_URL = NSE_BASE + "/api/option-chain-contract-info?symbol={s
 NSE_OC_V3_URL = NSE_BASE + "/api/option-chain-v3?type={type}&symbol={symbol}"
 NSE_OC_INDEX_URL = NSE_BASE + "/api/option-chain-indices?symbol={symbol}"
 NSE_OC_EQUITY_URL = NSE_BASE + "/api/option-chain-equities?symbol={symbol}"
-OC_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+OC_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
 OC_INDEX_LOT_SIZES = {
     "NIFTY": 65,
     "BANKNIFTY": 30,
