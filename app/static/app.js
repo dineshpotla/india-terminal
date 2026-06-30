@@ -3895,7 +3895,6 @@
     var $ocTimestamp = $("oc-timestamp");
     var $ocStockInput = $("oc-stock-input");
     var $osLegType = $("os-leg-type");
-    var $osDistanceSide = $("os-distance-side");
     var $osDistance = $("os-distance");
     var $osDistanceMode = $("os-distance-mode");
     var $osLots = $("os-lots");
@@ -3967,8 +3966,8 @@
         if (!spot) return null;
         var rawDistance = Math.max(0, Number($osDistance && $osDistance.value) || 0);
         var distance = ($osDistanceMode && $osDistanceMode.value) === "percent" ? spot * rawDistance / 100 : rawDistance;
-        var dir = ($osDistanceSide && $osDistanceSide.value) || "nearest";
-        var target = dir === "above" ? spot + distance : (dir === "below" ? spot - distance : spot);
+        var type = ($osLegType && $osLegType.value) || "CE";
+        var target = type === "PE" ? spot - distance : spot + distance;
         return nearestOptionStrike(target);
     }
 
@@ -4568,7 +4567,7 @@
         fetchOptionChain();
     });
 
-    [$osLegType, $osDistanceSide, $osDistance, $osDistanceMode, $osLots].forEach(function (node) {
+    [$osLegType, $osDistance, $osDistanceMode, $osLots].forEach(function (node) {
         if (!node) return;
         node.addEventListener("input", renderStrategyBuilder);
         node.addEventListener("change", renderStrategyBuilder);

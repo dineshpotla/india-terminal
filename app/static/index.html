@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=20260630-sell-only">
+    <link rel="stylesheet" href="/static/style.css?v=20260630-auto-direction">
 </head>
 <body>
     <div class="terminal">
@@ -155,7 +155,6 @@
                     </div>
                     <div class="os-add-grid">
                         <label class="os-field"><span>Type</span><select id="os-leg-type"><option value="CE">CE</option><option value="PE">PE</option></select></label>
-                        <label class="os-field"><span>Direction</span><select id="os-distance-side"><option value="above">Above spot</option><option value="below">Below spot</option><option value="nearest">Nearest ATM</option></select></label>
                         <label class="os-field"><span>Distance</span><input id="os-distance" type="number" min="0" step="1" value="0"></label>
                         <label class="os-field"><span>Mode</span><select id="os-distance-mode"><option value="points">Points</option><option value="percent">Percent</option></select></label>
                         <label class="os-field"><span>Lots</span><input id="os-lots" type="number" min="1" step="1" value="1"></label>
@@ -402,6 +401,6 @@
         </nav>
     </div>
 
-    <script src="/static/app.js?v=20260630-sell-only"></script>
+    <script src="/static/app.js?v=20260630-auto-direction"></script>
 </body>
 </html>
