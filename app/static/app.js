@@ -4435,9 +4435,11 @@
         $osBreakeven.textContent = metrics.breakevens && metrics.breakevens.length
             ? "Breakeven " + metrics.breakevens.map(function (be) { return Math.round(be).toLocaleString("en-IN"); }).join(", ")
             : "Breakeven --";
-        $osPayoffTitle.textContent = strategyLegs.length
-            ? strategyLegs.length + " leg strategy on " + ocSymbol
-            : "No strategy selected";
+        if ($osPayoffTitle) {
+            $osPayoffTitle.textContent = strategyLegs.length
+                ? strategyLegs.length + " leg strategy on " + ocSymbol
+                : "No strategy selected";
+        }
         drawPayoffChart(metrics);
         if (!strategyLegs.length || !strategyLegs.some(function (leg) { return leg.side === "S"; })) {
             renderOpportunityScanner([], false);

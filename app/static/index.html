@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=20260630-chain-side">
+    <link rel="stylesheet" href="/static/style.css?v=20260630-no-payoff">
 </head>
 <body>
     <div class="terminal">
@@ -189,13 +189,6 @@
                                 <div class="os-opportunity-empty">Add your morning sell legs. I will compare the same percentage distance across same-day index expiries.</div>
                             </div>
                             <div class="os-opportunity-foot" id="os-opportunity-updated">Auto scans while Strategy is visible.</div>
-                        </div>
-                        <div class="os-payoff-card">
-                            <div class="os-card-head compact">
-                                <div><div class="os-kicker">EXPIRY PAYOFF</div><h2 id="os-payoff-title">No strategy selected</h2></div>
-                                <div class="os-note">Margin is an estimate; use broker/SPAN for order placement.</div>
-                            </div>
-                            <canvas id="os-payoff-chart" class="os-payoff-chart"></canvas>
                         </div>
                     </section>
                 </div>
@@ -406,6 +399,6 @@
         </nav>
     </div>
 
-    <script src="/static/app.js?v=20260630-chain-side"></script>
+    <script src="/static/app.js?v=20260630-no-payoff"></script>
 </body>
 </html>

@@ -2163,32 +2163,12 @@ body {
     text-align: right;
 }
 
-.os-payoff-card {
-    flex: 0 0 auto;
-    min-height: 230px;
-    display: flex;
-    flex-direction: column;
-    border: 1px solid rgba(148,163,184,.14);
-    border-radius: 18px;
-    background:
-        radial-gradient(circle at top right, rgba(38,198,218,.08), transparent 36%),
-        rgba(9,14,23,.86);
-    overflow: hidden;
-}
-
 .os-note {
     max-width: 280px;
     color: var(--text-dim);
     font-size: 10px;
     line-height: 1.4;
     text-align: right;
-}
-
-.os-payoff-chart {
-    width: 100%;
-    flex: 0 0 190px;
-    min-height: 190px;
-    display: block;
 }
 
 /* ── Option Chain Table ────────────────────────────────────────────── */
@@ -4286,10 +4266,6 @@ td.oc-pe span {
     .os-metric {
         min-height: 74px;
         padding: 10px;
-    }
-
-    .os-payoff-card {
-        min-height: 320px;
     }
 
     .os-note {
