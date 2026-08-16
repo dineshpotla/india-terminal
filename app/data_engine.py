@@ -575,8 +575,8 @@ TWELVE_DATA_STOCK_FALLBACK_CAP = max(
     int(os.getenv("TWELVE_DATA_STOCK_FALLBACK_CAP", "3" if _TWELVE_FREE else "50")),
 )
 TWELVE_DATA_CACHE_MAX_KEYS = max(32, min(512, int(os.getenv("TWELVE_DATA_CACHE_MAX_KEYS", "128"))))
-NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "z-ai/glm-5.1")
-NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", "z-ai/glm-5.1")
+NV_API_MODEL = os.getenv("NV_NEWS_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
+NV_FAST_MODEL = os.getenv("NV_FAST_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
 NV_ENABLE_THINKING = os.getenv("NV_ENABLE_THINKING", "0").strip().lower() in ("1", "true", "yes", "on")
 RENDER_MINIMAL_MODE = os.getenv("RENDER_MINIMAL_MODE", "1" if IS_RENDER else "0").strip().lower() in ("1", "true", "yes", "on")
 BACKGROUND_NEWS_ENABLED = os.getenv("BACKGROUND_NEWS_ENABLED", "0" if RENDER_MINIMAL_MODE else "1").strip().lower() in ("1", "true", "yes", "on")
