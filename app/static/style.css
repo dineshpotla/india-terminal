@@ -2068,7 +2068,7 @@ body {
 
 .os-opportunity-row {
     display: grid;
-    grid-template-columns: minmax(92px, .8fr) minmax(148px, 1.3fr) repeat(3, minmax(78px, .7fr)) auto;
+    grid-template-columns: minmax(88px, .72fr) minmax(138px, 1.2fr) minmax(82px, .62fr) repeat(3, minmax(74px, .65fr)) auto;
     gap: 8px;
     align-items: center;
     padding: 9px 10px;
@@ -2129,6 +2129,13 @@ body {
 
 .os-op-cell.negative {
     color: var(--red);
+    font-weight: 800;
+}
+
+.os-op-size strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: 11px;
     font-weight: 800;
 }
 
@@ -4253,6 +4260,10 @@ td.oc-pe span {
 
     .os-op-strikes {
         grid-column: 1 / -1;
+    }
+
+    .os-op-size {
+        text-align: left;
     }
 
     .os-op-cell {

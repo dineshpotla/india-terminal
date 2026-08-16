@@ -3917,6 +3917,7 @@
     var $osOpportunityList = $("os-opportunity-list");
     var $osOpportunityUpdated = $("os-opportunity-updated");
     var opportunitySymbols = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"];
+    var opportunityNotionalTarget = 10000000; // Compare each index at approximately Rs 1 crore of underlying value per leg.
     var opportunityScanTimer = null;
     var opportunityScanInFlight = false;
     var opportunityLastScanAt = 0;
@@ -3984,6 +3985,20 @@
 
     function optionLotSizeFor(symbol, chainData) {
         return (chainData && Number(chainData.lot_size)) || ocDefaultLotSizes[symbol] || 1;
+    }
+
+    function opportunityLotsFor(symbol, chainData) {
+        var spot = Number(chainData && chainData.spot) || 0;
+        var lotSize = optionLotSizeFor(symbol, chainData);
+        var contractNotional = spot * lotSize;
+        if (!contractNotional) return 1;
+        return Math.max(1, Math.round(opportunityNotionalTarget / contractNotional));
+    }
+
+    function opportunityNotionalFor(symbol, chainData, lots) {
+        var spot = Number(chainData && chainData.spot) || 0;
+        var lotSize = optionLotSizeFor(symbol, chainData);
+        return spot * lotSize * Math.max(1, Number(lots) || 1);
     }
 
     function updatePickedStrikePreview() {
@@ -4221,6 +4236,8 @@
         }
         var spot = Number(chainData.spot) || 0;
         if (!spot) return { symbol: symbol, ok: false, reason: "No spot" };
+        var lotSize = optionLotSizeFor(symbol, chainData);
+        var normalizedLots = opportunityLotsFor(symbol, chainData);
         var legs = [];
         for (var i = 0; i < recipes.length; i++) {
             var recipe = recipes[i];
@@ -4234,14 +4251,13 @@
                 side: recipe.side,
                 type: recipe.type,
                 strike: Number(row.strike),
-                lots: recipe.lots,
+                lots: normalizedLots,
                 price: Number(quote.ltp) || 0,
                 expiry: expiry,
                 baseSpot: spot,
                 targetPct: recipe.targetPct,
             });
         }
-        var lotSize = optionLotSizeFor(symbol, chainData);
         var metrics = optionPayoffMetricsFor(legs, chainData, lotSize);
         var netCredit = Math.max(0, -(metrics.premium || 0));
         var netDebit = Math.max(0, metrics.premium || 0);
@@ -4252,6 +4268,9 @@
             expiry: expiry,
             spot: spot,
             lotSize: lotSize,
+            lots: normalizedLots,
+            notional: opportunityNotionalFor(symbol, chainData, normalizedLots),
+            notionalTarget: opportunityNotionalTarget,
             legs: legs,
             premium: metrics.premium || 0,
             netCredit: netCredit,
@@ -4270,14 +4289,14 @@
             $osOpportunityTitle.textContent = "Add sell legs to scan alternatives";
             $osOpportunityAlert.className = "os-opportunity-alert";
             $osOpportunityAlert.textContent = "No active strategy yet.";
-            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Add your morning sell legs. I will compare the same percentage distance across same-day index expiries.</div>';
-            if ($osOpportunityUpdated) $osOpportunityUpdated.textContent = "Auto scans while Strategy is visible.";
+            $osOpportunityList.innerHTML = '<div class="os-opportunity-empty">Add your morning sell legs. I will compare the same percentage distance across same-day index expiries at approximately ₹1Cr underlying value per leg.</div>';
+            if ($osOpportunityUpdated) $osOpportunityUpdated.textContent = "Equal-notional scan · approximately ₹1Cr per leg.";
             return;
         }
         if (isScanning) {
             $osOpportunityTitle.textContent = "Scanning same-day expiries...";
             $osOpportunityAlert.className = "os-opportunity-alert";
-            $osOpportunityAlert.textContent = "Checking NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY and NIFTYNXT50.";
+            $osOpportunityAlert.textContent = "Checking NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY and NIFTYNXT50 at approximately ₹1Cr notional per leg.";
             return;
         }
         if (errorText) {
@@ -4303,8 +4322,8 @@
         $osOpportunityTitle.textContent = hot ? "Better expiry premium found" : "Same-day expiry check";
         $osOpportunityAlert.className = "os-opportunity-alert" + (hot ? " hot" : "");
         $osOpportunityAlert.textContent = hot
-            ? "ALERT: " + best.symbol + " gives " + fmtMoney(extra) + " more net credit than " + current.symbol + " for the same % distance."
-            : "No better same-day expiry by net credit. Current setup remains competitive.";
+            ? "ALERT: " + best.symbol + " gives " + fmtMoney(extra) + " more net credit than " + current.symbol + " after equal-notional sizing."
+            : "No better same-day expiry by net credit after equal-notional sizing. Current setup remains competitive.";
         $osOpportunityList.innerHTML = validRows.map(function (row, idx) {
             var diff = row.netCredit - current.netCredit;
             var cls = "os-opportunity-row" + (idx === 0 ? " best" : "") + (row.symbol === current.symbol ? " current" : "");
@@ -4315,6 +4334,7 @@
             return '<div class="' + cls + '">' +
                 '<div class="os-op-symbol">' + row.symbol + '<small>' + row.expiry + '</small></div>' +
                 '<div class="os-op-strikes">' + row.strikesLabel + '</div>' +
+                '<div class="os-op-cell os-op-size"><strong>' + row.lots + ' lot' + (row.lots === 1 ? '' : 's') + '</strong><small>' + fmtMoney(row.notional) + ' notional</small></div>' +
                 '<div class="os-op-cell positive">' + fmtMoney(row.netCredit) + '<small>Net credit</small></div>' +
                 '<div class="os-op-cell">' + (row.margin ? fmtMoney(row.margin) : "—") + '<small>Est. margin</small></div>' +
                 '<div class="os-op-cell ' + diffCls + '">' + (diff === 0 ? "—" : fmtMoney(diff)) + '<small>Vs current</small></div>' +
@@ -4322,7 +4342,7 @@
                 '</div>';
         }).join("");
         if ($osOpportunityUpdated) {
-            $osOpportunityUpdated.textContent = "Same % distance scan · updated " + new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+            $osOpportunityUpdated.textContent = "Equal-notional scan · target ≈ ₹1Cr per leg · updated " + new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
         }
     }
 
